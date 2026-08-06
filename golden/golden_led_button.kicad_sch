@@ -1469,7 +1469,7 @@
 	)
 	(symbol
 		(lib_id "Device:R")
-		(at 82.55 63.5 270)
+		(at 82.55 63.5 90)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
