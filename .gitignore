@@ -1,0 +1,30 @@
+# --- reference material (independent repos / large sources, not part of this project) ---
+/skidl/
+/kicad-source-mirror-10.0.5/
+/ESP-kicad-libraries/
+/OLIMEX-kicad/
+/SparkFun-KiCad-Libraries/
+/digikey-kicad-library/
+
+# --- copyrighted textbook PDFs (never commit / redistribute) ---
+/이론지식/
+
+# --- python ---
+.venv/
+.venv-skidl/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+
+# --- generated artifacts / local state ---
+/out/
+/data/*.sqlite
+*.kicad_sch-bak
+*.kicad_pro-bak
+*.kicad_prl
+*.erc.json
+golden/svg/
+fp-info-cache

@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "circuitgen"
+version = "0.1.0"
+description = "Prompt-driven KiCad 10 schematic generation agent (offline, local LLM)"
+requires-python = ">=3.12"
+dependencies = [
+    "simp_sexp>=0.3.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+web = ["fastapi", "uvicorn", "jinja2", "httpx"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
