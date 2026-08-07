@@ -1,0 +1,224 @@
+[
+  {
+    "id": "rectifier-diode-piv-selection-margin",
+    "type": "component_rule",
+    "statement": "Select rectifier diodes with reverse-breakdown voltage at least 50% greater than the expected PIV of the topology. Expected PIV: half-wave PIV = Vs (peak secondary voltage); center-tapped full-wave PIV = 2Vs - VD; bridge PIV = Vs - VD (roughly half the center-tap case).",
+    "condition": "Any diode rectifier (half-wave, center-tapped full-wave, or bridge) fed from a sinusoid of peak Vs, diode drop VD.",
+    "formula": "V_breakdown >= 1.5 * PIV; PIV_halfwave = Vs; PIV_centertap = 2*Vs - VD; PIV_bridge = Vs - VD",
+    "values": {
+      "safety_margin": "breakdown >= 1.5 x expected PIV",
+      "PIV_halfwave": "Vs (Eq. 4.22)",
+      "PIV_centertap_fullwave": "2Vs - VD",
+      "PIV_bridge": "Vs - VD"
+    },
+    "erc_rule": "For each rectifier diode: fail if diode V_RRM < 1.5 * PIV_expected, where PIV_expected is computed per topology from the formulas above.",
+    "tags": [
+      "rectifier",
+      "diode",
+      "PIV",
+      "breakdown",
+      "power-supply",
+      "component-selection"
+    ],
+    "source": {
+      "book": "Sedra/Smith Microelectronic Circuits 7e",
+      "section": "4.5.1-4.5.3 Rectifier Circuits",
+      "pdf_page_index": 237,
+      "tier": "A"
+    }
+  },
+  {
+    "id": "peak-rectifier-ripple-capacitor-relation",
+    "type": "formula",
+    "statement": "For a peak rectifier (filter capacitor C across load R), the peak-to-peak ripple is Vr = Vp/(fCR) for half-wave and Vr = Vp/(2fCR) for full-wave (ripple frequency is 2f for full-wave). Equivalently Vr = IL/(fC) with IL = Vp/R. Size C so that CR >> T to keep Vr small.",
+    "condition": "Peak rectifier with CR >> T (period of input); approximation valid only while Vr << Vp.",
+    "formula": "Vr = Vp/(f*C*R) [half-wave, Eq. 4.29a]; Vr = IL/(f*C) [Eq. 4.29b]; Vr = Vp/(2*f*C*R) [full-wave, Eq. 4.33]",
+    "values": {
+      "halfwave_ripple": "Vp/(fCR)",
+      "fullwave_ripple": "Vp/(2fCR)",
+      "alternate_form": "IL/(fC)",
+      "validity": "Vr << Vp, CR >> T",
+      "fullwave_ripple_frequency": "2f"
+    },
+    "erc_rule": "Given target ripple Vr_max: fail if C < Vp/(Vr_max*f*R) for half-wave or C < Vp/(2*Vr_max*f*R) for full-wave.",
+    "tags": [
+      "rectifier",
+      "ripple",
+      "filter-capacitor",
+      "power-supply",
+      "capacitor-sizing"
+    ],
+    "source": {
+      "book": "Sedra/Smith Microelectronic Circuits 7e",
+      "section": "4.5.4 The Rectifier with a Filter Capacitor (Peak Rectifier)",
+      "pdf_page_index": 244,
+      "tier": "A"
+    }
+  },
+  {
+    "id": "bjt-voltage-divider-bias-one-third-rule",
+    "type": "component_rule",
+    "statement": "Classical single-supply voltage-divider BJT bias: design for VBB (base divider voltage) about 1/3 VCC, VCB (or VCE) about 1/3 VCC, and IC*RC about 1/3 VCC. Stability constraints: VBB >> VBE and RE >> RB/(beta+1). Choose R1, R2 so the divider current is in the range 0.1*IE to IE.",
+    "condition": "Discrete BJT amplifier biased from a single supply VCC via base voltage divider R1/R2 with emitter resistor RE.",
+    "formula": "VBB ~ VCC/3; VCE ~ VCC/3; IC*RC ~ VCC/3; 0.1*IE <= I_divider <= IE; VBB >> VBE; RE >> RB/(beta+1)",
+    "values": {
+      "VBB": "VCC/3",
+      "VCE_or_VCB": "VCC/3",
+      "IC_RC_drop": "VCC/3",
+      "divider_current_range": "0.1*IE to IE"
+    },
+    "erc_rule": "Flag if base-divider Thevenin voltage deviates far from VCC/3, if VCE drop is far from VCC/3, or if divider current VCC/(R1+R2) is below 0.1*IE (bias becomes beta-sensitive).",
+    "tags": [
+      "BJT",
+      "biasing",
+      "voltage-divider",
+      "one-third-rule",
+      "amplifier",
+      "discrete-design"
+    ],
+    "source": {
+      "book": "Sedra/Smith Microelectronic Circuits 7e",
+      "section": "7.4 Biasing",
+      "pdf_page_index": 490,
+      "tier": "A"
+    }
+  },
+  {
+    "id": "bjt-bias-worked-example-7-12",
+    "type": "example",
+    "statement": "Worked application of the one-third rule: for VCC = 12 V and target IE = 1 mA (beta = 100), allocate VB = +4 V, giving VE = 4 - VBE ~ 3.3 V, so RE = 3.3 kOhm; with divider current 0.1*IE = 0.1 mA, R1 + R2 = 120 kOhm, yielding R2 = 40 kOhm and R1 = 80 kOhm.",
+    "condition": "Single-supply voltage-divider BJT bias, VCC = 12 V, IE = 1 mA, beta = 100.",
+    "values": {
+      "VCC": "12 V",
+      "IE": "1 mA",
+      "beta": 100,
+      "VB": "4 V",
+      "VE": "3.3 V",
+      "RE": "3.3 kOhm",
+      "divider_current": "0.1 mA",
+      "R1": "80 kOhm",
+      "R2": "40 kOhm"
+    },
+    "tags": [
+      "BJT",
+      "biasing",
+      "worked-example",
+      "voltage-divider",
+      "resistor-sizing"
+    ],
+    "source": {
+      "book": "Sedra/Smith Microelectronic Circuits 7e",
+      "section": "7.4 Biasing, Example 7.12",
+      "pdf_page_index": 491,
+      "tier": "A"
+    }
+  },
+  {
+    "id": "mosfet-classical-bias-one-third-rule",
+    "type": "component_rule",
+    "statement": "Classical MOSFET bias with drain resistor RD and source-degeneration resistor RS: choose RD and RS so that one-third of VDD drops across each of RD, the transistor (VDS), and RS. Book example: VDD = 15 V gives VD = +10 V and VS = +5 V; with ID = 0.5 mA, RD = RS = 10 kOhm.",
+    "condition": "Discrete MOSFET amplifier biased by fixed gate voltage (divider) plus source resistance RS from supply VDD.",
+    "formula": "V(RD) ~ VDD/3; VDS ~ VDD/3; V(RS) ~ VDD/3",
+    "values": {
+      "drop_across_RD": "VDD/3",
+      "VDS": "VDD/3",
+      "drop_across_RS": "VDD/3",
+      "example": "VDD=15V -> VD=+10V, VS=+5V; ID=0.5mA -> RD=RS=10 kOhm"
+    },
+    "erc_rule": "Flag if the drain-node or source-node DC voltages deviate substantially from 2*VDD/3 and VDD/3 respectively in a classical RD/RS-biased MOSFET stage.",
+    "tags": [
+      "MOSFET",
+      "biasing",
+      "one-third-rule",
+      "amplifier",
+      "discrete-design",
+      "resistor-sizing"
+    ],
+    "source": {
+      "book": "Sedra/Smith Microelectronic Circuits 7e",
+      "section": "7.4 Biasing (classical MOSFET bias example)",
+      "pdf_page_index": 486,
+      "tier": "A"
+    }
+  },
+  {
+    "id": "wien-bridge-oscillation-condition",
+    "type": "formula",
+    "statement": "Wien-bridge oscillator (noninverting op amp, gain 1 + R2/R1, with series/parallel RC feedback): oscillation frequency is w0 = 1/(CR); oscillation requires R2/R1 = 2 for unity loop gain, and in practice R2/R1 is chosen slightly greater than 2 to guarantee start-up (amplitude then limited by a nonlinear network).",
+    "condition": "Wien-bridge oscillator with equal R and C in the series and parallel arms of the feedback network.",
+    "formula": "w0 = 1/(C*R) [Eq. 18.12]; R2/R1 = 2 for oscillation [Eq. 18.13]; choose R2/R1 = 2 + delta (small delta) for start-up",
+    "values": {
+      "omega_0": "1/CR",
+      "gain_resistor_ratio": "R2/R1 = 2 (minimum); slightly > 2 to start"
+    },
+    "erc_rule": "In a Wien-bridge topology: fail if R2/R1 <= 2 (will not start) and warn if R2/R1 >> 2 without an amplitude-limiting network (heavy distortion).",
+    "tags": [
+      "oscillator",
+      "wien-bridge",
+      "op-amp",
+      "frequency",
+      "signal-generator"
+    ],
+    "source": {
+      "book": "Sedra/Smith Microelectronic Circuits 7e",
+      "section": "18.2.1 The Wien-Bridge Oscillator",
+      "pdf_page_index": 1417,
+      "tier": "A"
+    }
+  },
+  {
+    "id": "555-monostable-pulse-width-sedra",
+    "type": "formula",
+    "statement": "A 555 timer wired as a monostable multivibrator produces an output pulse of width T = CR*ln3, approximately 1.1*CR, set entirely by the external R and C (capacitor charges toward VCC until it reaches the internal threshold VTH = 2/3 VCC). (Independently corroborates the Floyd Digital Fundamentals entry: same 1.1·RC factor, here with the ln3 derivation.)",
+    "condition": "555 monostable configuration, external timing resistor R to VCC and capacitor C to ground.",
+    "formula": "T = C*R*ln(3) ~ 1.1*C*R [Eq. 18.41]",
+    "values": {
+      "pulse_width": "1.1*C*R",
+      "threshold": "VTH = (2/3)*VCC"
+    },
+    "tags": [
+      "555-timer",
+      "monostable",
+      "pulse-width",
+      "RC-timing",
+      "signal-generator"
+    ],
+    "source": {
+      "book": "Sedra/Smith Microelectronic Circuits 7e",
+      "section": "18.7.2 The 555 Circuit (monostable)",
+      "pdf_page_index": 1448,
+      "tier": "A"
+    }
+  },
+  {
+    "id": "555-astable-timing-and-duty-cycle",
+    "type": "formula",
+    "statement": "A 555 astable multivibrator with charge path RA+RB and discharge path RB oscillates between VTL = 1/3 VCC and VTH = 2/3 VCC with TH = 0.69*C*(RA+RB), TL = 0.69*C*RB, period T = 0.69*C*(RA+2RB), and duty cycle (RA+RB)/(RA+2RB). Duty cycle is always > 50% and approaches 50% only when RA << RB (at the cost of higher supply current).",
+    "condition": "Standard 555 astable configuration: RA from VCC to discharge pin, RB from discharge pin to the C node.",
+    "formula": "TH = C*(RA+RB)*ln2 ~ 0.69*C*(RA+RB) [18.43]; TL = C*RB*ln2 ~ 0.69*C*RB [18.45]; T = 0.69*C*(RA+2*RB) [18.46]; Duty = (RA+RB)/(RA+2*RB) [18.47]",
+    "values": {
+      "T_high": "0.69*C*(RA+RB)",
+      "T_low": "0.69*C*RB",
+      "period": "0.69*C*(RA+2RB)",
+      "duty_cycle": "(RA+RB)/(RA+2RB)",
+      "VTH": "(2/3)*VCC",
+      "VTL": "(1/3)*VCC",
+      "duty_limit": "> 0.5 always"
+    },
+    "erc_rule": "In a 555 astable: fail any request for duty cycle <= 50% with this standard topology; check chosen RA, RB, C reproduce the requested frequency via T = 0.69*C*(RA+2RB).",
+    "tags": [
+      "555-timer",
+      "astable",
+      "oscillator",
+      "duty-cycle",
+      "RC-timing",
+      "square-wave"
+    ],
+    "source": {
+      "book": "Sedra/Smith Microelectronic Circuits 7e",
+      "section": "18.7.3 An Astable Multivibrator Using the 555 IC",
+      "pdf_page_index": 1451,
+      "tier": "A"
+    }
+  }
+]

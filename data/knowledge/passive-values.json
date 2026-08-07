@@ -15,7 +15,7 @@
     "condition": "Choosing any commercial resistor value at 5% tolerance — the default for generic design.",
     "values": {"E24": [1.0, 1.1, 1.2, 1.3, 1.5, 1.6, 1.8, 2.0, 2.2, 2.4, 2.7, 3.0, 3.3, 3.6, 3.9, 4.3, 4.7, 5.1, 5.6, 6.2, 6.8, 7.5, 8.2, 9.1]},
     "tags": ["resistor", "standard", "value", "E24", "series", "tolerance"],
-    "source": {"book": "IEC 60063 (standard); Introductory Circuit Analysis 14th ed., Table 3.5; Sedra/Smith Microelectronic Circuits 7th ed., Appendix J", "section": "standard resistor values", "tier": "B"}
+    "source": {"book": "IEC 60063 (standard); Sedra/Smith Microelectronic Circuits 7th ed., Appendix J (values verified by extraction, pdf_page_index 1682); Introductory Circuit Analysis 14th ed., Table 3.5", "section": "standard resistor values", "pdf_page_index": 1682, "tier": "A"}
   },
   {
     "id": "led-series-resistor",

@@ -241,7 +241,7 @@ SKIDL의 force-directed 배치(`place.py`)와 maze/switchbox 배선(`route.py`)�
   2. `pin_absolute_position()` 구현 + 골든 레퍼런스 기준 단위 테스트.
   3. IR 스키마 → 넷리스트 생성기 → 자체 ERC(§8.1) → 단순 그리드 배치 → 스텁+라벨 이미터 → `kicad-cli sch erc` 게이트.
   4. 목표: 골든 레퍼런스와 동등한 회로를 파이프라인이 자동 생성 + ERC 통과. 이 단계는 아직 LLM 없이 결정론적 코드만으로 관통한다.
-- **Phase 2 — 부품 계층 + 다핀 IC 지원 (MVP 필수)** ✅: KiCad 10 심볼 파서, 멀티유닛 심볼(`_유닛_바디스타일`)·`extends` 상속 파싱(§5.2), §5.3 우선순위 기반 다중 라이브러리 인덱스(SQLite FTS5 — 270개 라이브러리/24,232심볼/830,761핀, 76초 빌드), 검색·핀 조회 API, 라이선스·provenance 기록, §6 기준으로 큐레이션한 지식 인덱스 구축(3단계 티어 추출 파이프라인, §6.2 — 1차분 10개 엔트리는 PEFI 원문 페이지를 PyMuPDF로 재검증하며 큐레이션, 2차분 Floyd/Sadiku/Sedra 진행 중).
+- **Phase 2 — 부품 계층 + 다핀 IC 지원 (MVP 필수)** ✅: KiCad 10 심볼 파서, 멀티유닛 심볼(`_유닛_바디스타일`)·`extends` 상속 파싱(§5.2), §5.3 우선순위 기반 다중 라이브러리 인덱스(SQLite FTS5 — 270개 라이브러리/24,232심볼/830,761핀, 76초 빌드), 검색·핀 조회 API, 라이선스·provenance 기록, §6 기준으로 큐레이션한 지식 인덱스 구축(3단계 티어 추출 파이프라인, §6.2 — 총 34개 엔트리: 1차분 PEFI 10개 + 2차분 Floyd 7개(555 공식·fan-out·미사용입력·로직레벨 호환표)/Sadiku 9개(op-amp 이득식·필터 컷오프)/Sedra 8개(PIV 마진·리플·1/3 바이어스 규칙·Wien-bridge), 전부 PyMuPDF로 원문 페이지 재검증 완료, 표 파손 항목은 Tier B로 정직하게 표기).
 - **Phase 3 — 회로 계층 + MCU ERC 확장 (MVP 필수)**: `RequirementSpec`/Circuit IR 계층·Bus·Net 연결, §8.2 확장 ERC 규칙 구현, 디커플링 배치 규칙, §7.5의 라벨 밀집 완화 휴리스틱 도입. 이 시점부터 MCU 회로가 결정론적 파이프라인만으로 ERC를 통과할 수 있어야 한다(아직 LLM 미통합).
 - **Phase 4 — 에이전트 통합**: `RequirementSpec` 정규화·승인 UI, §7.3 도구 호출 루프, JSON Schema/GBNF 강제 출력, ERC 실패 → JSON Patch 기반 수정 루프(§8.4). §10의 5종 골든 회로 전체를 프롬프트→생성 경로로 검증.
 - **Phase 5 — 통합 검증 및 MVP 완료**: §10의 5종 골든 회로 전체가 자체 ERC·KiCad ERC 0건, §11의 테스트 매트릭스 통과. 최종 승인 UI 완성.

@@ -1,0 +1,227 @@
+[
+  {
+    "id": "555-monostable-pulse-width",
+    "type": "formula",
+    "statement": "A 555 timer wired as a nonretriggerable one-shot produces an output pulse whose width is set by one external resistor and capacitor: tW = 1.1*R1*C1. Add a 0.01 uF decoupling capacitor from CONT (pin 5) to ground to keep noise off the trigger/threshold levels.",
+    "condition": "555 in monostable mode: R1 from VCC to DISCH(7)+THRESH(6), C1 from THRESH to GND, negative-going trigger on TRIG(2).",
+    "formula": "tW = 1.1 * R1 * C1",
+    "values": {
+      "control_pin_decoupling_cap": "0.01 uF (optional but recommended)",
+      "worked_example": "R1 = 2.2 kOhm, C1 = 0.01 uF gives tW = 24.2 us (Example 7-13)"
+    },
+    "tags": [
+      "555",
+      "monostable",
+      "one-shot",
+      "timer",
+      "pulse-width",
+      "RC"
+    ],
+    "source": {
+      "book": "Digital Fundamentals, 11th ed., Thomas L. Floyd",
+      "section": "7-5 One-Shots, 'The 555 Timer as a One-Shot', Equation 7-3, Figure 7-53, Example 7-13",
+      "pdf_page_index": 420,
+      "tier": "A"
+    }
+  },
+  {
+    "id": "555-astable-frequency-duty-cycle",
+    "type": "formula",
+    "statement": "A 555 timer in astable mode (THRESH tied to TRIG, C1 charging through R1+R2 and discharging through R2) oscillates at f = 1.44/((R1+2R2)*C1) with duty cycle (R1+R2)/(R1+2R2)*100%, which is always above 50% and approaches 50% only when R2 >> R1.",
+    "condition": "555 astable: R1 from VCC to DISCH(7), R2 from DISCH to THRESH(6)+TRIG(2), C1 from that node to GND; 0.01 uF decoupling on CONT(5).",
+    "formula": "f = 1.44/((R1 + 2*R2)*C1); tH = 0.7*(R1 + R2)*C1; tL = 0.7*R2*C1; duty = (R1 + R2)/(R1 + 2*R2) * 100%",
+    "values": {
+      "duty_cycle_limit": "> 50% in the basic circuit; near 50% requires R2 >> R1",
+      "worked_example": "R1 = 2.2 kOhm, R2 = 4.7 kOhm, C1 = 0.022 uF gives f = 5.64 kHz, duty = 59.5% (Example 7-14)"
+    },
+    "tags": [
+      "555",
+      "astable",
+      "oscillator",
+      "frequency",
+      "duty-cycle",
+      "RC"
+    ],
+    "source": {
+      "book": "Digital Fundamentals, 11th ed., Thomas L. Floyd",
+      "section": "7-6 The Astable Multivibrator, Equations 7-4 to 7-7, Figure 7-56, Example 7-14",
+      "pdf_page_index": 425,
+      "tier": "A"
+    }
+  },
+  {
+    "id": "555-astable-duty-below-50-diode",
+    "type": "component_rule",
+    "statement": "To get a 555 astable duty cycle below 50%, place a diode across R2 (anode toward DISCH) so C1 charges only through R1 and discharges only through R2; then duty = R1/(R1+R2)*100%, made < 50% by choosing R1 < R2.",
+    "condition": "555 astable circuit modified with diode D1 in parallel with R2 (Figure 7-59) and R1 < R2.",
+    "formula": "duty = R1/(R1 + R2) * 100%",
+    "values": {
+      "requirement": "R1 < R2 for duty < 50%"
+    },
+    "tags": [
+      "555",
+      "astable",
+      "duty-cycle",
+      "diode",
+      "component-selection"
+    ],
+    "source": {
+      "book": "Digital Fundamentals, 11th ed., Thomas L. Floyd",
+      "section": "7-6 The Astable Multivibrator, Equation 7-8, Figure 7-59",
+      "pdf_page_index": 425,
+      "tier": "A"
+    }
+  },
+  {
+    "id": "ttl-fanout-unit-loads",
+    "type": "formula",
+    "statement": "TTL fan-out in unit loads is IOL/IIL of the family, and the LOW-state sink current is the limiting factor: a 74LS gate (IOL = 8.0 mA, IIL = 0.4 mA) can drive at most 20 same-family inputs. CMOS (74HC) fan-out is not DC-limited but frequency-limited: each added input adds parallel input capacitance that lengthens charge/discharge times, so fewer loads allow higher maximum operating frequency.",
+    "condition": "Gate output driving multiple gate inputs of the same logic family.",
+    "formula": "fanout_unit_loads = IOL / IIL",
+    "values": {
+      "family": "74LS (legacy)",
+      "IOL": "8.0 mA",
+      "IIL": "0.4 mA",
+      "fanout": 20,
+      "cmos_note": "74HC/CMOS fan-out is capacitive and frequency-dependent; no fixed DC unit-load number is given"
+    },
+    "erc_rule": "For bipolar/TTL families, flag any net where the number of driven same-family inputs exceeds IOL/IIL (20 for 74LS); for CMOS-only nets, warn on high fan-out at high clock frequency instead.",
+    "tags": [
+      "fan-out",
+      "loading",
+      "TTL",
+      "74LS",
+      "CMOS",
+      "74HC",
+      "unit-load"
+    ],
+    "source": {
+      "book": "Digital Fundamentals, 11th ed., Thomas L. Floyd",
+      "section": "3-8 Fan-Out and Loading (p.168) and 15-1 Loading and Fan-Out (pp.861-863)",
+      "pdf_page_index": 168,
+      "tier": "A"
+    }
+  },
+  {
+    "id": "unused-input-termination",
+    "type": "component_rule",
+    "statement": "Never leave logic-gate inputs floating. For AND/NAND, tie unused inputs to VCC — through a 1.0 kOhm resistor for bipolar/TTL (CMOS can tie directly); for OR/NOR, tie unused inputs to ground; alternatively tie them to a used input of the same gate or to a spare gate output held at the required constant level. CMOS inputs especially must go to supply or ground because a floating CMOS input acquires electrostatic charge and floats to unpredictable levels.",
+    "condition": "Any gate input pin that is not driven by a signal.",
+    "values": {
+      "ttl_and_nand_pullup": "1.0 kOhm to VCC",
+      "or_nor": "direct to ground",
+      "cmos": "direct to VCC or GND, never open",
+      "tied_together_caveat": "on TTL OR/NOR each tied-together input counts as a separate LOW-state unit load; on AND/NAND all tied inputs count as one LOW-state unit load"
+    },
+    "erc_rule": "Flag any unconnected input pin on a logic IC. Accept: connection to VCC (via 1.0 kOhm for TTL AND/NAND), connection to GND (OR/NOR), or connection to another input/constant-level output.",
+    "tags": [
+      "unused-input",
+      "pull-up",
+      "floating-input",
+      "TTL",
+      "CMOS",
+      "ERC"
+    ],
+    "source": {
+      "book": "Digital Fundamentals, 11th ed., Thomas L. Floyd",
+      "section": "15-4 Practical Considerations in the Use of TTL, 'Unused TTL Inputs' / 'Inputs to VCC or Ground' (p.879); CMOS rule in 15-2 (p.868); summary in 3-8 (p.169)",
+      "pdf_page_index": 879,
+      "tier": "A"
+    }
+  },
+  {
+    "id": "logic-level-compatibility-cmos-ttl",
+    "type": "table",
+    "statement": "Worst-case logic levels: 5 V CMOS — VIL(max) 1.5 V, VIH(min) 3.5 V, VOL(max) 0.33 V, VOH(min) 4.4 V; 3.3 V CMOS — VIL(max) 0.8 V, VIH(min) 2 V, VOL(max) 0.4 V, VOH(min) 2.4 V; bipolar TTL — VIL(max) 0.8 V, VIH(min) 2 V, VOL(max) 0.4 V, VOH(min) 2.4 V. Noise margins follow as VNH = VOH(min) - VIH(min) and VNL = VIL(max) - VOL(max): 0.9 V/1.17 V for 5 V CMOS, 0.4 V/0.4 V for TTL.",
+    "condition": "Interfacing logic families on the same net, or computing noise margin for a driver-receiver pair.",
+    "formula": "VNH = VOH(min) - VIH(min); VNL = VIL(max) - VOL(max)",
+    "values": {
+      "cmos_5v": {
+        "VIL_max": "1.5 V",
+        "VIH_min": "3.5 V",
+        "VOL_max": "0.33 V",
+        "VOH_min": "4.4 V",
+        "VNH": "0.9 V",
+        "VNL": "1.17 V"
+      },
+      "cmos_3v3": {
+        "VIL_max": "0.8 V",
+        "VIH_min": "2 V",
+        "VOL_max": "0.4 V",
+        "VOH_min": "2.4 V"
+      },
+      "ttl_bipolar": {
+        "VIL_max": "0.8 V",
+        "VIH_min": "2 V",
+        "VOL_max": "0.4 V",
+        "VOH_min": "2.4 V",
+        "VNH": "0.4 V",
+        "VNL": "0.4 V"
+      }
+    },
+    "erc_rule": "For every cross-family driver-receiver pair require VOH(min,driver) >= VIH(min,receiver) and VOL(max,driver) <= VIL(max,receiver). This fails for a TTL output (VOH(min) = 2.4 V) driving a 5 V CMOS input (VIH(min) = 3.5 V), so flag TTL-to-5V-CMOS nets as needing a pull-up or HCT-type receiver.",
+    "tags": [
+      "logic-levels",
+      "VIH",
+      "VOL",
+      "noise-margin",
+      "CMOS",
+      "TTL",
+      "mixed-family",
+      "ERC"
+    ],
+    "source": {
+      "book": "Digital Fundamentals, 11th ed., Thomas L. Floyd",
+      "section": "15-1 Basic Operational Characteristics and Parameters, Figures 15-2/15-3, Equations 15-1/15-2, Example 15-1 (pp.856-859); same values in 3-8 (p.168)",
+      "pdf_page_index": 857,
+      "tier": "A"
+    }
+  },
+  {
+    "id": "74xx-family-output-drive-speed",
+    "type": "table",
+    "statement": "Output sink-current capability IOL by 74XX family: F 20 mA, LS 8 mA, ALS 8 mA, ABT (BiCMOS) 64 mA, HC 4 mA, AC 24 mA, AHC 8 mA, LV 12 mA, LVC 24 mA, ALVC 24 mA; gate propagation delays run F 3.3 ns, LS 10 ns, HC 7 ns, AHC 3.7 ns, LVC 4.3 ns. Use IOL when checking what a chosen family's output can drive (LEDs, terminations, mixed-family loads).",
+    "condition": "Selecting a 74XX logic family or checking whether a gate output can sink the load current on its net.",
+    "values": {
+      "IOL_mA": {
+        "F": 20,
+        "LS": 8,
+        "ALS": 8,
+        "ABT": 64,
+        "HC": 4,
+        "AC": 24,
+        "AHC": 8,
+        "LV": 12,
+        "LVC": 24,
+        "ALVC": 24
+      },
+      "tp_ns": {
+        "F": 3.3,
+        "LS": 10,
+        "ALS": 7,
+        "ABT": 3.2,
+        "HC": 7,
+        "AC": 5,
+        "AHC": 3.7,
+        "LV": 9,
+        "LVC": 4.3,
+        "ALVC": 3
+      }
+    },
+    "erc_rule": "Flag any net where total sunk current (LED + resistive + input loads) exceeds the driving family's IOL, e.g. more than 4 mA on a 74HC output.",
+    "tags": [
+      "74HC",
+      "74LS",
+      "IOL",
+      "drive-strength",
+      "propagation-delay",
+      "family-comparison"
+    ],
+    "source": {
+      "book": "Digital Fundamentals, 11th ed., Thomas L. Floyd",
+      "section": "15-5 Comparison of CMOS and TTL Performance, Table 15-1",
+      "pdf_page_index": 881,
+      "tier": "B"
+    }
+  }
+]

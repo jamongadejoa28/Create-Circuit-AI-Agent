@@ -1,0 +1,217 @@
+[
+  {
+    "id": "ideal-op-amp-analysis-conditions",
+    "type": "component_rule",
+    "statement": "For design/analysis, treat any op amp in a negative-feedback configuration as ideal: zero current into both input terminals (i1 = i2 = 0) and zero differential input voltage (v1 = v2). Negative feedback exists only when the output is fed back to the inverting terminal; the op amp must also be powered (V+ and V- supply pins connected) since output current returns through the supplies.",
+    "condition": "Op amp operating in the linear region with a feedback path from output to the inverting input",
+    "formula": "i1 = 0, i2 = 0; vd = v2 - v1 = 0 (so v1 = v2)",
+    "erc_rule": "Every op amp in a linear amplifier role must have (a) a feedback network connecting its output to its inverting input, and (b) both power-supply pins connected; the virtual-short (v+ = v-) and zero-input-current assumptions are only valid then",
+    "tags": [
+      "op-amp",
+      "ideal-op-amp",
+      "virtual-short",
+      "negative-feedback",
+      "analysis-assumptions"
+    ],
+    "source": {
+      "book": "Fundamentals of Electric Circuits, 7th International Student Edition (Alexander & Sadiku)",
+      "section": "5.3 Ideal Op Amp (Eqs. 5.5-5.7); 5.2 for feedback definition",
+      "pdf_page_index": 203,
+      "tier": "A"
+    }
+  },
+  {
+    "id": "op-amp-output-swing-saturation-limit",
+    "type": "component_rule",
+    "statement": "An op amp's output voltage magnitude cannot exceed its supply voltage; linear operation requires -VCC <= vo <= VCC, otherwise the output saturates at +VCC or -VCC. Check the computed output against the rails when choosing gain and supply.",
+    "condition": "Any op-amp circuit; check computed vo = A*vd (closed-loop: gain x input) against supply rails",
+    "formula": "-VCC <= vo <= VCC (linear region); vo = +VCC (positive saturation); vo = -VCC (negative saturation)",
+    "erc_rule": "Flag if |expected output voltage| = |closed-loop gain x max input| exceeds the connected supply voltage VCC — the stage will clip",
+    "tags": [
+      "op-amp",
+      "saturation",
+      "output-swing",
+      "supply-voltage",
+      "clipping"
+    ],
+    "source": {
+      "book": "Fundamentals of Electric Circuits, 7th International Student Edition (Alexander & Sadiku)",
+      "section": "5.2 Operational Amplifiers (Eq. 5.4, Fig. 5.5)",
+      "pdf_page_index": 201,
+      "tier": "A"
+    }
+  },
+  {
+    "id": "inverting-amplifier-closed-loop-gain",
+    "type": "formula",
+    "statement": "Inverting amplifier: input through R1 to the inverting input, feedback resistor Rf from inverting input to output, noninverting input grounded. Closed-loop gain is -Rf/R1, set entirely by the two external resistors.",
+    "condition": "Ideal op amp; vi drives inverting input via R1; Rf from inverting input to output; noninverting input at ground",
+    "formula": "vo = -(Rf/R1) * vi;  Av = vo/vi = -Rf/R1",
+    "values": {
+      "worked_example_5_3": "R1 = 10 kOhm, Rf = 25 kOhm -> gain = -2.5; vi = 0.5 V -> vo = -1.25 V, input-resistor current 50 uA"
+    },
+    "tags": [
+      "op-amp",
+      "inverting-amplifier",
+      "closed-loop-gain",
+      "gain-setting-resistors"
+    ],
+    "source": {
+      "book": "Fundamentals of Electric Circuits, 7th International Student Edition (Alexander & Sadiku)",
+      "section": "5.4 Inverting Amplifier (Eq. 5.9, Example 5.3)",
+      "pdf_page_index": 205,
+      "tier": "A"
+    }
+  },
+  {
+    "id": "noninverting-amplifier-gain-and-voltage-follower",
+    "type": "formula",
+    "statement": "Noninverting amplifier: input at the noninverting terminal, R1 from inverting input to ground, Rf from inverting input to output; gain is 1 + Rf/R1 (always positive, >= 1). With Rf = 0 (short) and/or R1 = infinity (open) the circuit becomes a unity-gain voltage follower (vo = vi), used as a high-input-impedance buffer to isolate cascaded stages and eliminate interstage loading.",
+    "condition": "Ideal op amp; vi applied directly to noninverting input; R1 from inverting input to ground; Rf from inverting input to output",
+    "formula": "vo = (1 + Rf/R1) * vi;  follower special case: vo = vi when Rf = 0 or R1 = infinite",
+    "values": {
+      "follower_gain": 1
+    },
+    "tags": [
+      "op-amp",
+      "noninverting-amplifier",
+      "voltage-follower",
+      "buffer",
+      "closed-loop-gain"
+    ],
+    "source": {
+      "book": "Fundamentals of Electric Circuits, 7th International Student Edition (Alexander & Sadiku)",
+      "section": "5.5 Noninverting Amplifier (Eqs. 5.11-5.12)",
+      "pdf_page_index": 207,
+      "tier": "A"
+    }
+  },
+  {
+    "id": "summing-amplifier-weighted-sum",
+    "type": "formula",
+    "statement": "Inverting summing amplifier: multiple inputs v1..vn each through their own resistor R1..Rn into the inverting node, one feedback resistor Rf; the output is the inverted weighted sum with each weight Rf/Rk, so per-input gain is set independently by that input's resistor.",
+    "condition": "Ideal op amp; all input resistors join at the inverting-input summing node (virtual ground); noninverting input grounded; Rf from summing node to output",
+    "formula": "vo = -( (Rf/R1)*v1 + (Rf/R2)*v2 + (Rf/R3)*v3 )  [extends to more inputs]",
+    "values": {
+      "worked_example_5_6": "Rf = 10 kOhm, R1 = 5 kOhm (v1 = 2 V), R2 = 2.5 kOhm (v2 = 1 V) -> vo = -(4 + 4) = -8 V"
+    },
+    "tags": [
+      "op-amp",
+      "summing-amplifier",
+      "weighted-sum",
+      "mixer",
+      "dac"
+    ],
+    "source": {
+      "book": "Fundamentals of Electric Circuits, 7th International Student Edition (Alexander & Sadiku)",
+      "section": "5.6 Summing Amplifier (Eq. 5.15, Example 5.6)",
+      "pdf_page_index": 209,
+      "tier": "A"
+    }
+  },
+  {
+    "id": "difference-amplifier-gain-and-balance-condition",
+    "type": "formula",
+    "statement": "Difference amplifier (v1 via R1 to inverting node with feedback R2; v2 via R3 to noninverting node with R4 to ground): general output is vo = R2(1+R1/R2)/(R1(1+R3/R4)) * v2 - (R2/R1) * v1. Common-mode rejection (vo = 0 when v1 = v2) requires the resistor-ratio balance R1/R2 = R3/R4, which reduces the output to vo = (R2/R1)(v2 - v1); with R2 = R1 and R3 = R4 it is a unity-gain subtractor vo = v2 - v1.",
+    "condition": "Ideal op amp; for common-mode rejection the ratios must satisfy R1/R2 = R3/R4",
+    "formula": "vo = (R2/R1)(v2 - v1) when R1/R2 = R3/R4; subtractor: vo = v2 - v1 when R2 = R1 and R3 = R4",
+    "values": {
+      "worked_practice_5_7": "gain 7.5 realized with R1 = R3 = 20 kOhm, R2 = R4 = 150 kOhm"
+    },
+    "erc_rule": "In a difference-amplifier topology, flag if R1/R2 != R3/R4 — common-mode signals will not be rejected",
+    "tags": [
+      "op-amp",
+      "difference-amplifier",
+      "subtractor",
+      "common-mode-rejection",
+      "resistor-matching"
+    ],
+    "source": {
+      "book": "Fundamentals of Electric Circuits, 7th International Student Edition (Alexander & Sadiku)",
+      "section": "5.7 Difference Amplifier (Eqs. 5.18-5.21)",
+      "pdf_page_index": 211,
+      "tier": "A"
+    }
+  },
+  {
+    "id": "passive-rc-first-order-filter-cutoff",
+    "type": "formula",
+    "statement": "First-order passive RC filter: taking the output across the capacitor of a series RC gives a low-pass (H = 1/(1+jwRC)); taking it across the resistor gives a high-pass (H = jwRC/(1+jwRC)). Both have cutoff (half-power) frequency wc = 1/(RC) rad/s — equivalently fc = wc/(2pi) = 1/(2*pi*R*C) Hz using w0 = 2*pi*f0 — where |H| falls to 1/sqrt(2) (70.71%) of maximum. Maximum gain of any passive filter is 1.",
+    "condition": "Series R and C driven by the source; output node choice (capacitor vs. resistor) selects low-pass vs. high-pass",
+    "formula": "wc = 1/(RC) [rad/s]; fc = 1/(2*pi*R*C) [Hz]; |H(wc)| = 1/sqrt(2); low-pass H(w) = 1/(1 + jwRC), high-pass H(w) = jwRC/(1 + jwRC)",
+    "values": {
+      "half_power_magnitude": 0.7071,
+      "passive_max_gain": 1
+    },
+    "tags": [
+      "rc-filter",
+      "low-pass",
+      "high-pass",
+      "cutoff-frequency",
+      "corner-frequency",
+      "first-order"
+    ],
+    "source": {
+      "book": "Fundamentals of Electric Circuits, 7th International Student Edition (Alexander & Sadiku)",
+      "section": "14.7.1-14.7.2 Passive Filters, Low-Pass and High-Pass (Eqs. 14.50-14.53)",
+      "pdf_page_index": 661,
+      "tier": "A"
+    }
+  },
+  {
+    "id": "active-first-order-filter-corner-frequency",
+    "type": "formula",
+    "statement": "Active first-order filters built on the inverting op-amp stage: low-pass uses Zi = Ri and Zf = Rf parallel Cf, giving dc gain -Rf/Ri and corner wc = 1/(Rf*Cf) (independent of Ri, so multiple inputs with different Ri can be summed without moving the corner); high-pass uses Zi = Ri in series with Ci and Zf = Rf, giving high-frequency gain -Rf/Ri and corner wc = 1/(Ri*Ci). Active filters can exceed unity gain but are practically limited to about 100 kHz.",
+    "condition": "Inverting op-amp configuration H = -Zf/Zi with one reactive element; ideal op amp",
+    "formula": "Low-pass: H(w) = -(Rf/Ri) * 1/(1 + jwCf*Rf), wc = 1/(Rf*Cf); High-pass: H(w) = -jwCi*Rf/(1 + jwCi*Ri), wc = 1/(Ri*Ci)",
+    "values": {
+      "practical_frequency_limit_hz": 100000
+    },
+    "tags": [
+      "active-filter",
+      "op-amp",
+      "low-pass",
+      "high-pass",
+      "corner-frequency",
+      "first-order"
+    ],
+    "source": {
+      "book": "Fundamentals of Electric Circuits, 7th International Student Edition (Alexander & Sadiku)",
+      "section": "14.8.1-14.8.2 Active Filters, First-Order Low-Pass/High-Pass (Eqs. 14.58-14.64)",
+      "pdf_page_index": 666,
+      "tier": "A"
+    }
+  },
+  {
+    "id": "op-amp-typical-parameter-ranges",
+    "type": "table",
+    "statement": "Practical op-amp parameter ranges (Table 5.1): open-loop gain A typically 10^5 to 10^8 (ideal: infinite), input resistance Ri typically 10^5 to 10^13 Ohm (ideal: infinite), output resistance Ro typically 10 to 100 Ohm (ideal: 0), supply voltage VCC typically 5 to 24 V. Concrete 741 values used in the book's worked example: A = 200,000, Ri = 2 MOhm, Ro = 50 Ohm.",
+    "condition": "Selecting or modeling a real (nonideal) op amp; use for sanity-checking part parameters",
+    "values": {
+      "open_loop_gain_range": "1e5 to 1e8",
+      "input_resistance_ohm": "1e5 to 1e13",
+      "output_resistance_ohm": "10 to 100",
+      "supply_voltage_v": "5 to 24",
+      "ua741_example": {
+        "open_loop_gain": 200000,
+        "input_resistance_ohm": 2000000,
+        "output_resistance_ohm": 50
+      }
+    },
+    "tags": [
+      "op-amp",
+      "typical-parameters",
+      "open-loop-gain",
+      "input-resistance",
+      "output-resistance",
+      "supply-voltage",
+      "741"
+    ],
+    "source": {
+      "book": "Fundamentals of Electric Circuits, 7th International Student Edition (Alexander & Sadiku)",
+      "section": "5.2 Operational Amplifiers, Table 5.1 (741 values in Example 5.1, pdf index 202)",
+      "pdf_page_index": 201,
+      "tier": "B"
+    }
+  }
+]
