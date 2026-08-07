@@ -148,18 +148,39 @@ def heuristic_place(
 
     columns = {"input": origin[0], "mid": origin[0] + 40.64, "ic": origin[0] + 86.36, "output": origin[0] + 137.16}
 
-    def stack(refs_units: list[tuple[str, int]], x: float) -> float:
-        """Stack items vertically at column x; returns the lowest y used."""
+    # Sheet discipline: wrap a column sideways before it runs off the
+    # bottom (board-scale drafts overflowed even A2). The paper picker in
+    # the emitter then only has to fit the wrapped width.
+    Y_LIMIT = 235.0
+
+    def stack(refs_units: list[tuple[str, int]], x: float) -> tuple[float, float]:
+        """Stack items at column x, wrapping into sub-columns at Y_LIMIT;
+        returns (lowest y used, rightmost x used)."""
+        col_ex = max(
+            (
+                _unit_extent(symbols[ir.components[ref].lib_id], unit)[0]
+                for ref, unit in refs_units
+            ),
+            default=15.24,
+        )
+        step_x = 2 * col_ex + 30.48  # clearance for stubs/labels/decap satellites
         y = origin[1]
+        cx = x
+        low = y
         for ref, unit in refs_units:
             sym = symbols[ir.components[ref].lib_id]
             _, ey = _unit_extent(sym, unit)
+            if y + 2 * ey > Y_LIMIT and y > origin[1]:
+                cx += step_x
+                y = origin[1]
             y += ey
-            placements.setdefault(ref, {})[unit] = Placement(x=_snap(x), y=_snap(y), rotation=0)
+            placements.setdefault(ref, {})[unit] = Placement(x=_snap(cx), y=_snap(y), rotation=0)
             y += ey + 7.62
-        return y
+            low = max(low, y)
+        return low, cx + col_ex
 
     max_y = origin[1]
+    next_col_x = 0.0
     for role in ("input", "mid", "ic", "output"):
         items = [
             (ref, unit)
@@ -168,9 +189,15 @@ def heuristic_place(
             for unit in symbols[ir.components[ref].lib_id].placed_units()
         ]
         if items:
-            max_y = max(max_y, stack(items, columns[role]))
+            # push the column start right if a previous column wrapped wide
+            x = max(columns[role], next_col_x)
+            low, right = stack(items, x)
+            max_y = max(max_y, low)
+            next_col_x = right + 25.4
 
-    # decoupling caps: directly beside the IC unit they serve, stacked if several
+    # decoupling caps: directly beside the IC unit they serve; slots wrap
+    # into satellite columns of 8 (a model once emitted 30 caps on one
+    # rail — the single-column stack ran 450mm off the sheet)
     per_target: dict[tuple[str, int], int] = {}
     for ref in sorted(r for r, role in roles.items() if role == "decouple"):
         ic, unit = decouple_target[ref]
@@ -179,9 +206,10 @@ def heuristic_place(
         ex, _ = _unit_extent(ic_sym, unit)
         slot = per_target.get((ic, unit), 0)
         per_target[(ic, unit)] = slot + 1
+        col, row = divmod(slot, 8)
         placements.setdefault(ref, {})[1] = Placement(
-            x=_snap(ic_place.x + ex + 10.16),
-            y=_snap(ic_place.y - 5.08 + slot * 15.24),
+            x=_snap(ic_place.x + ex + 10.16 + col * 20.32),
+            y=_snap(ic_place.y - 5.08 + row * 15.24),
             rotation=0,
         )
 
