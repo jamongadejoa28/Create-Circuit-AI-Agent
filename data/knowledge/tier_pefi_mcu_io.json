@@ -1,0 +1,399 @@
+[
+  {
+    "id": "gpio-transistor-relay-driver-flyback",
+    "type": "circuit_pattern",
+    "tier": 2,
+    "tags": [
+      "gpio",
+      "relay",
+      "inductive-load",
+      "flyback-diode",
+      "bjt",
+      "mosfet",
+      "dc-motor"
+    ],
+    "statement": "To switch a relay coil, DC motor, or other inductive DC load from a microcontroller digital output, drive an NPN BJT (or N-channel MOSFET) as a low-side switch and place a reverse-biased diode directly across the coil; the diode conducts before a large voltage can form when coil current is interrupted.",
+    "condition": "Load current exceeds the ~20 mA a GPIO can reliably source/sink; with the exception of some reed relays, very few relays switch with less than 50 mA, so a transistor stage is nearly always required for relays.",
+    "inputs": [
+      "MCU digital output pin (5 V logic assumed; adapt for 3.3 V)"
+    ],
+    "outputs": [
+      "Switched current through relay coil / DC motor / solenoid (relay contacts then switch the high-power circuit)"
+    ],
+    "required_blocks": [
+      "NPN bipolar transistor with base resistor (Fig. 13.21 topology) OR N-channel MOSFET (Fig. 13.22 topology) as low-side switch",
+      "Flyback diode reverse-biased across the coil; general-purpose 1N4004 recommended; diode peak-current capability must be >= the maximum current that was flowing through the coil",
+      "Coil supply rail sized for coil current (relay coil driven within its rated control voltage)"
+    ],
+    "design_notes": [
+      "The same schematic (Fig. 13.23) controls DC motors; driving the digital output with PWM controls motor power/speed via duty cycle",
+      "All components must be selected according to current and voltage ratings",
+      "For bidirectional motor control use an H-bridge instead; IC H-bridges such as TB6612FNG suit motor currents under a couple of amps and often add thermal shutdown",
+      "For AC-actuated coils this diode approach does NOT work (see ac-coil-rc-snubber entry)"
+    ],
+    "values": {
+      "gpio_reliable_current": "20 mA",
+      "min_typical_relay_switch_current": "50 mA",
+      "flyback_diode": "1N4004"
+    },
+    "source": {
+      "book": "Practical Electronics for Inventors, 4th Edition",
+      "section": "13.5.3 High-Power Digital Outputs — Relays and Other Inductive Loads; 3.4.2/3.4.3 Relay notes and Relay Driver",
+      "pdf_page_index": 1369,
+      "pdf_page_indices": [
+        1368,
+        1369,
+        1370,
+        482,
+        486
+      ],
+      "tier": "A"
+    }
+  },
+  {
+    "id": "button-input-pullup-debounce",
+    "type": "circuit_pattern",
+    "tier": 2,
+    "tags": [
+      "gpio",
+      "switch",
+      "button",
+      "pull-up",
+      "debounce",
+      "input-conditioning"
+    ],
+    "statement": "Wire a pushbutton between a digital input and GND with a pull-up resistor to the supply, so the pin reads HIGH until the switch closes and LOW when pressed (inverted logic); debounce the input, normally in software with a lockout period after the first transition.",
+    "condition": "Any mechanical switch or button feeding an MCU digital input at 5 V logic (adapt values for 3.3 V).",
+    "inputs": [
+      "Mechanical switch/button contact to GND"
+    ],
+    "outputs": [
+      "Debounced logic level on MCU digital input (LOW = pressed for pull-up wiring)"
+    ],
+    "required_blocks": [
+      "Pull-up resistor: 1 kOhm for a normally-open switch (draws 5 mA only while pressed); 10 kOhm for a normally-closed switch (current flows continually); values as low as 270 Ohm advocated for noisy environments",
+      "Optional: use MCU internal pull-ups (typically 20 k to 40 kOhm on ATmega/ATtiny) when environment is quiet and leads are short",
+      "Software debounce: act on first transition, then ignore transitions until a debounce period elapses (book example: debouncePeriod = 100 with millis() tick, i.e. 100 ms)"
+    ],
+    "design_notes": [
+      "Pull-up value is a compromise between noise immunity and current consumption; in a noisy environment or with long switch leads, a strong external pull-up beats the weak 20-40 kOhm internal one",
+      "Swapping switch and resistor gives a pull-down wiring where a closed switch reads HIGH",
+      "Hardware debounce (e.g., a monostable that ignores subsequent pulses) is possible but software debounce reduces component count",
+      "For many buttons, a resistor ladder into one analog input saves pins; decode using value bands, not exact ADC values, because of resistor tolerance and supply variation"
+    ],
+    "values": {
+      "pullup_no_switch": "1 kOhm (5 mA when pressed)",
+      "pullup_nc_switch": "10 kOhm",
+      "noisy_environment_pullup": "270 Ohm",
+      "internal_pullup": "20-40 kOhm",
+      "debounce_period": "100 ms"
+    },
+    "source": {
+      "book": "Practical Electronics for Inventors, 4th Edition",
+      "section": "13.5.1 Switches (Single Switches, Multiple Switches to One Analog Input, Debouncing)",
+      "pdf_page_index": 1361,
+      "pdf_page_indices": [
+        1361,
+        1362,
+        1363,
+        1365,
+        1366
+      ],
+      "tier": "A"
+    }
+  },
+  {
+    "id": "bjt-vs-mosfet-load-switch-selection",
+    "type": "selection_guidance",
+    "tier": 3,
+    "tags": [
+      "bjt",
+      "mosfet",
+      "transistor-choice",
+      "gpio",
+      "load-driving",
+      "logic-level"
+    ],
+    "statement": "When boosting a GPIO to drive a high-power load, MOSFETs usually need no gate resistor and have exceptionally low drain-source on-resistance, letting a small MOSFET control quite big loads; but the gate is capacitive and, critically, the gate threshold voltage must sit well below the logic level or the device never turns on.",
+    "condition": "Load exceeds the ~20 mA reliable GPIO drive and a discrete transistor switch (Fig. 13.21 BJT vs Fig. 13.22 MOSFET) must be chosen.",
+    "conditions": [
+      "Load > ~20 mA GPIO capability: use either BJT (with base resistor) or MOSFET low-side switch",
+      "Large load current with minimal switch loss: prefer MOSFET (exceptionally low on-resistance, high off-resistance)",
+      "5 V (or lower) gate drive with a high-power MOSFET: select parts described as 'logic-level' MOSFETs, meaning gate threshold significantly less than 5 V",
+      "Strict adherence to design rules: add a gate resistor of around 1 kOhm to limit gate-charging inrush"
+    ],
+    "tradeoffs": [
+      "MOSFET: for most applications no gate resistor is needed; BJT always needs a base resistor",
+      "MOSFET gate is a capacitive load: inrush current on pin state changes is very high but very brief; microcontrollers generally cope",
+      "Small MOSFET can control big loads thanks to low Rds(on); equivalent BJT dissipates more"
+    ],
+    "failure_modes": [
+      "N-channel MOSFET with 6 V gate threshold will not turn on from a 5 V pin — common trap with high-power (non-logic-level) MOSFETs",
+      "Omitting a gate resistor leaves the GPIO exposed to the brief high gate-charging inrush (usually tolerated, violates strict design rules)"
+    ],
+    "values": {
+      "gate_resistor": "~1 kOhm",
+      "nonworking_example": "Vgs(th) 6 V at 5 V gate",
+      "logic_level_requirement": "gate threshold significantly < 5 V"
+    },
+    "source": {
+      "book": "Practical Electronics for Inventors, 4th Edition",
+      "section": "13.5.3 High-Power Digital Outputs",
+      "pdf_page_index": 1369,
+      "pdf_page_indices": [
+        1368,
+        1369
+      ],
+      "tier": "A"
+    }
+  },
+  {
+    "id": "missing-flyback-diode-inductive-spike",
+    "type": "failure_mode",
+    "tier": 3,
+    "tags": [
+      "flyback-diode",
+      "inductive-spike",
+      "relay",
+      "transistor-damage",
+      "transient-suppression"
+    ],
+    "statement": "If current through a relay coil, solenoid, or motor is abruptly interrupted by a mechanical or transistor switch without a transient suppressor, the collapsing magnetic field (V = L dI/dt) produces voltage spikes — a couple hundred volts even from small supplies, and as high as 1000 V — that zap transistors and switches, cause arcing that degrades switch contacts, and hammer the relay's own contacts.",
+    "condition": "Inductive load (relay/solenoid/motor coil) switched off with no reverse-biased diode (DC) or RC/TVS/MOV suppressor across the coil.",
+    "consequence": "Damage or destruction of the switching transistor or neighboring devices, arcing and contact degradation, erratic operation; can even shock a person touching the switch.",
+    "values": {
+      "typical_spike": "up to a couple hundred volts with small supply voltages",
+      "worst_case_spike": "as high as 1000 V"
+    },
+    "design_notes": [
+      "Fix for DC coils: reverse-biased diode (e.g., 1N4004) across the coil, peak-current rated for the full coil current",
+      "The interrupting device need not be a switch — transistors and thyristors interrupting coil current cause the same spike"
+    ],
+    "source": {
+      "book": "Practical Electronics for Inventors, 4th Edition",
+      "section": "2.24.12 Voltage Spikes Due to Switching; 3.4.2 A Few Notes about Relays",
+      "pdf_page_index": 482,
+      "pdf_page_indices": [
+        243,
+        481,
+        482
+      ],
+      "tier": "A"
+    }
+  },
+  {
+    "id": "gpio-pin-current-limits-atmega",
+    "type": "device_rule",
+    "tier": 1,
+    "tags": [
+      "gpio",
+      "current-limit",
+      "arduino",
+      "atmega328",
+      "derating"
+    ],
+    "statement": "Budget only about 20 mA of reliable source or sink current per microcontroller digital output; Arduino (ATmega) pins handle up to 40 mA per pin with a 200 mA maximum per chip, and these figures should be derated by 25 percent for a production product. Any heavier load (relay, high-power LED) requires a transistor stage.",
+    "condition": "Sizing loads connected directly to MCU digital output pins (ATmega/Arduino class, 5 V).",
+    "values": {
+      "reliable_per_pin": "20 mA",
+      "arduino_max_per_pin": "40 mA",
+      "arduino_max_per_chip": "200 mA",
+      "production_derating": "25 percent"
+    },
+    "design_notes": [
+      "Atmel states the chip copes with the absolute maximum ratings as published (already derated), but the 25 percent production derating is still the book's recommendation"
+    ],
+    "source": {
+      "book": "Practical Electronics for Inventors, 4th Edition",
+      "section": "13.5.3 High-Power Digital Outputs",
+      "pdf_page_index": 1368,
+      "tier": "A"
+    }
+  },
+  {
+    "id": "level-shift-5v-3v3-selection",
+    "type": "selection_guidance",
+    "tier": 3,
+    "tags": [
+      "level-shifting",
+      "3v3",
+      "5v",
+      "ttl-serial",
+      "spi",
+      "i2c",
+      "1-wire"
+    ],
+    "statement": "Choose the level-conversion method by line direction: unidirectional lines (TTL serial, SPI) from a 5 V output into a 3.3 V input need only a resistor voltage divider, a 3.3 V output can drive a 5 V input directly, but bidirectional/mode-changing lines (I2C, 1-Wire) need a level-shifter IC.",
+    "condition": "Interfacing a 5 V microcontroller with 3.3 V (or 1.8 V) devices over serial/bus lines; many 3.3 V devices are not 5 V tolerant.",
+    "conditions": [
+      "5 V Tx output into 3.3 V device input: resistor voltage divider required (Fig. 13.36) to prevent damage",
+      "3.3 V Tx output into 5 V MCU Rx input: connect directly — a 5 V input sees anything over about 2.5 V as logic high",
+      "I2C or 1-Wire (pins switch between input and output): use a level-shifting IC such as TXS0102; alternatives MAX3372, PCA9509, PCA9306"
+    ],
+    "tradeoffs": [
+      "Resistor divider: two passives, but only valid when the line direction never changes",
+      "Level-shifter IC: handles bidirectional lines and two channels (TXS0102 ideal for I2C) at the cost of an extra IC"
+    ],
+    "failure_modes": [
+      "Driving a non-5V-tolerant 3.3 V input straight from a 5 V Tx damages the 3.3 V device",
+      "A fixed divider on an I2C/1-Wire line breaks when the pin changes mode from input to output"
+    ],
+    "values": {
+      "5v_input_high_threshold": "about 2.5 V",
+      "level_shifter_ics": "TXS0102, MAX3372, PCA9509, PCA9306"
+    },
+    "source": {
+      "book": "Practical Electronics for Inventors, 4th Edition",
+      "section": "13.5.6 Level Conversion",
+      "pdf_page_index": 1382,
+      "pdf_page_indices": [
+        1382,
+        1383
+      ],
+      "tier": "A"
+    }
+  },
+  {
+    "id": "adc-input-divider-zener-protection",
+    "type": "circuit_pattern",
+    "tier": 2,
+    "tags": [
+      "adc",
+      "analog-input",
+      "voltage-divider",
+      "zener",
+      "overvoltage-protection"
+    ],
+    "statement": "To measure a voltage above the MCU analog-input range, scale it with a two-resistor divider and clamp the ADC pin with a zener diode for protection; for a 0-50 V input into a 5 V ADC the divider ratio is 1:11 (not 1:10).",
+    "condition": "Measured voltage exceeds the microcontroller analog input range (example given: source beyond 0-10 V up to 50 V, 5 V ADC) or may transiently exceed the expected range.",
+    "inputs": [
+      "External DC voltage, 0 to 50 V in the book's example"
+    ],
+    "outputs": [
+      "0-5 V scaled voltage into MCU analog input, clamped against overvoltage"
+    ],
+    "required_blocks": [
+      "Two-resistor voltage divider, ratio 1:11 for 50 V full scale into 5 V (remember it is 1:11, not 1:10)",
+      "Zener diode (5.1 V class) across the ADC input as overvoltage protection (Fig. 13.20)"
+    ],
+    "design_notes": [
+      "The zener starts to conduct before 5.1 V, degrading reading linearity near full scale — this is why the usable input range is labeled 0 to 50 V rather than 0 to 55 V",
+      "Purely resistive sensors (LDRs, thermistors) instead form one leg of a potential divider to produce the ADC voltage"
+    ],
+    "values": {
+      "divider_ratio": "1:11",
+      "zener_knee": "conducts before 5.1 V",
+      "labeled_range": "0-50 V instead of 0-55 V"
+    },
+    "source": {
+      "book": "Practical Electronics for Inventors, 4th Edition",
+      "section": "13.5.2 Analog Inputs",
+      "pdf_page_index": 1367,
+      "pdf_page_indices": [
+        1366,
+        1367
+      ],
+      "tier": "A"
+    }
+  },
+  {
+    "id": "led-display-per-segment-resistors",
+    "type": "device_rule",
+    "tier": 1,
+    "tags": [
+      "led",
+      "seven-segment",
+      "current-limiting",
+      "multiplexing",
+      "gpio"
+    ],
+    "statement": "In a common-cathode LED display, drive each segment anode from its own MCU pin through a separate current-limiting resistor; never use one resistor on the common pin, because total current is then fixed no matter how many LEDs are lit and the display dims as more segments illuminate.",
+    "condition": "Driving multi-LED packages (seven-segment or matrix displays) from microcontroller pins.",
+    "values": {
+      "multiplexed_common_current": "potentially eight LEDs at once — too much for most microcontroller pins"
+    },
+    "design_notes": [
+      "When multiplexing multi-digit displays, switch each digit's common cathode through a transistor, since the combined current of up to eight lit LEDs exceeds MCU pin capability",
+      "Charlieplexing (n pins drive n^2 - n LEDs, e.g., 4 pins -> 12 LEDs) relies on boosted peak LED currents at low duty cycle; if the microcontroller freezes mid-refresh, the LEDs could burn out"
+    ],
+    "source": {
+      "book": "Practical Electronics for Inventors, 4th Edition",
+      "section": "13.5.7 LED Display Interfaces",
+      "pdf_page_index": 1384,
+      "pdf_page_indices": [
+        1384,
+        1385,
+        1386
+      ],
+      "tier": "A"
+    }
+  },
+  {
+    "id": "relay-coil-drive-voltage-window",
+    "type": "device_rule",
+    "tier": 1,
+    "tags": [
+      "relay",
+      "coil",
+      "drive-voltage",
+      "coil-resistance"
+    ],
+    "statement": "Drive a relay coil to at least within +/-25 percent of its specified control-voltage rating: too much voltage may damage or destroy the magnetic coil, too little may fail to trip the relay or make it flip back and forth erratically.",
+    "condition": "Selecting supply/driver for any electromechanical relay coil.",
+    "values": {
+      "voltage_window": "+/-25 percent of rated control voltage",
+      "typical_dc_coil_ratings": "6, 12, 24 V DC with coil resistances about 40, 160, 650 Ohm respectively",
+      "typical_mechanical_relay_switching": "10-100 ms, contact ratings about 2-15 A",
+      "reed_relay": "0.2-2 ms switching, coil resistance around 250-2000 Ohm, excitation 5/6/12/24 V DC"
+    },
+    "design_notes": [
+      "Coil resistance lets the synthesis agent compute coil current (e.g., 12 V / 160 Ohm = tens of mA) to size the driver transistor and flyback diode",
+      "Reed and solid-state relays are typically limited to SPST switching and tend to be damaged by power surges; mechanical relays offer SPST/SPDT/DPDT arrangements"
+    ],
+    "source": {
+      "book": "Practical Electronics for Inventors, 4th Edition",
+      "section": "3.4.1 Specific Kinds of Relays; 3.4.2 A Few Notes about Relays",
+      "pdf_page_index": 481,
+      "pdf_page_indices": [
+        476,
+        477,
+        479,
+        480,
+        481
+      ],
+      "tier": "A"
+    }
+  },
+  {
+    "id": "ac-coil-rc-snubber",
+    "type": "device_rule",
+    "tier": 1,
+    "tags": [
+      "relay",
+      "ac-coil",
+      "rc-snubber",
+      "transient-suppression"
+    ],
+    "statement": "For an AC-driven relay coil a flyback diode does not work (it conducts on alternate half-cycles, and two reverse-parallel diodes block the coil entirely); instead place a series RC network across the coil — R = 100 Ohm and C = 0.05 uF works fine for most small loads driven from the power line.",
+    "condition": "Suppressing switching transients on AC-actuated relay or transformer coils.",
+    "values": {
+      "snubber_r": "100 Ohm",
+      "snubber_c": "0.05 uF"
+    },
+    "design_notes": [
+      "The capacitor absorbs excess charge and the resistor controls its discharge",
+      "Rate both R and C for a transient current as large as the typical coil current; the capacitor must be rated for AC line voltage",
+      "Discrete suppressors (bidirectional TVS, MOV) can replace the RC network"
+    ],
+    "source": {
+      "book": "Practical Electronics for Inventors, 4th Edition",
+      "section": "3.4.2 A Few Notes about Relays — AC-Driven Coil; 3.4.3 AC-Actuated Switch",
+      "pdf_page_index": 483,
+      "pdf_page_indices": [
+        483,
+        485
+      ],
+      "tier": "A"
+    }
+  }
+]

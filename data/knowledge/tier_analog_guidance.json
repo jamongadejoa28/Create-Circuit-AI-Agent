@@ -1,0 +1,351 @@
+[
+  {
+    "id": "single-opamp-difference-amplifier",
+    "type": "circuit_pattern",
+    "tier": 2,
+    "statement": "A single op amp with R1/R2 on the inverting path and an R3/R4 divider on the noninverting input acts as a difference amplifier with vO = (R2/R1)(vI2 - vI1) provided R4/R3 = R2/R1 (usually implemented as R3 = R1, R4 = R2). Differential input resistance is Rid = 2R1.",
+    "inputs": [
+      "vI1 (into R1, inverting path)",
+      "vI2 (into R3/R4 divider, noninverting path)"
+    ],
+    "outputs": [
+      "vO = (R2/R1)(vI2 - vI1)"
+    ],
+    "required_blocks": [
+      "1x op amp",
+      "R1 from vI1 to inverting input",
+      "R2 feedback from output to inverting input",
+      "R3 from vI2 to noninverting input",
+      "R4 from noninverting input to ground, with R4/R3 = R2/R1"
+    ],
+    "design_notes": [
+      "Design example (Sedra Ex. D2.16): input resistance 20 kohm and gain 10 -> R1 = R3 = 10 kohm, R2 = R4 = 100 kohm.",
+      "Drawback: large differential gain forces R1 small, so Rid = 2R1 becomes low; gain cannot be varied without changing two resistor ratios simultaneously.",
+      "Resistor-ratio matching sets CMRR; use the instrumentation amplifier when high input resistance or adjustable gain is required."
+    ],
+    "condition": "Fixed-gain subtraction of two signals when source impedances are low compared with R1/R3 and the required gain is known at design time.",
+    "tags": [
+      "op-amp",
+      "difference-amplifier",
+      "subtractor",
+      "cmrr",
+      "analog-front-end"
+    ],
+    "source": {
+      "book": "Sedra/Smith Microelectronic Circuits 7e",
+      "section": "2.4.1 (Fig. 2.16, Eqs. 2.15-2.17, 2.20)",
+      "pdf_page_index": 107,
+      "tier": "A"
+    }
+  },
+  {
+    "id": "difference-amp-resistor-mismatch-finite-cmrr",
+    "type": "failure_mode",
+    "tier": 3,
+    "statement": "If the resistor ratios of a single-op-amp difference amplifier are mismatched (R4/R3 != R2/R1), the common-mode gain Acm = (R4/(R4+R3))(1 - (R2/R1)(R3/R4)) becomes nonzero and CMRR is finite, so common-mode input appears at the output. With 1%-tolerance resistors in a gain-100 design (R1 = R3 = 2 kohm, R2 = R4 = 200 kohm), worst-case Acm = 0.04 V/V and CMRR drops to 68 dB.",
+    "condition": "Any single-op-amp difference amplifier built from discrete tolerance-limited resistors, especially with large common-mode input (e.g., shunt sensing or transducer lines carrying interference).",
+    "consequence": "Common-mode voltage leaks to the output as error; a 1% resistor set limits worst-case CMRR to 68 dB at Ad = 100 (40 dB).",
+    "values": {
+      "example_Ad": "100 V/V (40 dB)",
+      "resistors": "R1=R3=2 kohm, R2=R4=200 kohm",
+      "tolerance": "1%",
+      "worst_case_Acm": "0.04 V/V",
+      "worst_case_CMRR": "68 dB"
+    },
+    "tags": [
+      "difference-amplifier",
+      "cmrr",
+      "resistor-tolerance",
+      "matching"
+    ],
+    "source": {
+      "book": "Sedra/Smith Microelectronic Circuits 7e",
+      "section": "2.4.1 (Eq. 2.19, Exercise 2.15)",
+      "pdf_page_index": 110,
+      "tier": "A"
+    }
+  },
+  {
+    "id": "three-opamp-instrumentation-amplifier",
+    "type": "circuit_pattern",
+    "tier": 2,
+    "statement": "The three-op-amp instrumentation amplifier uses two noninverting input buffers sharing one floating gain resistor 2R1 (each with feedback R2), followed by a unity- or fixed-gain difference amplifier (R3, R4). Overall differential gain is Ad = (R4/R3)(1 + R2/R1), input resistance is ideally infinite at both inputs, and gain is set by the single resistor 2R1.",
+    "inputs": [
+      "vI1, vI2: small differential signal possibly riding on a large common-mode voltage"
+    ],
+    "outputs": [
+      "vO = (R4/R3)(1 + R2/R1)(vI2 - vI1)"
+    ],
+    "required_blocks": [
+      "2x op amps A1, A2 as first-stage buffers with gain, sharing floating resistor 2R1 between their inverting inputs",
+      "2x R2 feedback resistors (first stage)",
+      "1x op amp A3 with R3/R3/R4/R4 as second-stage difference amplifier",
+      "Optional: 2R1 = fixed R1f in series with pot R1v for adjustable gain"
+    ],
+    "design_notes": [
+      "First stage amplifies the differential signal by (1 + R2/R1) while passing common mode at unity gain (no current flows in 2R1 for common-mode input), easing the CMRR burden on the second stage.",
+      "Put the bulk of the gain in the first stage; design the second stage for gain 1 (R4 = R3).",
+      "Proper operation does not require the two R2 resistors to match (mismatch only slightly alters Ad, Eq. 2.23).",
+      "Integrated single-package instrumentation amplifiers implementing this topology are widely available; prefer them for portable/medical-grade precision front ends."
+    ],
+    "condition": "Amplifying small differential signals (e.g., 1-mV transducer output) in the presence of large common-mode interference (e.g., 1 V on the leads), when high input resistance and single-resistor gain adjustment are required.",
+    "tags": [
+      "instrumentation-amplifier",
+      "op-amp",
+      "differential",
+      "cmrr",
+      "sensor-front-end"
+    ],
+    "source": {
+      "book": "Sedra/Smith Microelectronic Circuits 7e",
+      "section": "2.4.2 (Fig. 2.20b, Eq. 2.22)",
+      "pdf_page_index": 112,
+      "tier": "A"
+    }
+  },
+  {
+    "id": "inamp-grounded-node-common-mode-saturation",
+    "type": "failure_mode",
+    "tier": 3,
+    "statement": "If the node between the two first-stage gain resistors of a three-op-amp instrumentation amplifier is grounded (Fig. 2.20a variant) instead of left floating, the input common-mode voltage is amplified by the same factor (1 + R2/R1) as the differential signal; the first-stage outputs can then saturate the op amps, and even without saturation the second stage must reject much larger common-mode signals, so overall CMRR is inevitably reduced. The grounded variant also requires perfectly matched first-stage channels and two simultaneously varied resistors to change gain.",
+    "condition": "Three-op-amp in-amp first stage with the shared gain-resistor midpoint tied to ground, operated with nonzero common-mode input.",
+    "consequence": "Op-amp saturation at the first-stage outputs and/or degraded overall CMRR; remedy is the standard wiring with one floating 2R1 resistor.",
+    "tags": [
+      "instrumentation-amplifier",
+      "common-mode",
+      "saturation",
+      "cmrr",
+      "topology-error"
+    ],
+    "source": {
+      "book": "Sedra/Smith Microelectronic Circuits 7e",
+      "section": "2.4.2 (Fig. 2.20a discussion, drawbacks 1-3)",
+      "pdf_page_index": 112,
+      "tier": "A"
+    }
+  },
+  {
+    "id": "select-inamp-vs-single-opamp-difference-amp",
+    "type": "selection_guidance",
+    "tier": 3,
+    "statement": "Choose between the single-op-amp difference amplifier and the three-op-amp instrumentation amplifier based on source impedance, required gain adjustability, and common-mode magnitude relative to the differential signal.",
+    "conditions": [
+      "Use the single-op-amp difference amplifier for fixed gain with low source impedance (its Rid = 2R1 loads the source).",
+      "Use the instrumentation amplifier when the source impedance is high or unequal, since its buffered inputs give ideally infinite input resistance at both terminals.",
+      "Use the instrumentation amplifier when gain must be adjustable: one external resistor (2R1, or RG in Sadiku's Av = 1 + 2R/RG form) sets gain without disturbing matching.",
+      "Use the instrumentation amplifier for small differential signals on large common-mode interference, e.g., a 1-mV transducer signal with about 1 V of interference on each lead (Sedra 2.4 example)."
+    ],
+    "tradeoffs": [
+      "Difference amp: 1 op amp and 4 resistors, but Rid = 2R1 shrinks as gain (R2/R1) rises, and varying gain requires changing two matched ratios simultaneously.",
+      "In-amp: 3 op amps and 7 resistors, but first stage amplifies only the differential signal (common mode passes at unity), improving effective CMRR of the chain.",
+      "In-amp gain formula Ad = (R4/R3)(1 + R2/R1); commercial single-package IAs (e.g., LH0036 cited by Sadiku) span gain 1 to 1000 with RG from 100 ohm to 10 kohm."
+    ],
+    "failure_modes": [
+      "Either topology: resistor-ratio mismatch makes Acm nonzero and CMRR finite (1% resistors -> worst-case 68 dB at gain 100).",
+      "In-amp with grounded gain-resistor midpoint: common mode amplified -> op-amp saturation, reduced CMRR.",
+      "Difference amp at high gain: low input resistance loads high-impedance sources and degrades accuracy."
+    ],
+    "condition": "Selecting the differential front-end topology for sensor, bridge, or shunt-voltage measurement in a larger design.",
+    "tags": [
+      "selection",
+      "instrumentation-amplifier",
+      "difference-amplifier",
+      "input-impedance",
+      "cmrr"
+    ],
+    "source": {
+      "book": "Sedra/Smith Microelectronic Circuits 7e (with Sadiku FEC 7e Sec. 5.10.2 gain form)",
+      "section": "2.4.1-2.4.2",
+      "pdf_page_index": 109,
+      "tier": "A"
+    }
+  },
+  {
+    "id": "worked-inamp-variable-gain-2-to-1000",
+    "type": "worked_design",
+    "tier": 4,
+    "statement": "Sedra Example 2.3 designs a three-op-amp instrumentation amplifier whose gain is adjustable from 2 to 1000 using a 100-kohm potentiometer as part of the first-stage gain resistor.",
+    "problem": "Design the in-amp of Fig. 2.20(b) for a gain variable over 2 to 1000 using a 100-kohm pot.",
+    "assumptions": [
+      "Ideal op amps.",
+      "All required gain is placed in the first stage; second stage set to gain 1.",
+      "All second-stage resistors set to a convenient equal value of 10 kohm."
+    ],
+    "steps": [
+      "Implement 2R1 as fixed R1f in series with pot resistance R1v (0 to 100 kohm).",
+      "Impose 1 + 2R2/R1f = 1000 (maximum gain at pot = 0).",
+      "Impose 1 + 2R2/(R1f + 100 kohm) = 2 (minimum gain at pot = 100 kohm).",
+      "Solve simultaneously: R1f = 100.2 ohm, R2 = 50.050 kohm."
+    ],
+    "result": "Exact values R1f = 100.2 ohm and R2 = 50.050 kohm; practical standard 1%-tolerance metal-film choices R1f = 100 ohm and R2 = 49.9 kohm cover approximately the required 2-1000 gain range; second-stage resistors all 10 kohm.",
+    "condition": "Wide-range single-knob gain adjustment in an in-amp; R1f is mandatory in series with the pot to limit maximum gain (pot at zero must not short the gain resistor).",
+    "tags": [
+      "instrumentation-amplifier",
+      "worked-design",
+      "variable-gain",
+      "potentiometer"
+    ],
+    "source": {
+      "book": "Sedra/Smith Microelectronic Circuits 7e",
+      "section": "2.4.2 Example 2.3, Fig. 2.21",
+      "pdf_page_index": 113,
+      "tier": "A"
+    }
+  },
+  {
+    "id": "opamp-schmitt-trigger-comparator-hysteresis",
+    "type": "circuit_pattern",
+    "tier": 2,
+    "statement": "A comparator with hysteresis (Schmitt trigger) is an op amp in a positive-feedback loop with divider R1/R2; regenerative switching between saturation levels L+ and L- gives two thresholds. Inverting form (input at op-amp inverting input): VTH = beta*L+ and VTL = beta*L- with beta = R1/(R1+R2). Noninverting form (input through R1 to the noninverting node): VTL = -L+(R1/R2), VTH = -L-(R1/R2).",
+    "inputs": [
+      "vI: possibly noisy analog signal to be compared against threshold(s)"
+    ],
+    "outputs": [
+      "vO: two-level output at L+ or L- (op-amp saturation levels), switching with hysteresis width VTH - VTL"
+    ],
+    "required_blocks": [
+      "1x op amp (or comparator) driven open-loop into saturation levels L+ / L-",
+      "R1 from output-divider node to ground (inverting form) or from input (noninverting form)",
+      "R2 from output to the noninverting input node",
+      "Positive-feedback loop gain A*beta > 1 (normally guaranteed by large open-loop A)"
+    ],
+    "design_notes": [
+      "Size the hysteresis width to exceed the expected peak-to-peak interference amplitude on the input; VTH and VTL are usually separated by a small amount, e.g., 100 mV (Sedra Fig. 18.23-18.24).",
+      "Verified sizing example (Exercise 18.18, noninverting circuit): L+ = -L- = 10 V, R1 = 1 kohm -> R2 = 200 kohm gives 100-mV hysteresis width.",
+      "Output levels can be made precise by clamping with zener/diode limiter networks instead of relying on op-amp saturation (Fig. 18.25).",
+      "The same bistable in a feedback loop with an RC circuit forms an astable square-wave generator (Sec. 18.5)."
+    ],
+    "condition": "Threshold detection, zero-crossing detection, waveform squaring, or ADC front-end comparison on signals carrying noise/interference; positive feedback (not negative) is mandatory.",
+    "tags": [
+      "comparator",
+      "hysteresis",
+      "schmitt-trigger",
+      "positive-feedback",
+      "bistable"
+    ],
+    "source": {
+      "book": "Sedra/Smith Microelectronic Circuits 7e",
+      "section": "18.4 (Figs. 18.21-18.22, Eqs. 18.31-18.32, Exercise 18.18)",
+      "pdf_page_index": 1435,
+      "tier": "A"
+    }
+  },
+  {
+    "id": "comparator-no-hysteresis-chatter-on-noise",
+    "type": "failure_mode",
+    "tier": 3,
+    "statement": "A single-threshold comparator processing a signal with superimposed higher-frequency interference crosses the threshold multiple times around each intended crossing, so the output changes state several times per event; in a zero-crossing counter this directly corrupts the count. The fix is to add hysteresis whose width (VTH - VTL, e.g., about 100 mV) exceeds the expected peak-to-peak interference amplitude, so the output switches exactly once per genuine crossing.",
+    "condition": "Comparator input slews slowly through the threshold while carrying noise/interference of known peak-to-peak amplitude (common for sensor and mains-derived signals).",
+    "consequence": "Output chatter: multiple spurious transitions per crossing, false event counts, potential downstream logic glitches.",
+    "values": {
+      "typical_hysteresis_separation": "100 mV (Sedra: 'usually VTH and VTL are separated by a small amount, say 100 mV')"
+    },
+    "tags": [
+      "comparator",
+      "noise",
+      "chatter",
+      "hysteresis",
+      "zero-crossing"
+    ],
+    "source": {
+      "book": "Sedra/Smith Microelectronic Circuits 7e",
+      "section": "18.4.6 (Figs. 18.23-18.24)",
+      "pdf_page_index": 1438,
+      "tier": "A"
+    }
+  },
+  {
+    "id": "adc-signal-chain-and-sample-hold-pattern",
+    "type": "circuit_pattern",
+    "tier": 2,
+    "statement": "Sedra's recommended analog-to-digital acquisition chain: a high-input-impedance, high-gain, high-CMRR differential amplifier directly at the transducer output, followed by a filter to eliminate interference, then a sample-and-hold, then the ADC. The S/H itself is an analog switch (implementable as a MOSFET transmission gate) that closes for a short time tau out of each clock period T, a storage capacitor that holds the sample, and a buffer amplifier driving the ADC input.",
+    "inputs": [
+      "Analog transducer/sensor signal, possibly differential with common-mode interference"
+    ],
+    "outputs": [
+      "Held sample voltage per clock period, fed to the A/D converter; N-bit code from the ADC"
+    ],
+    "required_blocks": [
+      "Differential/instrumentation amplifier (high input impedance, high CMRR) at the transducer",
+      "Interference-elimination filter between amplifier and sampler",
+      "Analog switch (MOSFET transmission gate), clock-controlled, closure time tau << period T",
+      "Storage (hold) capacitor C",
+      "Buffer amplifier between hold capacitor and ADC"
+    ],
+    "design_notes": [
+      "The buffer prevents the ADC input from discharging the hold capacitor; the switch must be closed only a small fraction tau of each period T.",
+      "Quantization: an N-bit code represents 2^N levels (4 bits -> 16 values); using more bits reduces quantization error but requires more complex circuitry.",
+      "Neither Sadiku nor Sedra gives numeric guidance for sizing an external ADC input RC filter (settling vs droop); do not cite these books for such values."
+    ],
+    "condition": "Digitizing an analog sensor signal for digital processing; sampling justified by the sampling (Shannon) theorem.",
+    "tags": [
+      "adc",
+      "sample-and-hold",
+      "signal-chain",
+      "transmission-gate",
+      "quantization"
+    ],
+    "source": {
+      "book": "Sedra/Smith Microelectronic Circuits (legacy Ch. 9 data-converter section bundled in this PDF)",
+      "section": "9.7.1-9.7.3 (Fig. 9.36)",
+      "pdf_page_index": 1728,
+      "tier": "B"
+    }
+  },
+  {
+    "id": "ammeter-shunt-resistor-sizing-rule",
+    "type": "device_rule",
+    "tier": 1,
+    "statement": "To extend a current meter (movement full-scale current Im, internal resistance Rm) to measure full-scale current Ifs, connect a shunt resistor Rn in parallel with the movement sized by Rn = Im*Rm/(Ifs - Im); the shunt (and meter) resistance is deliberately made very small, theoretically zero, to minimize the voltage drop inserted into the measured branch. Verified example (Sadiku Practice Prob. 2.17): Im = 1 mA, Rm = 50 ohm gives Rn = 50 milliohm for 0-1 A, 505 milliohm for 0-100 mA, and 5.556 ohm for 0-10 mA ranges.",
+    "condition": "Series (in-line) current measurement with a parallel shunt; the sensing element must be low-resistance so the inserted voltage drop (burden) does not disturb the measured circuit. The small shunt voltage is what a difference/instrumentation amplifier front end would amplify.",
+    "values": {
+      "rule": "Rn = Im*Rm/(Ifs - Im)",
+      "example": "Im=1 mA, Rm=50 ohm -> 50 mohm (0-1 A), 505 mohm (0-100 mA), 5.556 ohm (0-10 mA)"
+    },
+    "design_notes": [
+      "Failure mode: a too-large shunt/meter resistance drops significant voltage across the sensing element and changes the branch current being measured.",
+      "Multi-range designs switch between several shunt values (Fig. 2.61b)."
+    ],
+    "tags": [
+      "current-sensing",
+      "shunt-resistor",
+      "ammeter",
+      "burden-voltage",
+      "measurement"
+    ],
+    "source": {
+      "book": "Sadiku Fundamentals of Electric Circuits 7e",
+      "section": "2.8 Applications (Eq. 2.61, Fig. 2.61, Practice Prob. 2.17)",
+      "pdf_page_index": 86,
+      "tier": "A"
+    }
+  },
+  {
+    "id": "sadiku-inamp-gain-rule-rg",
+    "type": "device_rule",
+    "tier": 1,
+    "statement": "For the standard packaged three-op-amp instrumentation amplifier with all internal resistors equal to R and one external gain-set resistor RG between the gain-set pins, the output is vo = Av(v2 - v1) with Av = 1 + 2R/RG. Verified example (Sadiku Ex. 5.13): R = 10 kohm, RG = 500 ohm -> Av = 41; inputs 2.011 V and 2.017 V (6-mV difference on ~2-V common mode) -> vo = 246 mV.",
+    "condition": "Using a single-package IA (Sadiku cites the LH0036: gain adjustable 1 to 1000 with external RG from 100 ohm to 10 kohm) for low-level signals in process control, thermocouple amplification, or data acquisition.",
+    "values": {
+      "gain_rule": "Av = 1 + 2R/RG",
+      "example": "R=10 kohm, RG=500 ohm -> Av=41, 6 mV in -> 246 mV out",
+      "commercial_range": "gain 1-1000, RG 100 ohm-10 kohm (LH0036)"
+    },
+    "design_notes": [
+      "Gain is set by the single external resistor RG; input impedance of both inputs is very high and does not vary with gain; output depends only on the input difference (common-mode voltages cancel).",
+      "Companion sizing example (Practice Prob. 5.13): gain 142 with R = 25 kohm requires RG = 354.6 ohm."
+    ],
+    "tags": [
+      "instrumentation-amplifier",
+      "gain-setting",
+      "rg-resistor",
+      "data-acquisition"
+    ],
+    "source": {
+      "book": "Sadiku Fundamentals of Electric Circuits 7e",
+      "section": "5.10.2 (Eq. 5.25, Fig. 5.38, Example 5.13)",
+      "pdf_page_index": 221,
+      "tier": "A"
+    }
+  }
+]

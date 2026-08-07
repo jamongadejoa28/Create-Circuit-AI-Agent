@@ -1,0 +1,345 @@
+[
+  {
+    "id": "halfbridge-highside-bootstrap-gate-drive",
+    "type": "circuit_pattern",
+    "tier": 2,
+    "statement": "In a bridge leg the high-side switch Q1 needs a gate drive referenced to its flying source node; use an isolated dual-channel gate driver plus a floating high-side supply, implemented either as a small isolated dc/dc converter or as a bootstrap diode-capacitor network charged from the low-side on-interval. The bootstrap capacitor charges to Vdriver while Q2 is on; when Q1 turns on the diode reverse-biases and the capacitor becomes the floating gate supply.",
+    "condition": "Half-bridge or full-bridge leg where the upper device's source/emitter flies between the dc rails, so its gate control voltage is relative to a node that sits above VDD when on.",
+    "inputs": [
+      "Logic-level PWM/timing signals referenced to controller ground",
+      "Low-voltage driver supply (15 V in the reference design)"
+    ],
+    "outputs": [
+      "Level-shifted, isolated gate-source drive for high-side switch Q1",
+      "Ground-referenced gate drive for low-side switch Q2 (no isolated supply needed since its gate stays near system ground)"
+    ],
+    "required_blocks": [
+      "Isolated dual-channel gate driver IC with input-output and output-output isolation (reference part UCC21530, +4 A source / -6 A sink)",
+      "Floating high-side supply: EITHER isolated dc/dc converter (reference part MGJ2D151SJ, 80 mA output) OR bootstrap network = fast diode D + bootstrap capacitor C from the driver supply to the switching node",
+      "Kelvin source connection for each device's gate return",
+      "Signal processor/controller generating the timed gate signals"
+    ],
+    "design_notes": [
+      "Bootstrap capacitor must be large enough to hold a fairly constant voltage over the Q1 on-interval",
+      "Q2 must stay on long enough each cycle to recharge C — this limits the maximum duty ratio of Q1; the isolated dc/dc alternative has no such constraint",
+      "Bootstrap diode must be fast: its reverse-recovery current otherwise discharges C",
+      "Isolation devices must have adequate common-mode transient immunity versus the bridge dv/dt: reference specs >200 V/ns (dc/dc) and >100 V/ns (driver IC); critical with fast SiC/GaN transitions",
+      "Isolation coupling may be capacitive, magnetic, or optical"
+    ],
+    "tags": [
+      "gate-drive",
+      "half-bridge",
+      "bootstrap",
+      "high-side",
+      "isolation",
+      "cmti"
+    ],
+    "source": {
+      "book": "Kassakian et al., Principles of Power Electronics",
+      "section": "23.1.5 Level Shifting and Gate Drive Designs (Figs. 23.6, 23.7)",
+      "pdf_page_index": 729,
+      "pdf_page_range": "728-730",
+      "tier": "A"
+    }
+  },
+  {
+    "id": "totem-pole-gate-drive-output",
+    "type": "circuit_pattern",
+    "tier": 2,
+    "statement": "Drive a MOSFET gate through an npn-pnp totem-pole output stage with a small series gate resistor RG: turn-on sources gate current through the npn, turn-off shorts the gate to the source through RG and the pnp. Because no steady-state current flows through RG it can be much smaller than the pull-up resistor of a single-transistor drive, giving much faster turn-on and turn-off.",
+    "condition": "Ground-referenced MOSFET/IGBT needing fast switching from a logic-level control signal; the single-switch pull-up-resistor drive is only acceptable at low switching speed because a small pull-up resistor forces large drive-circuit loss.",
+    "inputs": [
+      "Logic-level control signal (comparator such as LM311 shown driving the stack)"
+    ],
+    "outputs": [
+      "Low-impedance bipolar-capable gate drive able to both source and sink gate current"
+    ],
+    "required_blocks": [
+      "npn-pnp totem-pole transistor pair",
+      "Series gate resistor RG (small value permitted since it carries no steady-state current)",
+      "Alternative integrated implementations: CMOS 4049/4050 buffer ICs when only low gate current is needed, or DS0026 / UC1707 drivers that source or sink in excess of 1 A"
+    ],
+    "design_notes": [
+      "Turn-off path (gate shorted to source via RG + pnp) is what makes turn-off fast; a simple pull-up-only drive must trade loss against speed",
+      "For bridge applications this topology also satisfies the separate turn-on/turn-off current path requirement of controlled-slew (snubberless) drive schemes"
+    ],
+    "tags": [
+      "gate-drive",
+      "totem-pole",
+      "gate-resistor",
+      "mosfet",
+      "driver-ic"
+    ],
+    "source": {
+      "book": "Mohan/Undeland/Robbins, Power Electronics: Converters, Applications, and Design, 3rd ed.",
+      "section": "28-2-1 dc-Coupled Drive Circuits with Unipolar Output (Figs. 28-2, 28-3)",
+      "pdf_page_index": 701,
+      "pdf_page_range": "701-702",
+      "tier": "A"
+    }
+  },
+  {
+    "id": "rcd-turn-off-snubber-across-switch",
+    "type": "circuit_pattern",
+    "tier": 2,
+    "statement": "Place an RCD snubber (capacitor Cs in series with parallel Rs/Ds) across a hard-switched transistor: at turn-off the load current diverts into Cs through Ds so the switch voltage rises slowly, cutting turn-off loss and dv/dt; at turn-on Rs limits the capacitor discharge current into the switch and dissipates the stored energy. A bare capacitor is not a usable snubber because its turn-on discharge through the transistor can destroy the device.",
+    "condition": "Inductively loaded hard-switched transistor whose turn-off switching locus threatens the SOA (peak-power or second-breakdown limits), or where turn-off loss or peak dv/dt at the switch node must be reduced.",
+    "inputs": [
+      "Switch power terminals (collector/drain to emitter/source) across which the snubber is connected"
+    ],
+    "outputs": [
+      "Shaped turn-off trajectory inside the SOA, reduced transistor turn-off dissipation and reduced peak dv/dt at the switching node"
+    ],
+    "required_blocks": [
+      "Snubber capacitor Cs across the switch (switch turn-off loss is proportional to Idc^2 and tf^2 and inversely proportional to Cs; peak dv/dt also inversely proportional to Cs)",
+      "Snubber diode Ds so the charging current bypasses the resistor during turn-off",
+      "Snubber resistor Rs to limit the turn-on discharge current and absorb the capacitor energy"
+    ],
+    "design_notes": [
+      "Rs trade-off: small enough that Cs fully discharges during the shortest possible on-time of the switch, large enough that the discharge current stays below the transistor rating",
+      "Rs power rating = stored energy Wc = 0.5*Cs*Vdc^2 times switching frequency fsw; use the smallest Cs meeting design goals since Rs dissipates this every cycle",
+      "The snubber redistributes loss from the switch to Rs — net circuit loss increases unless an energy-recovery circuit is added",
+      "Related shunt Rs-Cs form across the switch also damps the oscillation between parasitic loop inductance Lp and Cs and limits the turn-off overvoltage spike Lp*Idc/tf (Kassakian 22.3.1, pdf index 716)"
+    ],
+    "tags": [
+      "snubber",
+      "rcd",
+      "turn-off",
+      "soa",
+      "dv-dt",
+      "buck"
+    ],
+    "source": {
+      "book": "Kassakian et al., Principles of Power Electronics",
+      "section": "24.1.2-24.1.3 Turn-Off Snubber / A More Practical Snubber (Figs. 24.4, 24.6)",
+      "pdf_page_index": 748,
+      "pdf_page_range": "746-748",
+      "tier": "A"
+    }
+  },
+  {
+    "id": "turnoff-snubber-sizing-tradeoffs",
+    "type": "selection_guidance",
+    "tier": 3,
+    "statement": "Mohan's turn-off snubber sizing procedure: pick Cs from SOA and loss-split criteria, pick Rs from the turn-on discharge-current limit, then verify the capacitor resets within the minimum on-time. The peak discharge current Vd/Rs must stay below the freewheeling diode reverse-recovery current, which designers typically hold to 0.2*Io or less.",
+    "condition": "Selecting Rs and Cs for a polarized RCD turn-off snubber on a controllable switch in a hard-switched converter.",
+    "conditions": [
+      "Choose Cs to (1) keep the turn-off locus inside the reverse-bias SOA, (2) reduce transistor loss consistent with its cooling, (3) keep the SUM of transistor turn-off energy and snubber-resistor energy low",
+      "Choose Rs so peak discharge current Vd/Rs is less than the freewheeling-diode reverse-recovery current Irr; with the usual practice Irr <= 0.2*Io this gives Vd/Rs ~ 0.2*Io",
+      "Verify reset: capacitor must discharge to about 0.1*Vd during the minimum on-state time, requiring t_on-state > 2.3*Rs*Cs"
+    ],
+    "tradeoffs": [
+      "Larger Cs lowers transistor turn-off loss but the energy dumped into Rs each cycle grows with Cs",
+      "Smaller Rs resets Cs faster but raises the turn-on current spike the switch must absorb",
+      "With Cs = Cs1 (capacitor just reaching Vd at the end of the current fall) and Rs per the 0.2*Io rule, the minimum on-state time becomes six times the transistor current fall time tfi"
+    ],
+    "failure_modes": [
+      "Cs not fully discharged within the minimum on-time: snubber ineffective at the next turn-off",
+      "Rs too small: turn-on overcurrent through the transistor",
+      "No Rs at all (pure capacitive snubber): capacitor dump lengthens the effective turn-on dissipation interval and adds transistor loss"
+    ],
+    "tags": [
+      "snubber",
+      "sizing",
+      "rcd",
+      "design-procedure",
+      "reverse-recovery"
+    ],
+    "source": {
+      "book": "Mohan/Undeland/Robbins, Power Electronics: Converters, Applications, and Design, 3rd ed.",
+      "section": "27-5 Turn-Off Snubber (Eqs. 27-32, 27-34; Fig. 27-15)",
+      "pdf_page_index": 688,
+      "pdf_page_range": "685-689",
+      "tier": "A"
+    }
+  },
+  {
+    "id": "current-sensing-shunt-ct-hall-selection",
+    "type": "selection_guidance",
+    "tier": 3,
+    "statement": "Choose the current-measurement method by isolation need and dc content: non-isolated paths use a shunt resistor plus op-amp with the shunt drop kept to 50-500 mV; isolated ac-only measurement uses a current transformer; isolated measurement with any dc bias requires a compensated (zero-flux) Hall-effect sensor, which covers dc up to 100 kHz bandwidth.",
+    "condition": "Selecting a current-sensing method for control or protection in a power converter.",
+    "conditions": [
+      "No isolation required between measurement and control electronics: shunt resistor + op-amp (Fig. 28-31)",
+      "Isolation required and current is pure ac: current transformer",
+      "Isolation required and instantaneous current includes a dc bias: compensated Hall-effect current sensor (secondary compensation winding holds toroid flux at zero), bandwidth dc to 100 kHz"
+    ],
+    "tradeoffs": [
+      "Shunt + op-amp avoids common-mode voltage jumps in the output and the op-amp slew rate filters step-waveform noise; amplification lets the shunt drop stay at 50-500 mV to minimize resistor loss",
+      "A larger shunt voltage (as when feeding a control IC directly) improves signal level but invites noise problems",
+      "Current transformer gives isolation cheaply but has no dc response",
+      "Closed-loop Hall sensor gives isolation plus dc capability at higher cost (commercial example: LEM compensated sensor)"
+    ],
+    "failure_modes": [
+      "Current transformer does not work if the measured current carries a dc bias",
+      "Shunt placed in the MOSFET source-to-ground wire adds wiring inductance whose di/dt can cause oscillations in the gate signal",
+      "Shunt voltage chosen too large: noise problems and excess dissipation"
+    ],
+    "tags": [
+      "current-sensing",
+      "shunt",
+      "hall-effect",
+      "current-transformer",
+      "isolation",
+      "protection"
+    ],
+    "source": {
+      "book": "Mohan/Undeland/Robbins, Power Electronics: Converters, Applications, and Design, 3rd ed.",
+      "section": "28-7-4 Current Measurements (Figs. 28-31 to 28-33)",
+      "pdf_page_index": 728,
+      "pdf_page_range": "728-730",
+      "tier": "A"
+    }
+  },
+  {
+    "id": "bridge-shoot-through-without-blanking-time",
+    "type": "failure_mode",
+    "tier": 3,
+    "statement": "If, in a half- or full-bridge leg, the turn-on command of one series switch is not delayed beyond the real turn-off of its complement, cross conduction shorts the dc bus: the incoming switch drives a large current through the barely-off device plus the freewheeling diode's reverse-recovery current, which normally destroys the outgoing transistor (it fails short) and then the incoming one. The blanking time must be chosen conservatively greater than the worst-case maximum storage/turn-off delay time of the devices used.",
+    "condition": "Two transistors in series across the dc bus in one converter leg, with turn-on of one not delayed past complete turn-off of the other (missing or insufficient blanking/dead time), or a unipolar drive without negative off-bias used in a PWM bridge.",
+    "consequence": "Destructive cross conduction: first switch destroyed and made a short circuit, then the complementary switch destroyed; bus effectively shorted.",
+    "values": "Blanking time > worst-case maximum storage time of the switches (no absolute time given); resulting dead time = blanking time minus actual device delay, during which both switches are off.",
+    "design_notes": [
+      "The dead time introduces an unwanted nonlinearity in the converter transfer characteristic; minimize it with antisaturation diodes, bipolar-output drive circuits, and speed-up capacitors rather than by shrinking the blanking margin",
+      "Blanking can be generated per switch with a polarized RC network plus Schmitt trigger that delays only the turn-on edge (Fig. 28-25); Kassakian 23.1.4 (pdf index 728) implements the same dead time Td with an RC network whose resistor is diode-bypassed for the turn-off direction, holding both gates low while load current commutates to the complementary diode",
+      "Unipolar drives without a negative supply must not be used in PWM bridges: base/gate current sourced while the opposite freewheeling diode conducts leaves the device in reverse conduction through the blanking time; use a negative-bias drive plus antisaturation diode"
+    ],
+    "tags": [
+      "shoot-through",
+      "cross-conduction",
+      "dead-time",
+      "blanking-time",
+      "bridge",
+      "failure"
+    ],
+    "source": {
+      "book": "Mohan/Undeland/Robbins, Power Electronics: Converters, Applications, and Design, 3rd ed.",
+      "section": "28-6-2 Blanking Times for Bridge Circuits (Figs. 28-25, 28-26)",
+      "pdf_page_index": 722,
+      "pdf_page_range": "722-724",
+      "tier": "A"
+    }
+  },
+  {
+    "id": "gate-ringing-without-series-gate-resistor",
+    "type": "failure_mode",
+    "tier": 3,
+    "statement": "Paralleled MOSFETs (especially multi-chip packages) with low-resistance gate loops tend to oscillate at frequencies in excess of 100 MHz while traversing the active region during switching transients; the oscillation is hard to observe and can break down the gate dielectric. A small series resistor in each gate lead damps it — RG = 5 ohm is typically adequate and interferes little with switching times.",
+    "condition": "Paralleled MOSFET dies or discrete devices switching through the active gain region with no discrete series gate resistance per device.",
+    "consequence": "Parasitic gate oscillation above 100 MHz during switching transients leading to gate-dielectric breakdown.",
+    "values": "Oscillation frequency > 100 MHz; damping resistor RG = 5 ohm per gate lead typically adequate.",
+    "design_notes": [
+      "Do not rely on the polysilicon gate electrode's internal resistance even when it currently suffices — manufacturer process changes cannot be anticipated, so include a discrete RG anyway",
+      "With paralleled SiC MOSFETs using Kelvin source connections, part of the source current can circulate through the Kelvin leads, risking gate oscillation and fusing of the Kelvin bond (not rated for load current); insert common-mode chokes in series with each gate/Kelvin pair to block the circulating current while passing gate current",
+      "Complementary layout rule from Mohan 28-7 (pdf index 725-726): one centimeter of unshielded lead has about 5 nH of series inductance, and a long drive-to-source/emitter return loop both slows turn-off and can start drive-loop oscillation — keep the control-terminal loop short, use the device's separate Kelvin control-source terminal, twisted or shielded pairs, and optionally a small filter capacitor plus damping resistor across the control terminals"
+    ],
+    "tags": [
+      "gate-ringing",
+      "oscillation",
+      "gate-resistor",
+      "paralleling",
+      "sic",
+      "kelvin",
+      "layout"
+    ],
+    "source": {
+      "book": "Kassakian et al., Principles of Power Electronics",
+      "section": "23.1.6 Parallel Operation of MOSFETs (Figs. 23.9, 23.10)",
+      "pdf_page_index": 731,
+      "pdf_page_range": "731-732",
+      "tier": "A"
+    }
+  },
+  {
+    "id": "turnoff-snubber-cap-sizing-worked-example",
+    "type": "worked_design",
+    "tier": 4,
+    "statement": "Kassakian Example 24.1 sizes the turn-off snubber capacitor of a 400 V / 50 A buck-converter switch so the switch voltage reaches only a fraction gamma_v of the bus voltage when its current reaches zero, yielding Cs = 0.1 uF with per-transition switch loss 0.12 mJ and peak dv/dt of 0.5 V/ns.",
+    "condition": "Hard-switched buck converter switch, linear current fall, snubber capacitor directly across the switch; values as assumed below.",
+    "problem": "Choose Cs for a turn-off snubber so that at the end of the current fall time the switch voltage has risen to only gamma_v * Vdc, for Vdc = 400 V, Idc = 50 A.",
+    "assumptions": [
+      "Switch current falls linearly to zero in tf = 0.33 us",
+      "Diode ideal, device capacitances neglected",
+      "Snubber capacitor initially discharged; capacitor carries Idc - iQ during the fall"
+    ],
+    "steps": [
+      "Express the switch voltage as the integral of the snubber capacitor current: vQ(t) = Idc*t^2 / (2*tf*Cs) for 0 < t < tf (Eq. 24.4)",
+      "Evaluate at t = tf and set vQ(tf) = gamma_v * Vdc, giving Cs = Idc*tf / (2*gamma_v*Vdc) (Eq. 24.6)",
+      "Choose gamma_v = 0.2: Cs = (50 A)(0.33 us) / (2*0.2*400 V) = 0.1 uF",
+      "Compute switch turn-off loss from Wsw = (Idc)^2 (tf)^2 / (24*Cs), equivalently (1/12)*gamma_v*Vdc*Idc*tf (Eqs. 24.5, 24.7): Wdiss = 0.12 mJ",
+      "Check peak dv/dt after current zero: dv/dt = Idc/Cs = 0.5 V/ns (Eq. 24.8)"
+    ],
+    "result": "Cs = 0.1 uF; per-transition switch dissipation 0.12 mJ; peak transistor dv/dt 0.5 V/ns. For scale, the same 400 V / 50 A switch unsnubbed with tf = 0.5 us dissipates 5 mJ per turn-off (peak 20 kW), i.e. 100 W at 20 kHz (Kassakian 24.1.1, pdf index 745).",
+    "tags": [
+      "snubber",
+      "worked-example",
+      "capacitor-sizing",
+      "buck",
+      "dv-dt",
+      "switching-loss"
+    ],
+    "source": {
+      "book": "Kassakian et al., Principles of Power Electronics",
+      "section": "Example 24.1, Choosing a Value for Cs (Eqs. 24.4-24.8)",
+      "pdf_page_index": 748,
+      "pdf_page_range": "745-748",
+      "tier": "A"
+    }
+  },
+  {
+    "id": "gate-driver-current-sizing-from-gate-charge",
+    "type": "device_rule",
+    "tier": 1,
+    "statement": "Size the gate driver from the device's gate-charge curve: the drain-voltage transition time approximately equals the Miller-plateau charge divided by the available gate current (30 nC / 1 A = 30 ns; with a 4 A driver and 50 nC plateau, tvf = 12.5 ns), and the gate loss per switching cycle equals Q*V independent of gate resistance (140 nC * 15 V = 2.1 uJ, i.e. 2.1 W at 1 MHz, dissipated mostly in the driver).",
+    "condition": "Driving a power MOSFET or IGBT gate (a nonlinear capacitor) from a voltage-source driver; assumes driver current rise time is negligible, which is often optimistic.",
+    "values": "Power MOSFET threshold Vt typically 3-6 V; example driver UCC27511 sources 4 A / sinks 8 A with series resistors R1/R2 available to control slew rate; fall-time examples 30 nC/1 A = 30 ns and 50 nC/4.0 A = 12.5 ns; drive-power example 0.5*(140 nC)(15 V)(500 kHz) ~ 0.5 W delivered by the driver supply; total gate energy lost per on-off cycle = QV = 2.1 uJ for 140 nC at 15 V (2.1 W at 1 MHz).",
+    "design_notes": [
+      "During the Miller plateau vGS is pinned while vDS swings, so the plateau charge, not total gate charge, sets voltage transition speed",
+      "Gate-loss QV is unavoidable regardless of the resistance in the gate path unless a resonant gate drive is used (seldom done)",
+      "The drive must hold the gate well below Vt when off and well above Vt when on"
+    ],
+    "tags": [
+      "gate-drive",
+      "gate-charge",
+      "miller-plateau",
+      "driver-sizing",
+      "switching-time",
+      "gate-loss"
+    ],
+    "source": {
+      "book": "Kassakian et al., Principles of Power Electronics",
+      "section": "23.1.2 Gate Drive Requirements, Example 23.1, and 23.1.4 Gate Drive Loss (Figs. 23.3, 23.4)",
+      "pdf_page_index": 726,
+      "pdf_page_range": "725-727",
+      "tier": "A"
+    }
+  },
+  {
+    "id": "junction-temperature-margin-and-thermal-stack",
+    "type": "device_rule",
+    "tier": 1,
+    "statement": "Design against a worst-case junction temperature of the datasheet maximum, commonly 125 degC; a high-reliability design targets Tj 20-40 degC below 125 degC, and thyristors must be kept below 125 degC or they may retrigger/fail at maximum applied dv/dt. Total junction-to-ambient thermal resistance sums in series as R_theta_ja = R_theta_jc + R_theta_cs + R_theta_sa (degC/W), and parallel heat paths combine like parallel electrical resistors.",
+    "condition": "Steady-state thermal design and heat-sink selection for power semiconductors; transient overloads require the transient thermal impedance Z_theta(t) curve from the datasheet instead of R_theta.",
+    "values": "Datasheet parameter guarantees commonly at 125 degC; reliability margin 20-40 degC below 125 degC; failure rate of semiconductor devices roughly doubles for each 10-15 degC rise above 50 degC; junction-to-case thermal resistance below 1 degC/W achievable in well-packaged power devices; heat-sink aluminum (90% pure) thermal conductivity 220 W/(m*degC).",
+    "design_notes": [
+      "Operation slightly above 200 degC is physically possible for some devices but reliability is low and manufacturers do not guarantee parameters above the datasheet maximum — requires expensive full screening/burn-in",
+      "Mount heat sinks with fins vertical with room for natural convection; consider thermal layout, cabinet location, and solar/ambient worst case at the start of the design",
+      "Increasing thermal time constant to survive transients conflicts with low R_theta; the trade-off is always resolved in favor of low steady-state R_theta"
+    ],
+    "tags": [
+      "thermal",
+      "junction-temperature",
+      "heat-sink",
+      "derating",
+      "reliability",
+      "thermal-resistance"
+    ],
+    "source": {
+      "book": "Mohan/Undeland/Robbins, Power Electronics: Converters, Applications, and Design, 3rd ed.",
+      "section": "29-1 Control of Semiconductor Device Temperatures and 29-2 Heat Transfer by Conduction (Eq. 29-4)",
+      "pdf_page_index": 733,
+      "pdf_page_range": "733-738",
+      "tier": "A"
+    }
+  }
+]

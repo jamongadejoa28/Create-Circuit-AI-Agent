@@ -1,0 +1,385 @@
+[
+  {
+    "type": "worked_design",
+    "tier": 4,
+    "id": "golden1_led_button",
+    "problem": "Wire a push-button-controlled LED indicator on a +5V rail with a current-limit resistor, producing a KiCad schematic that passes ERC with zero violations.",
+    "assumptions": [
+      "+5V rail already regulated and available",
+      "SMD 0805 passives; PTS645 SMD tact switch",
+      "KiCad standard libraries: Switch:SW_Push, Device:R, Device:LED, power:+5V, power:GND"
+    ],
+    "steps": [
+      "Add SW1 = Switch:SW_Push (Button_Switch_SMD:SW_SPST_PTS645Sx43SMTR92), R1 = Device:R 330R (R_0805), D1 = Device:LED (LED_0805), plus power symbols #PWR01 power:+5V and #PWR02 power:GND.",
+      "Net '+5V': SW1 pin 1 + #PWR01 pin 1.",
+      "Net 'SW_R': SW1 pin 2 -> R1 pin 1.",
+      "Net 'R_LED': R1 pin 2 -> D1 pin 2 (D1 pin 2 is the ANODE in Device:LED).",
+      "Net 'GND': D1 pin 1 (cathode) + #PWR02 pin 1.",
+      "Layout (checked-in golden file): signal flow left-to-right on one row, supplies at the ends; R1 rotated 90 degrees so pin 1 lands on the left (probe-verified); PWR_FLAG symbols (#FLG01/#FLG02) placed next to the power symbols."
+    ],
+    "result": "Series chain topology: +5V -- SW1 -- R1(330R) -- LED(anode->cathode) -- GND. Four nets, three components, two power symbols. Passed kicad-cli ERC 0, connectivity round-trip, and SVG render.",
+    "failure_modes": [
+      "LED polarity swap: in Device:LED, pin 1 = cathode (K), pin 2 = anode (A). Connecting pin 1 to the resistor reverses the diode.",
+      "Missing PWR_FLAG on power nets fed only by passive parts triggers KiCad 'power pin not driven' ERC errors."
+    ],
+    "design_notes": [
+      "330R at 5V gives roughly 9-10 mA through a typical LED (Vf ~2V) — safe generic indicator value.",
+      "Symbol rotation matters for readable layout: Device:R at rot 90 puts pin 1 on the left; this was probe-verified, not assumed."
+    ],
+    "source": {
+      "book": "circuitgen golden fixtures (kicad-cli ERC-verified)",
+      "section": "examples.py (golden 1)",
+      "tier": "A"
+    },
+    "statement": "Wire a push-button-controlled LED indicator on a +5V rail with a current-limit resistor, producing a KiCad schematic that passes ERC with zero violations.",
+    "tags": [
+      "golden1_led_button"
+    ]
+  },
+  {
+    "type": "worked_design",
+    "tier": 4,
+    "id": "golden2_mcu_minimal",
+    "problem": "Minimal bring-up circuit for an STM32G474RETx (LQFP-64): full power/decoupling, reset, boot strap, and a 10-pin ARM SWD debug connector, passing kicad-cli ERC with zero violations.",
+    "assumptions": [
+      "Single regulated +3V3 rail powers everything (VBAT tied to VDD; no battery backup)",
+      "Boot from main flash (BOOT0 strapped low)",
+      "Debug via SWD only (no JTAG, no SWO trace)",
+      "Libraries: MCU_ST_STM32G4:STM32G474RETx, Connector:Conn_ARM_JTAG_SWD_10"
+    ],
+    "steps": [
+      "Add U1 STM32G474RETx (LQFP-64), J1 Conn_ARM_JTAG_SWD_10 (2x05 1.27mm header), C1-C4 0.1uF (one per VDD pin), C5 0.1uF (VDDA), C6 10uF bulk, C7 0.1uF (NRST), R1 10k (BOOT0 pull-down), power symbols +3V3 and GND.",
+      "Net '+3V3': U1 pins 1 (VBAT), 16/32/48/64 (VDD), 29 (VDDA), 28 (VREF+); C1-C6 pin 1; J1 pin 1 (VTref); #PWR01.",
+      "Net 'GND': U1 pins 15, 27 (VSSA), and the HIDDEN STACKED VSS pins 31/47/63; C1-C7 pin 2; R1 pin 2; J1 pins 3 (GND), 5 (hidden stacked GND), 9 (GNDDetect); #PWR02.",
+      "Net 'NRST': U1 pin 7 (PG10/NRST) + C7 pin 1 (100nF to GND) + J1 pin 10 (nRESET).",
+      "Net 'BOOT0': U1 pin 61 (PB8-BOOT0) + R1 pin 1 (10k to GND).",
+      "Net 'SWDIO': U1 pin 49 (PA13) + J1 pin 2. Net 'SWCLK': U1 pin 50 (PA14) + J1 pin 4.",
+      "Mark every remaining MCU pin (all of 1-64 not in the used set) as an explicit no-connect; also NC J1 pin 6 (SWO) and pin 8 (TDI). J1 pin 7 (KEY) is NC-typed in the library and needs no marker."
+    ],
+    "result": "Star power topology: one +3V3 net fanning to 7 MCU supply pins + 6 caps + SWD VTref; one GND net absorbing 5 VSS pins (2 visible + 3 hidden stacked), all cap returns, BOOT0 pull-down return, and 3 SWD connector grounds. Four signal nets: NRST (with 100nF), BOOT0 (10k down), SWDIO, SWCLK. 48 explicit NC pins on U1 + 2 on J1. Passed kicad-cli ERC 0.",
+    "failure_modes": [
+      "Hidden stacked VSS pins: STM32G474RETx LQFP-64 has VSS pins 31, 47, 63 stacked/hidden under pin 15 in the KiCad symbol. Missing them from the GND net leaves unconnected power-input pins -> ERC errors and a wrong netlist.",
+      "NRST is shared with PG10 (pin 7) on STM32G4 — there is no dedicated reset-only pin; if PG10 is repurposed as GPIO the reset circuit breaks.",
+      "BOOT0 is shared with PB8 (pin 61) on STM32G4 — it is NOT a dedicated boot pin as on older STM32 families; leaving it floating causes random boot-mode selection.",
+      "Conn_ARM_JTAG_SWD_10 has a hidden stacked GND pin (pin 5) and a GNDDetect pin (pin 9) that must both be tied to GND, plus a KEY pin (7) that is already NC-typed — adding an NC marker to a NC-typed pin is redundant, omitting GND on pin 5 is an ERC error.",
+      "Any unused MCU pin without an explicit no-connect marker produces an ERC 'unconnected pin' violation — ERC 0 requires exhaustive NC marking."
+    ],
+    "design_notes": [
+      "Decoupling recipe verified: one 100nF per VDD pin (4x), a dedicated 100nF on VDDA, one 10uF bulk, plus 100nF on NRST for reset immunity.",
+      "VREF+ (pin 28) tied directly to +3V3 (no external reference).",
+      "VBAT (pin 1) tied to +3V3 when no backup battery is used.",
+      "SWD needs only 4 wires to the target: VTref, GND, SWDIO (PA13), SWCLK (PA14); nRESET on J1 pin 10 is optional-but-wired here."
+    ],
+    "source": {
+      "book": "circuitgen golden fixtures (kicad-cli ERC-verified)",
+      "section": "goldens.py",
+      "tier": "A"
+    },
+    "statement": "Minimal bring-up circuit for an STM32G474RETx (LQFP-64): full power/decoupling, reset, boot strap, and a 10-pin ARM SWD debug connector, passing kicad-cli ERC with zero violations.",
+    "tags": [
+      "golden2_mcu_minimal"
+    ]
+  },
+  {
+    "type": "worked_design",
+    "tier": 4,
+    "id": "golden3_mcu_i2c_sensor",
+    "problem": "Attach an Si7050-A20 I2C temperature sensor to an STM32G474RETx over I2C1 with proper pull-ups, plus the full minimal MCU hookup, passing kicad-cli ERC with zero violations.",
+    "assumptions": [
+      "Single +3V3 rail; standard-mode I2C (10k pull-ups acceptable)",
+      "I2C1 mapped to PB9 (SDA, AF4) and PA15 (SCL, AF4)",
+      "BOOT0 strapped low; no SWD connector in this fixture",
+      "Libraries: Sensor_Temperature:Si7050-A20 (DFN-6)"
+    ],
+    "steps": [
+      "Add U1 STM32G474RETx, U2 Si7050-A20, C1-C5 0.1uF (four VDD pins + VDDA), C6 10uF bulk, C7 0.1uF sensor decoupling, R1/R2 10k (SDA/SCL pull-ups), R3 10k (BOOT0 pull-down), +3V3 and GND power symbols.",
+      "Net '+3V3': U1 pins 1/16/28/29/32/48/64 (VBAT, 4x VDD, VREF+, VDDA); U2 pin 5 (sensor VDD); C1-C7 pin 1; R1 pin 1, R2 pin 1; #PWR01.",
+      "Net 'GND': U1 pins 15/27/31/47/63 (incl. hidden stacked VSS 31/47/63); U2 pin 2; C1-C7 pin 2; R3 pin 2; #PWR02.",
+      "Net 'SDA': U1 pin 62 (PB9 = I2C1_SDA) + U2 pin 1 + R1 pin 2.",
+      "Net 'SCL': U1 pin 51 (PA15 = I2C1_SCL) + U2 pin 6 + R2 pin 2.",
+      "Net 'BOOT0': U1 pin 61 (PB8/BOOT0) + R3 pin 1 (strap low via 10k).",
+      "Explicit no-connect on every unused U1 pin. Sensor pins 3/4 are NC-typed in the library and need no marker."
+    ],
+    "result": "Bus topology: shared SDA and SCL nets each carry MCU pin + sensor pin + one 10k pull-up to +3V3. Sensor has its own local 100nF. Nets named exactly 'SDA'/'SCL' so the project i2c_pullup lint recognizes and checks them (removing R1/R2 provably triggers the i2c_pullup_missing lint in tests). Passed kicad-cli ERC 0.",
+    "failure_modes": [
+      "Missing I2C pull-ups: open-drain SDA/SCL with no pull-up never idles high — the bus is dead. The repo lint 'i2c_pullup_missing' fires when either resistor is absent.",
+      "Hidden stacked VSS pins 31/47/63 must be on GND (same trap as golden 2).",
+      "BOOT0 = PB8 (pin 61): note PB9 (pin 62) is used for SDA — the boot strap and the I2C pin are physically adjacent pins on the same port; confusing pin 61 with 62 both breaks boot and shorts the strap onto the bus.",
+      "Si7050 pins 3/4 are NC-typed in the KiCad library; adding NC markers to them is unnecessary (and pin-type-aware tools may flag it)."
+    ],
+    "design_notes": [
+      "Pin-to-signal mapping is package-specific and was verified against the real part index: PB9 = pin 62 = I2C1_SDA (AF4), PA15 = pin 51 = I2C1_SCL (AF4) on LQFP-64.",
+      "10k pull-ups are fine for standard-mode/low-capacitance short traces; use 2.2k-4.7k for fast mode or longer buses.",
+      "Naming I2C nets exactly SDA/SCL (or with those substrings) makes them lintable — a convention worth keeping in generated designs."
+    ],
+    "source": {
+      "book": "circuitgen golden fixtures (kicad-cli ERC-verified)",
+      "section": "goldens.py",
+      "tier": "A"
+    },
+    "statement": "Attach an Si7050-A20 I2C temperature sensor to an STM32G474RETx over I2C1 with proper pull-ups, plus the full minimal MCU hookup, passing kicad-cli ERC with zero violations.",
+    "tags": [
+      "golden3_mcu_i2c_sensor"
+    ]
+  },
+  {
+    "type": "worked_design",
+    "tier": 4,
+    "id": "golden4_mcu_spi_flash",
+    "problem": "Attach a W25Q32JVSS SPI NOR flash (SOIC-8) to an STM32G474RETx over SPI1, handling /CS, /WP and /HOLD correctly, plus full minimal MCU hookup, passing kicad-cli ERC with zero violations.",
+    "assumptions": [
+      "Single +3V3 rail; standard 4-wire SPI (no quad mode — IO2//WP and IO3//HOLD used as control pins, not data)",
+      "SPI1 on PA5/PA6/PA7 with software chip-select on PA4",
+      "Libraries: Memory_Flash:W25Q32JVSS (SOIC-8)"
+    ],
+    "steps": [
+      "Add U1 STM32G474RETx, U2 W25Q32JVSS, C1-C5 0.1uF (4x VDD + VDDA), C6 10uF bulk, C7 0.1uF flash VCC decoupling, R1 10k (/CS pull-up), R2 10k (/WP tie-high), R3 10k (/HOLD tie-high), +3V3 and GND symbols.",
+      "Net '+3V3': U1 pins 1/16/28/29/32/48/64; U2 pin 8 (VCC); C1-C7 pin 1; R1/R2/R3 pin 1; #PWR01.",
+      "Net 'GND': U1 pins 15/27/31/47/63 (incl. hidden stacked VSS); U2 pin 4 (GND); C1-C7 pin 2; #PWR02.",
+      "Net 'SPI_SCK': U1 pin 19 (PA5) -> U2 pin 6 (CLK).",
+      "Net 'SPI_MISO': U1 pin 20 (PA6) <- U2 pin 2 (DO/IO1).",
+      "Net 'SPI_MOSI': U1 pin 21 (PA7) -> U2 pin 5 (DI/IO0).",
+      "Net 'SPI_CS': U1 pin 18 (PA4) + U2 pin 1 (/CS) + R1 pin 2 (10k pull-up to +3V3 so flash is deselected during MCU reset/boot).",
+      "Net 'FLASH_WP': U2 pin 3 (/WP) + R2 pin 2 (10k to +3V3). Net 'FLASH_HOLD': U2 pin 7 (/HOLD) + R3 pin 2 (10k to +3V3).",
+      "Explicit no-connect on every unused U1 pin."
+    ],
+    "result": "Point-to-point SPI topology: three unidirectional data/clock nets MCU<->flash, a chip-select net with reset-safe pull-up, and two active-low control pins (/WP, /HOLD) each tied high through their own 10k. Flash gets local 100nF. Passed kicad-cli ERC 0.",
+    "failure_modes": [
+      "/WP (pin 3) or /HOLD (pin 7) left floating or low: floating /HOLD can randomly pause the flash mid-transfer; low /WP write-protects status registers. Both must be tied high (10k) when quad mode is unused — the classic 'flash reads once then dies' bug.",
+      "/CS without a pull-up floats during MCU reset/bootloader, letting the flash see garbage clock edges as commands; the 10k pull-up on SPI_CS deselects it until firmware takes over.",
+      "MISO/MOSI naming trap on Winbond parts: DO = master-in (goes to MISO/PA6), DI = master-out (goes to MOSI/PA7). Crossing these is silent — ERC cannot catch it.",
+      "Hidden stacked VSS pins 31/47/63 must be on GND (same trap as golden 2)."
+    ],
+    "design_notes": [
+      "Pin map verified against the real part index: PA4=18, PA5=19 (SCK), PA6=20 (MISO), PA7=21 (MOSI) on LQFP-64.",
+      "Separate resistors per control pin (not a shared net) keep /WP and /HOLD independently reconfigurable to GPIOs later for quad-SPI.",
+      "Tie-highs go through 10k rather than direct to +3V3 so firmware can later drive the pins in quad mode without a rework."
+    ],
+    "source": {
+      "book": "circuitgen golden fixtures (kicad-cli ERC-verified)",
+      "section": "goldens.py",
+      "tier": "A"
+    },
+    "statement": "Attach a W25Q32JVSS SPI NOR flash (SOIC-8) to an STM32G474RETx over SPI1, handling /CS, /WP and /HOLD correctly, plus full minimal MCU hookup, passing kicad-cli ERC with zero violations.",
+    "tags": [
+      "golden4_mcu_spi_flash"
+    ]
+  },
+  {
+    "type": "worked_design",
+    "tier": 4,
+    "id": "golden5_mcu_uart_led",
+    "problem": "STM32G474RETx with a 4-pin UART debug header, a 2-pin screw-terminal power input, and a GPIO-driven status LED, passing kicad-cli ERC with zero violations.",
+    "assumptions": [
+      "Regulated +3V3 arrives externally on the screw terminal (no on-board regulator)",
+      "USART1 on PA9 (TX) / PA10 (RX); 3.3V logic on the header (no RS-232 levels)",
+      "Header pinout convention: TX, RX, 3V3, GND"
+    ],
+    "steps": [
+      "Add U1 STM32G474RETx; J1 Connector:Screw_Terminal_01x02 (Phoenix MKDS 5.00mm) as PWR_IN; J2 Connector:Conn_01x04_Pin (2.54mm header) as UART; C1-C5 0.1uF (4x VDD + VDDA), C6 10uF bulk; R1 330R + D1 Device:LED for the status LED; +3V3 and GND symbols.",
+      "Net '+3V3': U1 pins 1/16/28/29/32/48/64; C1-C6 pin 1; J1 pin 1 (power in); J2 pin 3 (header 3V3); #PWR01.",
+      "Net 'GND': U1 pins 15/27/31/47/63 (incl. hidden stacked VSS); C1-C6 pin 2; J1 pin 2; J2 pin 4; D1 pin 1 (cathode); #PWR02.",
+      "Net 'UART_TX': U1 pin 43 (PA9 = USART1_TX) -> J2 pin 1.",
+      "Net 'UART_RX': U1 pin 44 (PA10 = USART1_RX) <- J2 pin 2.",
+      "Net 'LED_CTRL': U1 pin 19 (PA5, GPIO) -> R1 pin 1. Net 'LED_A': R1 pin 2 -> D1 pin 2 (anode). Cathode already on GND.",
+      "Explicit no-connect on every unused U1 pin."
+    ],
+    "result": "Topology: external +3V3 enters on J1 and fans to MCU supplies, decoupling, and the UART header's power pin; UART is two point-to-point nets MCU->header; LED is the series chain GPIO(PA5) -> 330R -> LED anode -> cathode -> GND (GPIO sources current, active-high). Passed kicad-cli ERC 0.",
+    "failure_modes": [
+      "Header TX/RX semantics: J2 pin 1 carries the MCU's TX — the attached USB-serial adapter must connect its RX there (null-modem crossing happens in the cable, not on the board). Labeling the header from the adapter's perspective double-crosses the pair.",
+      "LED polarity: Device:LED pin 1 = cathode, pin 2 = anode; the resistor must meet the anode (pin 2) in this active-high arrangement.",
+      "Hidden stacked VSS pins 31/47/63 must be on GND (same trap as golden 2).",
+      "Power-input nets fed only from a connector need PWR_FLAG in KiCad or ERC reports 'power input not driven'."
+    ],
+    "design_notes": [
+      "Pin map verified: PA9 = pin 43 (USART1_TX), PA10 = pin 44 (USART1_RX), PA5 = pin 19 (GPIO for LED) on LQFP-64.",
+      "330R at 3.3V gives ~4 mA LED current (Vf ~2V) — well inside an STM32 GPIO's drive capability.",
+      "Providing 3V3 on the UART header powers low-current adapters/targets and gives probes a logic-level reference."
+    ],
+    "source": {
+      "book": "circuitgen golden fixtures (kicad-cli ERC-verified)",
+      "section": "goldens.py",
+      "tier": "A"
+    },
+    "statement": "STM32G474RETx with a 4-pin UART debug header, a 2-pin screw-terminal power input, and a GPIO-driven status LED, passing kicad-cli ERC with zero violations.",
+    "tags": [
+      "golden5_mcu_uart_led"
+    ]
+  },
+  {
+    "type": "circuit_pattern",
+    "tier": 2,
+    "id": "pattern_stm32_minimal_power_reset_boot_swd",
+    "name": "STM32 minimal power + reset + boot + SWD",
+    "problem": "Any STM32 design needs a canonical support skeleton before peripherals: all supply pins powered and decoupled, reset conditioned, boot mode strapped, and a debug port attached.",
+    "assumptions": [
+      "Single 3.3V rail; boot from main flash; SWD debug"
+    ],
+    "steps": [
+      "Power: connect ALL VDD pins + VBAT + VDDA + VREF+ to +3V3. Enumerate supply pins from the symbol/datasheet — KiCad MCU symbols hide stacked duplicate VSS/VDD pins (e.g. STM32G474RETx VSS at 31/47/63 stacked under 15); every one must be on the net.",
+      "Decoupling: one 100nF per physical VDD pin, one dedicated 100nF at VDDA, one bulk 10uF on the rail.",
+      "Reset: NRST to a 100nF cap to GND, and route NRST to the debug connector's nRESET pin. Internal pull-up exists; no external pull-up needed.",
+      "Boot strap: BOOT0 through 10k to GND for flash boot (10k to +3V3 for system bootloader). Never float it.",
+      "SWD: Conn_ARM_JTAG_SWD_10 — pin 1 VTref to +3V3, pins 3/5/9 to GND (5 is a hidden stacked GND, 9 is GNDDetect), pin 2 to SWDIO (PA13), pin 4 to SWCLK (PA14), pin 10 to NRST; NC pins 6 (SWO) and 8 (TDI) if unused; pin 7 (KEY) is NC-typed already.",
+      "Mark every unused MCU pin as an explicit no-connect to reach ERC 0."
+    ],
+    "result": "A reusable MCU skeleton: +3V3 star to all supplies/caps/VTref; GND absorbing all VSS (visible + hidden stacked), cap returns, and connector grounds; NRST/BOOT0/SWDIO/SWCLK signal nets; exhaustive NC markers elsewhere.",
+    "failure_modes": [
+      "Hidden stacked pins (both VSS on MCUs and GND on the SWD connector) silently missing from power nets — the dominant ERC-failure class found while building the goldens.",
+      "On STM32G4 specifically, NRST shares pin with PG10 and BOOT0 shares with PB8 — those GPIOs are not free, and boot behavior also depends on option bits.",
+      "Floating BOOT0 = nondeterministic boot mode."
+    ],
+    "design_notes": [
+      "Verified concretely on STM32G474RETx LQFP-64 across goldens 2-5; the recipe (100nF-per-VDD, VDDA cap, bulk cap, NRST cap, BOOT0 strap) generalizes across STM32 families with per-package pin lookup."
+    ],
+    "source": {
+      "book": "circuitgen golden fixtures (kicad-cli ERC-verified)",
+      "section": "goldens.py",
+      "tier": "A"
+    },
+    "statement": "Any STM32 design needs a canonical support skeleton before peripherals: all supply pins powered and decoupled, reset conditioned, boot mode strapped, and a debug port attached.",
+    "tags": [
+      "pattern_stm32_minimal_power_reset_boot_swd"
+    ]
+  },
+  {
+    "type": "circuit_pattern",
+    "tier": 2,
+    "id": "pattern_i2c_sensor_pullups",
+    "name": "I2C sensor attach with pull-ups",
+    "problem": "Connect an I2C peripheral to an MCU: the bus is open-drain and will not function without pull-ups, and sensors need local decoupling.",
+    "assumptions": [
+      "Shared logic rail for MCU and sensor; standard-mode speeds; short traces"
+    ],
+    "steps": [
+      "Pick an I2C-capable MCU pin pair from the alternate-function table and resolve to physical package pins (e.g. STM32G474RETx LQFP-64: PB9/pin 62 = I2C1_SDA, PA15/pin 51 = I2C1_SCL, both AF4).",
+      "Create net 'SDA': MCU SDA pin + sensor SDA pin + pull-up resistor bottom; create net 'SCL': MCU SCL pin + sensor SCL pin + pull-up bottom.",
+      "One pull-up per line (10k standard mode; 2.2k-4.7k for fast mode or higher bus capacitance), tops on the logic rail. One pair per BUS, not per device.",
+      "Power the sensor from the rail with its own local 100nF.",
+      "NC any address/interrupt pins per the sensor's library pin types — pins already NC-typed in the symbol need no marker."
+    ],
+    "result": "Multi-drop open-drain bus: SDA and SCL nets each shared by all bus members plus exactly one pull-up to the rail. Additional I2C devices join by adding their pins to the same two nets.",
+    "failure_modes": [
+      "No pull-ups = dead bus (lines never rise). The repo's i2c_pullup lint detects this when nets are named SDA/SCL — keep that naming convention in generated designs.",
+      "Duplicated pull-ups from multiple modules can sum to too-strong pull (drivers can't sink to a valid low).",
+      "Mixed-rail buses: pull-ups to the wrong rail back-power or overstress the lower-voltage device."
+    ],
+    "design_notes": [
+      "Generalized from golden 3 (STM32G474 + Si7050-A20, ERC 0); the pull-up-removal test proves the lint catches the canonical failure."
+    ],
+    "source": {
+      "book": "circuitgen golden fixtures (kicad-cli ERC-verified)",
+      "section": "goldens.py",
+      "tier": "A"
+    },
+    "statement": "Connect an I2C peripheral to an MCU: the bus is open-drain and will not function without pull-ups, and sensors need local decoupling.",
+    "tags": [
+      "pattern_i2c_sensor_pullups"
+    ]
+  },
+  {
+    "type": "circuit_pattern",
+    "tier": 2,
+    "id": "pattern_spi_flash_cs_wp_hold",
+    "name": "SPI flash attach with CS/WP/HOLD handling",
+    "problem": "Attach a SOIC-8 SPI NOR flash (W25Qxx-class) to an MCU so it is electrically sound in single-SPI mode and safe during MCU reset.",
+    "assumptions": [
+      "4-wire single SPI (quad mode unused); shared 3.3V rail"
+    ],
+    "steps": [
+      "Map MCU SPI signals to package pins (e.g. STM32G474 LQFP-64: PA5/19=SCK, PA6/20=MISO, PA7/21=MOSI, PA4/18=CS).",
+      "Point-to-point nets: MCU SCK -> flash CLK (pin 6); flash DO/IO1 (pin 2) -> MCU MISO; MCU MOSI -> flash DI/IO0 (pin 5).",
+      "Chip select: MCU GPIO + flash /CS (pin 1) + 10k pull-up to the rail, so the flash stays deselected while the MCU is in reset or bootloader.",
+      "Tie /WP (pin 3) and /HOLD (pin 7) each through their OWN 10k to the rail — never floating, and not a shared resistor, so they can become IO2/IO3 for quad mode later.",
+      "Flash VCC (pin 8) to rail with local 100nF; GND (pin 4) to ground."
+    ],
+    "result": "Three point-to-point data/clock nets, one pulled-up chip-select net, two individually pulled-up active-low control nets, local decoupling. Directly extends to multiple SPI devices by sharing SCK/MISO/MOSI and adding one pulled-up CS per device.",
+    "failure_modes": [
+      "Floating /HOLD pauses transfers randomly; low /WP blocks writes — the flash 'works in the lab, fails in the field' failure.",
+      "No CS pull-up: floating CS during reset lets noise clock spurious commands into the flash (worst case: corrupting it while a programmer runs).",
+      "DO/DI naming inversion vs MISO/MOSI (DO->MISO, DI->MOSI) — electrically silent, ERC-invisible, firmware-visible."
+    ],
+    "design_notes": [
+      "Generalized from golden 4 (STM32G474 + W25Q32JVSS, ERC 0). Pull-ups instead of hard ties keep the quad-SPI upgrade path open."
+    ],
+    "source": {
+      "book": "circuitgen golden fixtures (kicad-cli ERC-verified)",
+      "section": "goldens.py",
+      "tier": "A"
+    },
+    "statement": "Attach a SOIC-8 SPI NOR flash (W25Qxx-class) to an MCU so it is electrically sound in single-SPI mode and safe during MCU reset.",
+    "tags": [
+      "pattern_spi_flash_cs_wp_hold"
+    ]
+  },
+  {
+    "type": "circuit_pattern",
+    "tier": 2,
+    "id": "pattern_uart_debug_header",
+    "name": "UART debug header",
+    "problem": "Expose an MCU UART on a pin header for logging/console/bootloader access via a USB-serial adapter.",
+    "assumptions": [
+      "Logic-level UART (3.3V), not RS-232; adapter side does the TX/RX cross"
+    ],
+    "steps": [
+      "Map a USART to package pins (e.g. STM32G474 LQFP-64: PA9/43 = USART1_TX, PA10/44 = USART1_RX).",
+      "Use a 1x04 2.54mm header with pinout TX / RX / 3V3 / GND.",
+      "Net 'UART_TX': MCU TX pin -> header pin 1 (labeled from the BOARD's perspective).",
+      "Net 'UART_RX': header pin 2 -> MCU RX pin.",
+      "Header pin 3 to +3V3, pin 4 to GND."
+    ],
+    "result": "Two point-to-point signal nets plus power and ground on a 4-pin header; the mating adapter connects its RX to the board's TX and vice versa.",
+    "failure_modes": [
+      "Perspective confusion on TX/RX labels: label from the board's view and let the cable/adapter cross; labeling from the adapter's view yields a double cross and no comms.",
+      "Omitting GND on the header — UART has no return path and reads garbage.",
+      "5V-only adapters driving a 3.3V-only RX pin (check 5V tolerance before sharing the header with 5V adapters)."
+    ],
+    "design_notes": [
+      "Generalized from golden 5 (ERC 0). Including the 3V3 pin gives adapters a level reference and can power small targets; ordering TX/RX/3V3/GND keeps power pins adjacent at one end."
+    ],
+    "source": {
+      "book": "circuitgen golden fixtures (kicad-cli ERC-verified)",
+      "section": "goldens.py",
+      "tier": "A"
+    },
+    "statement": "Expose an MCU UART on a pin header for logging/console/bootloader access via a USB-serial adapter.",
+    "tags": [
+      "pattern_uart_debug_header"
+    ]
+  },
+  {
+    "type": "circuit_pattern",
+    "tier": 2,
+    "id": "pattern_gpio_status_led",
+    "name": "GPIO-driven status LED",
+    "problem": "Add a firmware-controlled indicator LED to any MCU design with correct polarity and safe current.",
+    "assumptions": [
+      "GPIO can source ~4-10 mA; generic LED with Vf ~2V"
+    ],
+    "steps": [
+      "Pick a free GPIO and resolve its package pin (e.g. PA5 = pin 19 on STM32G474 LQFP-64).",
+      "Net 'LED_CTRL': GPIO pin -> series resistor pin 1.",
+      "Net 'LED_A': resistor pin 2 -> LED anode (Device:LED pin 2).",
+      "LED cathode (Device:LED pin 1) to GND. Active-high: GPIO sources current.",
+      "Size R = (Vrail - Vf) / I: 330R gives ~4 mA at 3.3V or ~9 mA at 5V — visible and safe for MCU pins."
+    ],
+    "result": "Series chain GPIO -> R -> LED(A->K) -> GND. Variant: for higher currents or shared-cathode constraints, flip to active-low (rail -> R -> LED -> GPIO sinks).",
+    "failure_modes": [
+      "Polarity swap: in KiCad's Device:LED, pin 1 = cathode and pin 2 = anode — the number-order intuition ('pin 1 = anode') is wrong and the mistake passes ERC.",
+      "No series resistor: GPIO current-limits chaotically or the pin/LED degrades.",
+      "Exceeding per-pin or total-port current limits when driving several LEDs."
+    ],
+    "design_notes": [
+      "Appears twice in the verified corpus: golden 1 (switch + R + LED at 5V) and golden 5 (GPIO + 330R + LED at 3.3V), both ERC 0 — same chain, different drive source."
+    ],
+    "source": {
+      "book": "circuitgen golden fixtures (kicad-cli ERC-verified)",
+      "section": "goldens.py",
+      "tier": "A"
+    },
+    "statement": "Add a firmware-controlled indicator LED to any MCU design with correct polarity and safe current.",
+    "tags": [
+      "pattern_gpio_status_led"
+    ]
+  }
+]

@@ -1,0 +1,468 @@
+[
+  {
+    "id": "lm317-adjustable-regulator-cap-requirements",
+    "type": "circuit_pattern",
+    "tier": 2,
+    "statement": "Adjustable positive linear regulator built on an LM317: the 1.25 V reference between OUT and ADJ is impressed across program resistor R1 so R2 sets Vout; Cin (~0.1 uF) is required when the regulator sits far from the power source, Cout (0.1 uF or larger) suppresses output voltage spikes, and a 10 uF ADJ-bypass capacitor raises ripple rejection from ~65 dB to ~80 dB.",
+    "condition": "Positive adjustable rail from unregulated DC up to 37 V; input must stay at least ~2 V above the regulated output (standard 78xx/LM317 dropout), or ~0.5 V for an LDO alternative such as LM2940.",
+    "inputs": [
+      "Unregulated DC, up to 37 V max (LM317)"
+    ],
+    "outputs": [
+      "Regulated positive DC set by R1/R2, up to 1.5 A max output current"
+    ],
+    "required_blocks": [
+      "LM317 3-terminal adjustable positive regulator (floating; sees only input-output differential)",
+      "R1 program resistor OUT-to-ADJ carrying the nominal 1.25 V reference",
+      "R2 output-set resistor ADJ-to-GND (increasing R2 raises Vout)",
+      "Cin ~0.1 uF at input pin, required if regulator is far from the power source",
+      "Cout ~0.1 uF or larger at output to eliminate voltage spikes",
+      "Optional 10 uF capacitor bypassing the ADJ divider: ripple rejection 65 dB -> ~80 dB"
+    ],
+    "values": {
+      "v_ref_out_adj": "1.25 V",
+      "vin_max": "37 V",
+      "iout_max": "1.5 A",
+      "cin": "0.1 uF",
+      "cout": ">=0.1 uF",
+      "adj_bypass": "10 uF",
+      "ripple_rejection": "65 dB -> 80 dB with ADJ bypass",
+      "dropout_standard": "~2 V",
+      "dropout_ldo": "~0.5 V (e.g., LM2940)"
+    },
+    "design_notes": [
+      "Negative rail: complementary LM337 (-1.2 V to -37 V, 1.5 A max).",
+      "Higher voltage: TL783 regulates 1 to 125 V but only 700 mA max.",
+      "LDO regulators (see LM2940) cut required headroom from ~2 V to ~0.5 V, allowing lower Vin and cooler operation.",
+      "Upstream source voltage should not be much larger than the regulator output, or the regulator is forced to dissipate the excess as heat.",
+      "Fixed-output alternative: LM78xx series (7805..7824, 1.5 A heat-sunk); SMD SOT-89 versions often have lower max output current."
+    ],
+    "tags": [
+      "voltage-regulator",
+      "lm317",
+      "ldo",
+      "capacitor",
+      "linear-regulator",
+      "power-supply"
+    ],
+    "source": {
+      "book": "Practical Electronics for Inventors, 4th Ed. (Scherz & Monk)",
+      "section": "11.1.2 Adjustable-Regulator ICs; 11.1.3 Regulator Specifications; 11.6 Ripple Reduction",
+      "pdf_page_index": 1134,
+      "pdf_page_index_span": [
+        1133,
+        1134,
+        1135,
+        1136,
+        1144
+      ],
+      "tier": "A"
+    }
+  },
+  {
+    "id": "battery-reverse-polarity-series-diode",
+    "type": "circuit_pattern",
+    "tier": 2,
+    "statement": "Simplest battery-reversal protection: a series diode in the positive lead between battery (or external plug/jack) and load conducts only when the battery is installed correctly and blocks current from a backward-installed battery. The diode must be rated for the full load current; a low-threshold Schottky (~0.4 V) loses less headroom than a silicon diode (~0.6 V).",
+    "condition": "Battery-powered or external-DC (plug-and-jack) equipment where reverse installation or reversed supply polarity is possible; acceptable to lose one diode drop of supply voltage.",
+    "inputs": [
+      "Battery pack or external DC adapter input of either polarity"
+    ],
+    "outputs": [
+      "Polarity-protected DC rail to load"
+    ],
+    "required_blocks": [
+      "Series diode in the positive supply lead, rated for full load current (Schottky preferred, ~0.4 V drop; silicon ~0.6 V)"
+    ],
+    "values": {
+      "si_diode_drop": "~0.6 V",
+      "schottky_drop": "~0.4 V"
+    },
+    "design_notes": [
+      "The forward drop shortens battery operating time - about 0.6 V is lost immediately with silicon.",
+      "Best first-line design is a mechanical block preventing reverse installation; the diode guards against momentary fumbled contact.",
+      "For essentially zero voltage drop plus thermal shutdown and voltage monitoring, use dedicated protection ICs or transistor arrangements.",
+      "Note: many consumer DC barrel plugs are center-positive, but musical equipment (guitar pedals) is often center-negative - protection matters for external jacks too."
+    ],
+    "tags": [
+      "battery",
+      "reverse-polarity",
+      "protection",
+      "diode",
+      "schottky",
+      "power-input"
+    ],
+    "source": {
+      "book": "Practical Electronics for Inventors, 4th Ed. (Scherz & Monk)",
+      "section": "4.2.5 Diode/Rectifier Applications - Reverse-Polarity Protection (Fig 4.17)",
+      "pdf_page_index": 648,
+      "pdf_page_index_span": [
+        647,
+        648,
+        1157
+      ],
+      "tier": "A"
+    }
+  },
+  {
+    "id": "reverse-polarity-protection-method-selection",
+    "type": "selection_guidance",
+    "tier": 3,
+    "statement": "Choosing among reverse-polarity protection schemes: mechanical keying first, then series diode (simple, lossy), parallel shunt diode (no series drop, only for high-output-impedance batteries), or protection ICs/transistor circuits (near-zero drop with extra features).",
+    "condition": "Any battery-powered or externally powered design where reverse insertion or reversed adapter polarity can occur, especially single-cell AA-alkaline, NiCad, or NiMH systems.",
+    "conditions": [
+      "Mechanical block against reverse installation: best baseline design in all cases",
+      "Series diode: simplest electrical protection; use when losing ~0.6 V (Si) or ~0.4 V (Schottky) is acceptable",
+      "Parallel (shunt) diode: use with batteries that have high output impedance (e.g., alkaline cells) when the series drop must be eliminated",
+      "Protection IC or transistor arrangement: sophisticated designs needing essentially zero voltage drop, plus reverse-polarity protection, thermal shutdown, and voltage-level monitoring"
+    ],
+    "tradeoffs": [
+      "Series diode must carry the full load current and wastes one forward drop of battery voltage (shorter runtime)",
+      "Shunt diode eliminates the series drop and protects the load, but draws high current from a backward-installed battery",
+      "Protection ICs add cost/complexity but bundle zero-drop protection with monitoring features"
+    ],
+    "failure_modes": [
+      "Reverse current from a backward-installed cell can damage the circuit or the battery if not limited",
+      "Underrated shunt diode overheats: it must be properly rated for the current and power of a reversed low-impedance source",
+      "Series silicon diode may starve low-voltage loads (0.6 V lost immediately)"
+    ],
+    "tags": [
+      "battery",
+      "reverse-polarity",
+      "protection",
+      "selection",
+      "diode"
+    ],
+    "source": {
+      "book": "Practical Electronics for Inventors, 4th Ed. (Scherz & Monk)",
+      "section": "4.2.5 Reverse-Polarity Protection (Figs 4.16-4.17)",
+      "pdf_page_index": 647,
+      "pdf_page_index_span": [
+        647,
+        648
+      ],
+      "tier": "A"
+    }
+  },
+  {
+    "id": "linear-vs-switching-regulator-selection",
+    "type": "selection_guidance",
+    "tier": 3,
+    "statement": "Linear regulators (78xx/LM317/LDO) are simplest and quietest but dissipate the input-output difference as heat (efficiency typically under 50%); switching regulators exceed 85% efficiency, can step down, step up, or invert, but put tens of millivolts of switching ripple on the output and need more parts.",
+    "condition": "Choosing the regulation topology for a DC rail given input source, load current, efficiency/thermal budget, and output noise sensitivity.",
+    "conditions": [
+      "Linear: input available at least 2-3 V above output (~0.5 V for LDO), low output noise required, minimal part count (a 7805 needs only input/output caps)",
+      "Switcher: efficiency, heat, or size is critical; also when output must be higher than input (step-up) or opposite polarity (inverting)",
+      "Off-line SMPS: mains-powered designs where the heavy 60 Hz transformer must be eliminated (high-frequency transformer, e.g. 65 kHz oscillator, is far smaller)",
+      "Prefer higher-switching-frequency regulator ICs: they use smaller inductors and reduce cost"
+    ],
+    "tradeoffs": [
+      "Linear power-conversion efficiency is typically lower than 50 percent - more than half the power becomes heat; switchers exceed 85 percent",
+      "Switcher output carries switching ripple typically in the tens of millivolts: acceptable against ~200 mV digital noise margins, but sensitive analog circuits may need an added external high-current low-pass filter",
+      "Part count: an LM2575-based 5 V switcher needs about six components vs three for a 7805",
+      "A 500 W switching supply occupies ~640 in3 vs ~1520 in3 for an equivalent linear supply (0.9 W/in3 vs 0.4 W/in3)"
+    ],
+    "failure_modes": [
+      "Linear regulator overheats when the source voltage is much higher than the regulated output (energy wasted as heat)",
+      "Regulation lost when input sags below Vout + dropout (2-3 V standard, ~0.5 V LDO)",
+      "Transformerless off-line switcher loses mains isolation - the DC input bus sits at ~160 V; isolation must be restored with a high-frequency transformer and optoisolator/transformer feedback"
+    ],
+    "tags": [
+      "voltage-regulator",
+      "switching-regulator",
+      "ldo",
+      "selection",
+      "efficiency",
+      "power-supply"
+    ],
+    "source": {
+      "book": "Practical Electronics for Inventors, 4th Ed. (Scherz & Monk)",
+      "section": "11.1.3, 11.3, 11.8 Switching Regulator Supplies, 11.9 SMPS",
+      "pdf_page_index": 1148,
+      "pdf_page_index_span": [
+        1135,
+        1136,
+        1147,
+        1148,
+        1152,
+        1153,
+        1154
+      ],
+      "tier": "A"
+    }
+  },
+  {
+    "id": "equipment-fuse-sizing-and-placement",
+    "type": "device_rule",
+    "tier": 1,
+    "statement": "Give every device its own fuse rated about 50 percent above the expected nominal current, placed in series before the device (in the hot/black conductor for 120 VAC equipment); choose time-lag (slow-blow) fuses for motor/inductive circuits with large turn-on currents and fast-acting fuses elsewhere.",
+    "condition": "Any line- or supply-powered device; the building's 15 A breaker protects house wiring only and will not save device electronics from an internal fault.",
+    "values": {
+      "rating_margin": "+50% over nominal current",
+      "glass_ceramic_fuses": "1/4 to 20 A, 32/125/250 V, 1/4 x 1-1/4 in or 5 x 20 mm",
+      "blade_automotive": "3 to 30 A, 32/36 V, color-coded",
+      "subminiature_pcb": "0.05 to 10 A, two wire leads, PCB mount",
+      "slow_blow_delay": "about a second"
+    },
+    "design_notes": [
+      "The 50% margin also compensates for fuse current ratings that decrease as fuses age and for slight current variations.",
+      "Fast-acting fuses open on just a brief surge; time-lag types ride through inrush (motors, inductive loads).",
+      "Failure mode: a fuse or breaker placed in the neutral (white) line leaves the full line voltage present at the equipment input even after it blows."
+    ],
+    "tags": [
+      "fuse",
+      "protection",
+      "current-rating",
+      "slow-blow",
+      "power-input",
+      "safety"
+    ],
+    "source": {
+      "book": "Practical Electronics for Inventors, 4th Ed. (Scherz & Monk)",
+      "section": "3.9 Fuses and Circuit Breakers; 3.9.1 Types",
+      "pdf_page_index": 629,
+      "pdf_page_index_span": [
+        628,
+        629,
+        630,
+        631
+      ],
+      "tier": "A"
+    }
+  },
+  {
+    "id": "regulator-reverse-current-at-power-off",
+    "type": "failure_mode",
+    "tier": 3,
+    "statement": "Condition: supply is switched off while the capacitance on the regulator's output discharges more slowly than the capacitance on its input. Consequence: the regulator (e.g., 7805) becomes reverse-biased and the reverse-current surge from the load side can damage or destroy it.",
+    "condition": "Linear regulator with significant output-side capacitance (bulk output caps or capacitive load) that can outlast the input capacitance at power-down.",
+    "values": {
+      "fix_part": "protection diode across the regulator (output to input), e.g., 1N400x class rectifier"
+    },
+    "design_notes": [
+      "Fix: a diode wired from output to input across the regulator diverts the unwanted reverse current away from it.",
+      "A dual-diode arrangement - one diode output-to-input, a second from ground to output - also prevents attached loads from sending damaging spikes back into the IC's output."
+    ],
+    "tags": [
+      "voltage-regulator",
+      "failure-mode",
+      "protection-diode",
+      "power-off",
+      "reverse-current"
+    ],
+    "source": {
+      "book": "Practical Electronics for Inventors, 4th Ed. (Scherz & Monk)",
+      "section": "11.5 A Few Simple Power Supplies (Fig 11.9); 4.2.5 (Fig 4.18 note)",
+      "pdf_page_index": 1138,
+      "pdf_page_index_span": [
+        1138,
+        649
+      ],
+      "tier": "A"
+    }
+  },
+  {
+    "id": "missing-regulator-input-output-caps",
+    "type": "failure_mode",
+    "tier": 3,
+    "statement": "Condition: regulator IC used without its input/output capacitors (or without Cin when mounted far from the power source). Consequence: input and output spikes/noise are not removed, and high-frequency noise generated by the load appears on the regulated rail, eroding the ~200 mV noise margin of digital logic and risking false triggering.",
+    "condition": "Any 78xx/79xx/LM317-class regulator application; Cin mandatory when the regulator is far from the upstream source, Cout always recommended.",
+    "values": {
+      "cin": "~0.1 uF (needed when regulator far from power source)",
+      "cout": "0.1 uF or larger (eliminates output voltage spikes)",
+      "digital_noise_margin": "~200 mV minimum around critical logic levels",
+      "output_variation_budget_5v_digital": "no more than 5 percent (0.25 V) on a 5 V rail"
+    },
+    "design_notes": [
+      "Capacitors attached to the regulator's input and output terminals remove unwanted input or output spikes/noise (78xx series).",
+      "The output cap placed across the regulator output also bypasses high-frequency noise that the load itself generates.",
+      "Small analog signal circuits can require output variation under 1 percent - stricter than digital."
+    ],
+    "tags": [
+      "voltage-regulator",
+      "failure-mode",
+      "bypass-capacitor",
+      "noise",
+      "stability"
+    ],
+    "source": {
+      "book": "Practical Electronics for Inventors, 4th Ed. (Scherz & Monk)",
+      "section": "11.1.1-11.1.2 Regulator ICs; 11.5 (Fig 11.9); 11.6 Ripple Reduction",
+      "pdf_page_index": 1135,
+      "pdf_page_index_span": [
+        1133,
+        1134,
+        1135,
+        1138,
+        1141
+      ],
+      "tier": "A"
+    }
+  },
+  {
+    "id": "worked-ripple-budget-5v-supply",
+    "type": "worked_design",
+    "tier": 4,
+    "statement": "Worked sizing of the reservoir capacitor and regulator for a 5 V, 1.0 A full-wave-rectified supply: 4700 uF alone leaves 510 mV rms ripple (too much for a 0.25 V digital budget), but a 7805's ~60 dB ripple rejection divides it by 1000 to 0.51 mV; headroom then dictates a ~12 V transformer secondary.",
+    "problem": "Keep the output variation of a 5 V digital supply within 5 percent (0.25 V) at a maximum load current of 1.0 A, using a full-wave rectifier front end.",
+    "assumptions": [
+      "Full-wave rectification of 60 Hz mains gives 120 Hz ripple; period 1/120 Hz = 8.3 ms, of which ~5 ms is capacitor discharge and ~3.3 ms recharge",
+      "Straight-line (linear) discharge approximation replaces the exponential decay",
+      "Simplified formula form used in the text: Vr(rms) = 0.0024 s x I / C (e.g., 0.0024 s x (1.5 A / 4700 uF) = 760 mV)"
+    ],
+    "steps": [
+      "Compute raw ripple for C = 4700 uF at I = 1.0 A: Vripple(rms) = 510 mV - exceeds the 0.25 V budget",
+      "Do not chase a bigger capacitor: power-supply electrolytics have 5-20 percent (or worse) tolerance, so fine-tuning C is futile",
+      "Apply the regulator's ripple rejection instead: 7805 at ~60 dB attenuates ripple by a factor of 1000, giving 0.51 mV output ripple",
+      "Check headroom: the 7805 needs a minimum 3 V input-output differential, so Vin >= 8 V; add the 1-2 V rectifier drop and choose a transformer secondary of about 12 V",
+      "Adjustable variant: LM317 with C = 4700 uF at 1.5 A gives 760 mV raw ripple; with a 10 uF ADJ bypass its rejection rises from ~65 dB to ~80 dB (factor 10,000), leaving 0.076 mV"
+    ],
+    "result": "4700 uF reservoir + 7805 fed from a ~12 V secondary yields ~0.5 mV output ripple on the 5 V rail, well inside the 0.25 V digital budget; the LM317 variant achieves 0.076 mV.",
+    "values": {
+      "c_reservoir": "4700 uF",
+      "raw_ripple_1a": "510 mV rms",
+      "raw_ripple_1p5a": "760 mV rms",
+      "ripple_rejection_7805": "~60 dB (x1000)",
+      "ripple_rejection_lm317_bypassed": "~80 dB (x10000)",
+      "vin_min_7805": "8 V (3 V differential)",
+      "rectifier_drop": "1-2 V",
+      "transformer_secondary": "~12 V"
+    },
+    "design_notes": [
+      "Add a bleeder resistor (1 kOhm, 1/2 W suits most applications) across the unregulated output to discharge the high-voltage filter capacitor at power-off.",
+      "An RC snubber across the transformer primary (typical: 100 Ohm + 0.1 uF 1 kV) suppresses inductive turn-off transients."
+    ],
+    "tags": [
+      "power-supply",
+      "ripple",
+      "filter-capacitor",
+      "7805",
+      "lm317",
+      "worked-example"
+    ],
+    "source": {
+      "book": "Practical Electronics for Inventors, 4th Ed. (Scherz & Monk)",
+      "section": "11.6 Technical Points about Ripple Reduction; 11.7 Loose Ends",
+      "pdf_page_index": 1143,
+      "pdf_page_index_span": [
+        1141,
+        1142,
+        1143,
+        1144,
+        1145,
+        1147
+      ],
+      "tier": "A"
+    }
+  },
+  {
+    "id": "rectifier-reservoir-cap-sizing",
+    "type": "device_rule",
+    "tier": 1,
+    "statement": "Rectifier reservoir/filter capacitor: use a large electrolytic, typically 1000 uF or more, targeting a ripple factor (rms ripple / average DC) of about 0.05 or lower; check ESR, voltage, and ripple-current ratings, and parallel capacitors to reach higher capacitance.",
+    "condition": "Capacitor-input filtering after a half-wave, full-wave, or bridge rectifier feeding a DC load or downstream regulator.",
+    "values": {
+      "typical_c_min": ">=1000 uF",
+      "target_ripple_factor": "~0.05",
+      "example": "1000 uF with 100 Ohm load, full-wave bridge: 0.34 VAC rms ripple, 1.17 V peak-to-peak, ripple factor 0.00251",
+      "half_wave_penalty": "half-wave rectifier doubles the ripple voltage vs full-wave"
+    },
+    "design_notes": [
+      "Electrolytics are used because other capacitor families cannot supply the needed microfarads (oil-filled types for high-voltage/high-current supplies).",
+      "Increasing load resistance (decreasing load current) also lowers ripple.",
+      "A downstream voltage-regulator IC between filter cap and load adds ripple rejection and holds the output constant against AC-line surges and load-current changes."
+    ],
+    "tags": [
+      "filter-capacitor",
+      "rectifier",
+      "ripple",
+      "electrolytic",
+      "esr",
+      "power-supply"
+    ],
+    "source": {
+      "book": "Practical Electronics for Inventors, 4th Ed. (Scherz & Monk)",
+      "section": "3.6.11 RC Ripple Filter (Figs 3.73-3.74)",
+      "pdf_page_index": 558,
+      "pdf_page_index_span": [
+        557,
+        558,
+        559
+      ],
+      "tier": "A"
+    }
+  },
+  {
+    "id": "logic-ic-decoupling-capacitor-rule",
+    "type": "device_rule",
+    "tier": 1,
+    "statement": "Place a 0.01-0.1 uF multilayer ceramic decoupling capacitor (rated >5 V) directly across the VCC-to-ground pins of each logic IC, as close to the IC as possible, to absorb the sharp supply-current spikes generated during totem-pole output transitions.",
+    "condition": "Digital/logic systems where multiple devices share a supply rail; spikes otherwise cause false triggering of neighboring devices and electromagnetic radiation.",
+    "values": {
+      "cap_value": "0.01 to 0.1 uF",
+      "cap_type": "multilayer ceramic, >5 V rating",
+      "density": "one capacitor per five to ten gates, or one per five counter/register ICs"
+    },
+    "design_notes": [
+      "Close placement keeps current spikes local instead of letting them propagate back toward the power supply.",
+      "Related rule: never let unused CMOS inputs float - tie them high or low - and never drive CMOS inputs with the supply removed (damages input protection diodes)."
+    ],
+    "tags": [
+      "decoupling",
+      "bypass-capacitor",
+      "digital",
+      "emi",
+      "placement",
+      "power-supply-filtering"
+    ],
+    "source": {
+      "book": "Practical Electronics for Inventors, 4th Ed. (Scherz & Monk)",
+      "section": "12.5.1 Power Supply Decoupling",
+      "pdf_page_index": 1213,
+      "pdf_page_index_span": [
+        1213,
+        1214
+      ],
+      "tier": "A"
+    }
+  },
+  {
+    "id": "overvoltage-crowbar-vs-clamp-selection",
+    "type": "selection_guidance",
+    "tier": 3,
+    "statement": "To protect a load if the series regulator fails shorted, place a crowbar (zener + SCR) or a clamp (zener + high-power transistor) across the regulated output: the crowbar latches and diverts current to ground until power is cycled, while the clamp diverts current only while the overvoltage persists and ignores brief spikes.",
+    "condition": "Regulated supply output where an internal regulator short would present the full unregulated input voltage to the load.",
+    "conditions": [
+      "Crowbar: hard, latching shutdown wanted; trips when supply exceeds the zener breakdown by 0.6 V, firing the SCR",
+      "Clamp: use where voltage spikes would otherwise cause nuisance (false) crowbar triggering - the clamp needs no reset",
+      "Bare zener across the output: only for small fault currents"
+    ],
+    "tradeoffs": [
+      "Crowbar SCR stays conducting until the supply is switched off or its anode-cathode current is interrupted (needs reset); clamp recovers on its own",
+      "Clamp transistor diverts the excess current so the zener itself does not have to absorb it"
+    ],
+    "failure_modes": [
+      "A zener alone across the output can burn out ('fry') if the unregulated fault current is too large - add the power transistor to carry the current",
+      "Crowbar false-triggered by a transient spike takes the system down until reset"
+    ],
+    "tags": [
+      "overvoltage",
+      "crowbar",
+      "clamp",
+      "scr",
+      "zener",
+      "protection",
+      "power-supply"
+    ],
+    "source": {
+      "book": "Practical Electronics for Inventors, 4th Ed. (Scherz & Monk)",
+      "section": "11.7 Loose Ends - Overvoltage Protection (Fig 11.15)",
+      "pdf_page_index": 1146,
+      "pdf_page_index_span": [
+        1146,
+        1147
+      ],
+      "tier": "A"
+    }
+  }
+]

@@ -1,0 +1,309 @@
+[
+  {
+    "id": "open-collector-open-drain-external-pullup-rule",
+    "type": "device_rule",
+    "tier": 1,
+    "statement": "An open-collector (TTL) or open-drain (CMOS) output has no internal high-side device, so a valid HIGH exists only if an external pull-up resistor connects the output node to VCC/VDD; the internal output transistor pulls the node near ground for LOW. The pull-up may return to a rail higher than the logic supply -- typically up to +30 V on an open collector depending on logic family -- which is why OC/OD buffers are used to drive LEDs, lamps, and relays.",
+    "condition": "Applies to every open-collector or open-drain output pin (gates, buffers, comparators); without the external pull-up the HIGH state is undefined/floating.",
+    "values": {
+      "pullup_destination": "VCC/VDD (e.g., +5 V for TTL) or higher load supply",
+      "max_open_collector_voltage": "typically up to +30 V (family dependent)",
+      "typical_oc_buffer_sink_current": "up to 40 mA",
+      "totem_pole_sink_limit_for_comparison": "IOL(max) 16 mA standard TTL, 8 mA LS TTL"
+    },
+    "design_notes": [
+      "Prefer OC/OD over totem-pole/push-pull outputs when the load needs more current or voltage than the logic family's IOL(max)/VCC allows",
+      "When driving an LED from an OC output, add a series current-limit resistor; a resistive lamp filament needs none",
+      "ANSI/IEEE diamond-with-underbar symbol on a pin marks an OC/OD output; same symbol for both technologies"
+    ],
+    "tags": [
+      "open-collector",
+      "open-drain",
+      "pull-up",
+      "output-stage",
+      "interfacing"
+    ],
+    "source": {
+      "book": "Digital Fundamentals 11ed (Floyd)",
+      "section": "15-3 TTL (Bipolar) Circuits (Open-Collector Gates) + 15-2 CMOS Circuits (Open-Drain Gates); current limits in 15-4 (pdf_page_index 867, 872, 877, 878)",
+      "pdf_page_index": 872,
+      "tier": "A"
+    }
+  },
+  {
+    "id": "wired-and-open-collector-shared-pullup-pattern",
+    "type": "circuit_pattern",
+    "tier": 2,
+    "statement": "Wired-AND bus: tie N open-collector/open-drain outputs to one node with a single shared pull-up resistor Rp to VCC. The node is LOW whenever any one output transistor is on and HIGH only when all are off, giving X = AND of the individual gate outputs (with inverters as drivers this is a negative-AND: X = /A*/B*/C*/D).",
+    "inputs": [
+      "N logic signals, one per OC/OD gate driving the shared node"
+    ],
+    "outputs": [
+      "Single shared line X (wired-AND of all driver outputs)"
+    ],
+    "required_blocks": [
+      "N gates with open-collector or open-drain outputs (e.g., 74LS09 quad 2-input AND with OC outputs)",
+      "One pull-up resistor Rp from the shared node to VCC (exactly one per wired-AND net, not one per gate)"
+    ],
+    "condition": "Every output on the shared node must be OC/OD; never place a totem-pole/push-pull output on a wired-AND net.",
+    "design_notes": [
+      "A single external Rp is required in all wired-AND circuits; four 2-input OC AND gates wired together create an 8-input AND (X = ABCDEFGH)",
+      "Rp minimum value is set by the sink limit of one output transistor: it must carry Rp current plus all driven-input IIL while holding VOL(max) (see wired-and-pullup-sizing-worked)",
+      "Node HIGH level is established passively through Rp, so rising transitions are RC-limited by node capacitance"
+    ],
+    "tags": [
+      "wired-and",
+      "open-collector",
+      "open-drain",
+      "shared-pull-up",
+      "bus"
+    ],
+    "source": {
+      "book": "Digital Fundamentals 11ed (Floyd)",
+      "section": "15-4 Practical Considerations in the Use of TTL (Using Open-Collector Gates for Wired-AND Operation, Figures 15-37/15-38/15-39)",
+      "pdf_page_index": 875,
+      "tier": "A"
+    }
+  },
+  {
+    "id": "wired-and-pullup-sizing-worked",
+    "type": "worked_design",
+    "tier": 4,
+    "statement": "Minimum shared pull-up resistor for a wired-AND net is computed from the single sinking transistor's current budget: Rp(min) = (VCC - VOL(max)) / (IOL(max) - sum of driven-input IIL).",
+    "problem": "Three open-collector AND gates wired-AND together (X = ABCDEF) drive four standard TTL inputs (1.6 mA sink each). Find the minimum Rp given IOL(max) = 30 mA per gate and VOL(max) = 0.4 V, VCC = 5 V.",
+    "assumptions": [
+      "Worst case: only one OC output transistor is on and must sink the entire node current",
+      "Each standard TTL driven input sources IIL = 1.6 mA into the LOW node",
+      "VCC = 5 V"
+    ],
+    "steps": [
+      "Total load current into the LOW node: 4 x 1.6 mA = 6.4 mA",
+      "Current budget left for the pull-up: IRp = IOL(max) - 6.4 mA = 30 mA - 6.4 mA = 23.6 mA",
+      "Rp(min) = (VCC - VOL(max)) / IRp = (5 V - 0.4 V) / 23.6 mA = 195 ohm"
+    ],
+    "result": "Rp >= 195 ohm (smaller Rp would force the sinking transistor past IOL(max) and raise VOL above 0.4 V)",
+    "condition": "Wired-AND / open-drain shared line where one output must hold the node at VOL(max) while sinking pull-up plus all load currents.",
+    "tags": [
+      "wired-and",
+      "pull-up-sizing",
+      "open-collector",
+      "worked-example"
+    ],
+    "source": {
+      "book": "Digital Fundamentals 11ed (Floyd)",
+      "section": "15-4 Practical Considerations in the Use of TTL, Example 15-6 (Figure 15-40)",
+      "pdf_page_index": 877,
+      "tier": "A"
+    }
+  },
+  {
+    "id": "totem-pole-outputs-paralleled-failure",
+    "type": "failure_mode",
+    "tier": 3,
+    "statement": "Condition: two totem-pole (push-pull) outputs are wired to the same node and one drives HIGH while the other drives LOW. Consequence: the HIGH driver's upper transistor is effectively shorted to ground through the LOW driver's saturated lower transistor, producing excessive current that can damage both devices. Totem-pole outputs must never be tied together; use OC/OD wired logic or tri-state outputs for shared lines.",
+    "condition": "Any direct parallel connection of standard push-pull logic outputs (TTL totem-pole or CMOS complementary pair).",
+    "consequence": "Excessive shoot-through current from one device's high-side into the other's low-side; possible device destruction.",
+    "values": {
+      "note": "No safe current value exists for this connection; Floyd's summary rule is absolute: 'Totem-pole outputs of TTL cannot be connected together'"
+    },
+    "tags": [
+      "totem-pole",
+      "output-conflict",
+      "damage",
+      "wiring-rule"
+    ],
+    "source": {
+      "book": "Digital Fundamentals 11ed (Floyd)",
+      "section": "15-4 Practical Considerations in the Use of TTL (Connection of Totem-Pole Outputs, Figure 15-41; chapter summary pdf_page_index 885)",
+      "pdf_page_index": 877,
+      "tier": "A"
+    }
+  },
+  {
+    "id": "tri-state-bus-single-driver-rule",
+    "type": "device_rule",
+    "tier": 1,
+    "statement": "On a shared bus line, at most one tri-state output may be enabled at any given time; every other output on the line must be disabled into the high-impedance (high-Z) state, where it behaves as an open switch disconnected from the line. Devices without built-in tri-state or open-collector outputs must connect to a bus through external tri-state buffers.",
+    "condition": "Two or more device outputs share any signal line (data bus, address bus, shared control line).",
+    "values": {
+      "output_states": "HIGH, LOW, high-Z (3 states)",
+      "enable_polarity": "device-specific: active-HIGH or active-LOW enable variants both exist (Figure 13-78); CMOS example in Figure 15-23 enables on LOW, TTL example in Figure 15-33 enables on LOW",
+      "high_z_mechanism": "both output transistors (pull-up and pull-down) turned off simultaneously"
+    },
+    "design_notes": [
+      "In the tri-state CMOS inverter, enable HIGH turns off both Q1 and Q2 giving high-Z; enable LOW restores normal logic operation -- always check each part's enable polarity before wiring select logic",
+      "Select logic for multiple sources must be mutually exclusive (e.g., one select line with true/inverted enables for a two-source bus)",
+      "The inverted-triangle symbol on a pin marks a tri-state output"
+    ],
+    "tags": [
+      "tri-state",
+      "bus",
+      "high-z",
+      "enable",
+      "wiring-rule"
+    ],
+    "source": {
+      "book": "Digital Fundamentals 11ed (Floyd)",
+      "section": "14 Practical Computer System Considerations (Shared Signal Lines) + 13-10 Bus Interfacing + 15-2/15-3 tri-state circuits (pdf_page_index 785-786, 807, 867, 872)",
+      "pdf_page_index": 807,
+      "tier": "A"
+    }
+  },
+  {
+    "id": "bus-contention-enable-overlap-failure",
+    "type": "failure_mode",
+    "tier": 3,
+    "statement": "Condition: two or more outputs on a common bus line drive it toward different logic levels because more than one driver is (momentarily) enabled. Consequence: high current flows from one output into the other, which can damage the devices. The most common trigger is enable-timing overlap -- one device has not completely turned off (tri-stated) before the next one turns on, typically at memory READ-to-WRITE turnaround; even two outputs at the same nominal logic level contend because device output voltages differ slightly.",
+    "condition": "Shared bus line with overlapping driver enables, or any timing window where two drivers are simultaneously active.",
+    "consequence": "High inter-device current, corrupted bus levels, potential device damage.",
+    "values": {
+      "typical_scenario": "memory systems switching between READ and WRITE modes (timing problem)"
+    },
+    "tags": [
+      "bus-contention",
+      "tri-state",
+      "timing",
+      "memory-interface"
+    ],
+    "source": {
+      "book": "Digital Fundamentals 11ed (Floyd)",
+      "section": "13-10 Bus Interfacing (Bus Contention) + 14 Practical Computer System Considerations (Shared Signal Lines) (pdf_page_index 786 and 807)",
+      "pdf_page_index": 786,
+      "tier": "A"
+    }
+  },
+  {
+    "id": "tri-state-bidirectional-io-buffer-pattern",
+    "type": "circuit_pattern",
+    "tier": 2,
+    "statement": "Bidirectional bus port: each I/O line connects to the bus through an anti-parallel pair of tri-state buffers with complementary enables driven by one SND/RCV direction line, so exactly one buffer of the pair is ever active. Direction LOW enables the outbound buffer (device drives the bus); direction HIGH enables the inbound buffer (device receives from the bus).",
+    "inputs": [
+      "Device-side I/O line(s)",
+      "SND/RCV direction-select signal",
+      "Bus line(s)"
+    ],
+    "outputs": [
+      "Bidirectional connection between device port and shared bus, contention-free by construction"
+    ],
+    "required_blocks": [
+      "Per bus line: two tri-state buffers connected in opposite directions between device pin and bus line",
+      "One direction signal with inversion so the two buffer enables are complementary",
+      "For multi-source (non-bidirectional) buses: one tri-state buffer bank per source with mutually exclusive selects (select LOW connects source A, HIGH connects source B)"
+    ],
+    "condition": "Device with combined input/output port pins that must be multiplexed onto a shared data bus; all other devices on the bus must obey the single-enabled-driver rule.",
+    "design_notes": [
+      "The complementary-enable structure makes simultaneous send and receive impossible on a line, preventing self-contention",
+      "Many microprocessors/memories integrate these buffers internally; add external ones only for devices without tri-state outputs"
+    ],
+    "tags": [
+      "tri-state",
+      "bidirectional-buffer",
+      "bus",
+      "io-port",
+      "multiplexing"
+    ],
+    "source": {
+      "book": "Digital Fundamentals 11ed (Floyd)",
+      "section": "13-10 Bus Interfacing (Multiplexed I/Os, Figure 13-80; two-source select, Figure 13-76)",
+      "pdf_page_index": 786,
+      "tier": "A"
+    }
+  },
+  {
+    "id": "slow-edge-into-non-schmitt-input-failure",
+    "type": "failure_mode",
+    "tier": 3,
+    "statement": "Condition: a slowly changing or noisy signal hovers around the single switching threshold of a standard (non-hysteresis) logic input. Consequence: the device switches erratically, producing multiple spurious output transitions. A Schmitt-trigger input avoids this with hysteresis (separate upper and lower trip points) and triggers reliably even when the input changes as slowly as 1 volt/second.",
+    "condition": "Slow rise/fall edges (RC-shaped signals, sensor outputs, long lines) or system noise superimposed near the input threshold, feeding a non-Schmitt logic/clock input.",
+    "consequence": "Erratic switching between states / multiple output transitions per intended edge; downstream counters and flip-flops register false clocks.",
+    "values": {
+      "schmitt_minimum_input_slew": "1 V/s (reliable triggering per Floyd)"
+    },
+    "tags": [
+      "schmitt-trigger",
+      "hysteresis",
+      "slow-edge",
+      "noise",
+      "input-conditioning"
+    ],
+    "source": {
+      "book": "Digital Fundamentals 11ed (Floyd)",
+      "section": "7-5 One-Shots (The Schmitt-Trigger Symbol) + 14 Practical Computer System Considerations (buffers, pdf_page_index 809)",
+      "pdf_page_index": 417,
+      "tier": "A"
+    }
+  },
+  {
+    "id": "schmitt-buffer-input-conditioning-pattern",
+    "type": "circuit_pattern",
+    "tier": 2,
+    "statement": "Insert a Schmitt-trigger buffer or inverter between any slow-changing or noisy signal source and downstream edge-sensitive logic. The hysteresis between the upper trip point (UTP) and lower trip point (LTP) means noise smaller than the hysteresis band cannot re-cross the active threshold, so the output makes exactly one clean transition per input edge.",
+    "inputs": [
+      "Slow or noisy digital-ish signal (RC-filtered line, switch/sensor output, long cable)"
+    ],
+    "outputs": [
+      "Clean, fast-edged logic signal safe for clocks and edge-triggered inputs"
+    ],
+    "required_blocks": [
+      "One Schmitt-trigger gate (buffer or inverter; hysteresis-symbol input) per conditioned line",
+      "Optional: same Schmitt inverter plus feedback R (output to input) and C (input to ground) forms an astable clock oscillating between UTP and LTP (Figure 7-55)"
+    ],
+    "condition": "Use whenever the input slew is too slow or too noisy for a standard input; Schmitt inputs remain reliable down to 1 V/s input slew.",
+    "design_notes": [
+      "Floyd's ch. 14 guidance: Schmitt triggers are one of the standard buffer types used to keep logic devices from acting erratically when system noise affects slowly changing inputs",
+      "Hysteresis symbol inside the gate body marks Schmitt inputs on schematics",
+      "The Schmitt+RC astable variant produces a square-wave clock without a crystal; frequency set by the RC time constant between UTP and LTP crossings (exact f equation not given in Floyd)"
+    ],
+    "tags": [
+      "schmitt-trigger",
+      "hysteresis",
+      "signal-conditioning",
+      "utp-ltp",
+      "astable"
+    ],
+    "source": {
+      "book": "Digital Fundamentals 11ed (Floyd)",
+      "section": "7-5 One-Shots (Schmitt-Trigger Symbol, pdf_page_index 417) + 7-6 The Astable Multivibrator (Figure 7-55, pdf_page_index 423) + ch. 14 (pdf_page_index 809)",
+      "pdf_page_index": 417,
+      "tier": "A"
+    }
+  },
+  {
+    "id": "sr-latch-spdt-switch-debounce-pattern",
+    "type": "circuit_pattern",
+    "tier": 2,
+    "statement": "SPDT switch debouncer: an S-R (NAND) latch with both inputs pulled up to VCC through resistors and an SPDT switch grounding either the S-side or R-side contact. The first contact touch sets (or resets) the latch; all subsequent bounce spikes on that input cannot change the already-latched state, so Q delivers a single clean edge per throw in both directions.",
+    "inputs": [
+      "SPDT (form-C, break-before-make) mechanical switch, common terminal to ground",
+      "VCC"
+    ],
+    "outputs": [
+      "Q: bounce-free logic transition (one clean LOW-to-HIGH or HIGH-to-LOW edge per switch throw)"
+    ],
+    "required_blocks": [
+      "S-R latch (fixed-function example: 74HC279A quad S-R latch)",
+      "Two pull-up resistors (R1, R2) from VCC to the latch S and R inputs",
+      "SPDT switch: pole to ground, throw 1 to R input node, throw 2 to S input node"
+    ],
+    "condition": "Any mechanical switch or pushbutton feeding edge-sensitive logic; bounce lasts long enough that raw contacts produce multiple spikes per actuation.",
+    "design_notes": [
+      "Requires an SPDT (two-throw) switch -- a plain SPST switch cannot use this latch pattern because each throw must ground a different latch input",
+      "Alternative time-based approach from Floyd's keyboard-encoder design: a one-shot delays the register-load clock after key closure so contact bounce dies out before data is latched, and simultaneously inhibits the scan counter (pdf_page_index 476)",
+      "Bounce spikes are 'very short in duration' but unacceptable to digital systems -- never clock counters/flip-flops directly from raw switch contacts"
+    ],
+    "tags": [
+      "debounce",
+      "sr-latch",
+      "switch",
+      "spdt",
+      "pull-up",
+      "74hc279"
+    ],
+    "source": {
+      "book": "Digital Fundamentals 11ed (Floyd)",
+      "section": "7-1 Latches (An Application: The Latch as a Contact-Bounce Eliminator, Figure 7-6; 74HC279A Figure 7-7)",
+      "pdf_page_index": 391,
+      "tier": "A"
+    }
+  }
+]
