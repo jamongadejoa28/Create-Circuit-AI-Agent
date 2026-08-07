@@ -28,3 +28,5 @@ build/
 *.erc.json
 golden/svg/
 fp-info-cache
+*.kicad-export.net
+golden/*.net

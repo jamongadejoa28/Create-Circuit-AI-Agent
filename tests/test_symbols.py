@@ -49,14 +49,21 @@ def test_raw_blocks_balanced_and_named():
         assert s.raw_sexp.lstrip().startswith(f'(symbol "{name}"')
 
 
-def test_extends_inheritance_resolved():
-    # Switch.kicad_sym contains derived symbols using (extends ...).
+def test_extends_inheritance_flattened():
+    # Switch.kicad_sym contains derived symbols using (extends ...), e.g.
+    # CK_KMS2xxG extends SW_Push_Shielded. KiCad never writes `extends`
+    # into a schematic's lib_symbols cache (it flattens first) — an
+    # embedded derived block would be silently pin-less, so our parser
+    # must deliver flattened raw blocks (verified against kicad-cli:
+    # the flattened embed ERCs clean and exports all pins).
     defs = parse_library(KICAD_SYMBOL_DIR / "Switch.kicad_sym", "Switch")
-    derived = {
-        name: d
-        for name, d in defs.items()
-        if "(extends" in d.raw_sexp
-    }
-    assert derived, "expected at least one extends-based symbol in Switch"
-    for d in derived.values():
-        assert d.pins, f"{d.lib_id}: derived symbol must inherit parent pins"
+    for d in defs.values():
+        assert "(extends" not in d.raw_sexp, f"{d.lib_id}: unflattened extends"
+
+    d = defs["Switch:CK_KMS2xxG"]
+    assert [p.number for p in d.pins] == ["1", "2", "SH"]  # inherited pins
+    assert '(symbol "CK_KMS2xxG"' in d.raw_sexp  # renamed outer block
+    assert '"CK_KMS2xxG_0_1"' in d.raw_sexp or '"CK_KMS2xxG_1_1"' in d.raw_sexp
+    # derived property override survives the merge
+    assert "Button_Switch_SMD:SW_SPST_CK_KMS2xxGP" in d.raw_sexp
+    assert d.raw_sexp.count("(") == d.raw_sexp.count(")")

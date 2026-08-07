@@ -37,7 +37,12 @@ def ensure_pwr_flags(ir: CircuitIR, symbols: dict[str, SymbolDef]) -> list[str]:
             comp = ir.components.get(ref)
             if comp is None or comp.lib_id not in symbols:
                 continue
-            etype = symbols[comp.lib_id].pin(pin_no).etype
+            try:
+                etype = symbols[comp.lib_id].pin(pin_no).etype
+            except KeyError:
+                # Unknown pin number: leave it for check_circuit to report as
+                # a structured unknown_pin error instead of crashing here.
+                continue
             if etype == PinType.PWRIN:
                 has_power_in = True
             elif etype == PinType.PWROUT:

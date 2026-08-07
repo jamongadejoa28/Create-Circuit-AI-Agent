@@ -43,6 +43,9 @@ def run_erc(sch_path: str | Path, out_json: str | Path | None = None) -> ErcResu
     if out_json is None:
         out_json = sch_path.with_suffix(".erc.json")
     out_json = Path(out_json)
+    # A report from a previous run must never be mistaken for this run's:
+    # if kicad-cli dies before writing, the stale file would be parsed below.
+    out_json.unlink(missing_ok=True)
 
     proc = subprocess.run(
         [

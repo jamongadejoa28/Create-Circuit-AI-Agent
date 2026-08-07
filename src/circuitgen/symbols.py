@@ -23,31 +23,47 @@ from .pins import KICAD_PIN_TYPES
 KICAD_SYMBOL_DIR = Path("/mnt/c/Program Files/KiCad/10.0/share/kicad/symbols")
 
 
+_SYMBOL_NAME_RE = re.compile(r'\(symbol\s+"((?:[^"\\]|\\.)*)"')
+
+
 def _extract_toplevel_blocks(text: str) -> dict[str, str]:
-    """Cut verbatim depth-1 `(symbol "NAME" ...)` blocks out of library text."""
+    """Cut verbatim depth-1 `(symbol "NAME" ...)` blocks out of library text.
+
+    Single linear scan (the naive per-match depth recount is O(n²) and takes
+    minutes on multi-MB libraries), and quote-aware: parentheses inside
+    quoted strings — common in Description properties like "(dual)" — must
+    not count toward nesting depth.
+    """
     blocks: dict[str, str] = {}
-    for m in re.finditer(r'\(symbol\s+"((?:[^"\\]|\\.)*)"', text):
-        # Only depth-1 blocks: count parens from file start to match position.
-        depth = 0
-        for ch in text[: m.start()]:
-            if ch == "(":
-                depth += 1
-            elif ch == ")":
-                depth -= 1
-        if depth != 1:
-            continue
-        depth, end = 0, None
-        for i in range(m.start(), len(text)):
-            if text[i] == "(":
-                depth += 1
-            elif text[i] == ")":
-                depth -= 1
-                if depth == 0:
-                    end = i + 1
-                    break
-        if end is None:
-            raise ValueError(f"unbalanced symbol block for {m.group(1)!r}")
-        blocks[m.group(1)] = text[m.start() : end]
+    depth = 0
+    in_str = False
+    block_start: int | None = None
+    block_name: str | None = None
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if in_str:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == '"':
+                in_str = False
+        elif ch == '"':
+            in_str = True
+        elif ch == "(":
+            depth += 1
+            if depth == 2 and block_start is None and text.startswith("symbol", i + 1):
+                m = _SYMBOL_NAME_RE.match(text, i)
+                if m:
+                    block_start, block_name = i, m.group(1)
+        elif ch == ")":
+            depth -= 1
+            if depth == 1 and block_start is not None:
+                blocks[block_name] = text[block_start : i + 1]
+                block_start = block_name = None
+        i += 1
+    if in_str or depth != 0 or block_start is not None:
+        raise ValueError("unbalanced or unterminated symbol library text")
     return blocks
 
 
@@ -74,6 +90,82 @@ def _has_flag(sx: Sexp, key: str) -> bool:
 
 
 _UNIT_RE = re.compile(r"^(?P<base>.+)_(?P<unit>\d+)_(?P<body>\d+)$")
+
+
+def _cut_balanced(text: str, start: int) -> str:
+    """The complete parenthesized block starting at text[start] == '('.
+
+    Quote-aware: parens inside quoted strings don't count.
+    """
+    depth = 0
+    in_str = False
+    i = start
+    while i < len(text):
+        ch = text[i]
+        if in_str:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == '"':
+                in_str = False
+        elif ch == '"':
+            in_str = True
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+        i += 1
+    raise ValueError("unbalanced block")
+
+
+def _property_blocks(block_text: str) -> dict[str, str]:
+    """{property name: verbatim (property ...) block} for one symbol block."""
+    out: dict[str, str] = {}
+    for m in re.finditer(r'\(property\s+"((?:[^"\\]|\\.)*)"', block_text):
+        out[m.group(1)] = _cut_balanced(block_text, m.start())
+    return out
+
+
+def _flatten_extends(parent_raw: str, parent_name: str, derived_raw: str, derived_name: str) -> str:
+    """Replicate LIB_SYMBOL::Flatten() textually: parent's full body under
+    the derived name, with the derived block's property overrides applied.
+
+    KiCad never writes `extends` into a schematic's lib_symbols cache
+    (sch_screen.cpp always calls Flatten() before caching); an embedded
+    derived block is silently pin-less. Derived library blocks contain only
+    property overrides, which is exactly what Flatten copies over.
+    """
+    text = parent_raw
+    # Outer name, then inner unit blocks "<parent>_<unit>_<body>".
+    text = re.sub(
+        r'\(symbol\s+"' + re.escape(parent_name) + '"',
+        lambda m: f'(symbol "{derived_name}"',
+        text,
+        count=1,
+    )
+    text = re.sub(
+        r'\(symbol\s+"' + re.escape(parent_name) + r'_(\d+_\d+)"',
+        lambda m: f'(symbol "{derived_name}_{m.group(1)}"',
+        text,
+    )
+    overrides = _property_blocks(derived_raw)
+    for name, new_block in overrides.items():
+        existing = None
+        for m in re.finditer(r'\(property\s+"((?:[^"\\]|\\.)*)"', text):
+            if m.group(1) == name:
+                existing = (m.start(), m.start() + len(_cut_balanced(text, m.start())))
+                break
+        if existing:
+            text = text[: existing[0]] + new_block + text[existing[1] :]
+        else:
+            first_unit = text.find('(symbol "')
+            first_unit = text.find('(symbol "', first_unit + 1)  # skip outer
+            if first_unit == -1:
+                first_unit = text.rfind(")")
+            text = text[:first_unit] + new_block + "\n\t\t" + text[first_unit:]
+    return text
 
 
 def _parse_pins(symbol_sx: list) -> list[PinDef]:
@@ -146,17 +238,21 @@ def parse_library(path: str | Path, lib_nickname: str | None = None) -> dict[str
         sx = parsed[name]
         extends = _get(sx, "extends")
         if extends is not None:
-            parent = build(str(extends[1]), seen + (name,))
+            parent_name = str(extends[1])
+            parent = build(parent_name, seen + (name,))
             pins = [PinDef(**vars(p)) for p in parent.pins]
             is_power = parent.is_power or _has_flag(sx, "power")
             ref = _property_value(sx, "Reference") or parent.reference_prefix
+            # parent.raw_sexp is itself already flattened, so chains compose.
+            raw = _flatten_extends(parent.raw_sexp, parent_name, raw_blocks[name], name)
         else:
             pins = _parse_pins(sx)
             is_power = _has_flag(sx, "power")
             ref = _property_value(sx, "Reference") or "U"
+            raw = raw_blocks[name]
         d = SymbolDef(
             lib_id=lib_id,
-            raw_sexp=raw_blocks[name],
+            raw_sexp=raw,
             pins=pins,
             is_power=is_power,
             reference_prefix=ref,

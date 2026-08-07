@@ -45,7 +45,14 @@ def _fmt(v: float) -> str:
 
 
 def _esc(s: str) -> str:
-    return s.replace("\\", "\\\\").replace('"', '\\"')
+    """Match KiCad's OUTPUTFORMATTER::Quotes (common/richio.cpp): a raw
+    newline inside a quoted token makes DSNLEXER reject the entire file."""
+    return (
+        s.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+    )
 
 
 @dataclass
@@ -76,6 +83,7 @@ def build_emit_plan(
 ) -> EmitPlan:
     """Stub+label geometry for every net node, no_connect markers for NC pins."""
     plan = EmitPlan()
+    seen_labels: set[tuple[str, float, float]] = set()
     for net in ir.nets:
         for ref, pin_no in net.nodes:
             comp = ir.components[ref]
@@ -86,7 +94,12 @@ def build_emit_plan(
             plan.wires.append((start, end, f"{ref}.{pin_no}"))
             dx, dy = pin_outward_dir(place, pin)
             rot, justify = _label_orientation(dx, dy)
-            plan.labels.append((net.name, end[0], end[1], rot, justify))
+            # Two stubs of one net may end on the same point (facing pins);
+            # a second identical label there would duplicate text AND uuid.
+            key = (net.name, end[0], end[1])
+            if key not in seen_labels:
+                seen_labels.add(key)
+                plan.labels.append((net.name, end[0], end[1], rot, justify))
     for ref, pin_no in ir.nc_pins:
         comp = ir.components[ref]
         pin = symbols[comp.lib_id].pin(pin_no)
@@ -203,8 +216,15 @@ def emit_schematic(
         w(_property("Footprint", comp.footprint, place.x, place.y, hide=True))
         w(_property("Datasheet", "", place.x, place.y, hide=True))
         w(_property("Description", "", place.x, place.y, hide=True))
+        # Some symbols carry duplicate pin numbers (see the library flag
+        # duplicate_pin_numbers_are_jumpers); disambiguate their uuids by
+        # occurrence index so no two pin entries collide.
+        number_counts: dict[str, int] = {}
         for pin in sym.pins:
-            w(f'\t\t(pin "{_esc(pin.number)}"\n\t\t\t(uuid "{uuid_for(project, "root", ref, "pin", pin.number)}")\n\t\t)\n')
+            idx = number_counts.get(pin.number, 0)
+            number_counts[pin.number] = idx + 1
+            tag = pin.number if idx == 0 else f"{pin.number}#{idx}"
+            w(f'\t\t(pin "{_esc(pin.number)}"\n\t\t\t(uuid "{uuid_for(project, "root", ref, "pin", tag)}")\n\t\t)\n')
         w(
             f"\t\t(instances\n"
             f'\t\t\t(project "{_esc(project)}"\n'

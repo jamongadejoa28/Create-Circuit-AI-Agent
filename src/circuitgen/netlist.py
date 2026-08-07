@@ -116,16 +116,51 @@ def kicad_partition(
 def compare_connectivity(
     ir: CircuitIR, exported_netlist: str | Path
 ) -> tuple[bool, str]:
-    """True iff the exported netlist's partition equals the IR's."""
-    want = ir_partition(ir)
-    got = kicad_partition(parse_kicad_netlist(exported_netlist))
-    if want == got:
-        return True, "connectivity identical"
-    missing = want - got
-    extra = got - want
-    msg = []
-    if missing:
-        msg.append(f"nets in IR but not in schematic: {sorted(sorted(n) for n in missing)}")
-    if extra:
-        msg.append(f"nets in schematic but not in IR: {sorted(sorted(n) for n in extra)}")
+    """True iff KiCad's netlist matches the IR, by name AND by partition.
+
+    The partition check alone cannot see nets that keep only one real pin
+    after power symbols are dropped — e.g. swapped +5V/GND rails still
+    yield an identical partition. Since the emitter labels every net with
+    its IR name, KiCad's exported net names (modulo the root-sheet "/"
+    prefix on local labels) must match too, member-for-member.
+    """
+    exported = parse_kicad_netlist(exported_netlist)
+    by_name: dict[str, set[tuple[str, str]]] = {}
+    for name, nodes in exported.items():
+        by_name[name.lstrip("/")] = nodes
+
+    msg: list[str] = []
+
+    matched_names: set[str] = set()
+    for net in ir.nets:
+        want = {(r, str(p)) for r, p in net.nodes if not r.startswith("#")}
+        got = by_name.get(net.name, set())
+        matched_names.add(net.name)
+        if want != got:
+            msg.append(
+                f"net {net.name!r}: IR has {sorted(want)}, schematic has {sorted(got)}"
+            )
+
+    for name, nodes in by_name.items():
+        if name in matched_names or not nodes:
+            continue
+        # KiCad auto-names single dangling/no-connect pins "unconnected-(...)".
+        # A pin that SHOULD have been connected already failed its own net's
+        # membership check above, so a singleton here is legitimate NC noise.
+        if name.startswith("unconnected-") and len(nodes) <= 1:
+            continue
+        msg.append(f"unexpected net {name!r} in schematic: {sorted(nodes)}")
+
+    want_part = ir_partition(ir)
+    got_part = kicad_partition(exported)
+    if want_part != got_part:
+        missing = want_part - got_part
+        extra = got_part - want_part
+        if missing:
+            msg.append(f"partition missing: {sorted(sorted(n) for n in missing)}")
+        if extra:
+            msg.append(f"partition extra: {sorted(sorted(n) for n in extra)}")
+
+    if not msg:
+        return True, "connectivity identical (by name and by partition)"
     return False, "; ".join(msg)

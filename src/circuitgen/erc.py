@@ -30,12 +30,32 @@ def _issue(rule: str, severity: str, path: str, message: str) -> ValidationIssue
     return ValidationIssue("circuitgen-erc", rule, severity, path, message)
 
 
+_FORBIDDEN_NAME_CHARS = set('/\\"\n\r')
+
+
+def _bad_name(s: str) -> bool:
+    return not s or any(ch in _FORBIDDEN_NAME_CHARS for ch in s)
+
+
 def _check_structure(
     ir: CircuitIR, symbols: dict[str, SymbolDef]
 ) -> list[ValidationIssue]:
     """IR-level sanity: every referenced component/pin/symbol must exist."""
     issues = []
+    if _bad_name(ir.name) or any(ch in ir.name for ch in " :*?<>|"):
+        issues.append(
+            _issue("invalid_name", "error", "circuit", f"circuit name {ir.name!r} is not filename-safe")
+        )
+    for net in ir.nets:
+        if _bad_name(net.name):
+            issues.append(
+                _issue("invalid_name", "error", f"net:{net.name!r}", f"net name {net.name!r} is empty or contains /, \\, quote, or newline")
+            )
     for ref, comp in ir.components.items():
+        if _bad_name(ref):
+            issues.append(
+                _issue("invalid_name", "error", repr(ref), f"reference {ref!r} is empty or contains /, \\, quote, or newline")
+            )
         if comp.lib_id not in symbols:
             issues.append(
                 _issue("unknown_symbol", "error", ref, f"{ref}: symbol {comp.lib_id} not in library set")

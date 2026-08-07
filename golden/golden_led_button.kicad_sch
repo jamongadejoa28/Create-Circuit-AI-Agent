@@ -1040,16 +1040,6 @@
 		)
 		(uuid "a9b17f42-7d07-5cac-b405-2c66184f1bda")
 	)
-	(label "R_LED"
-		(at 88.9 63.5 180)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify right bottom)
-		)
-		(uuid "a9b17f42-7d07-5cac-b405-2c66184f1bda")
-	)
 	(label "GND"
 		(at 101.6 63.5 0)
 		(effects
