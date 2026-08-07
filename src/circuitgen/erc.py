@@ -164,6 +164,12 @@ def _check_extended(
             issues.append(
                 _issue("switch_across_rails", "error", ref, f"{ref} connects a power rail directly to ground — closing it shorts the supply; put it in series with the load instead")
             )
+        if sym.reference_prefix == "D" and sorted(k for k in kinds if k) == ["gnd", "power"]:
+            # knowledge: led-series-resistor — a diode/LED straight across
+            # the rails has no current limiting and will be destroyed
+            issues.append(
+                _issue("diode_across_rails", "error", ref, f"{ref} sits directly between a power rail and ground with no current limiting — insert a series resistor (R = (Vsupply - Vf) / If)")
+            )
         if any((ref, p.number) in nc for p in sym.pins):
             issues.append(
                 _issue("dead_two_pin_component", "warning", ref, f"{ref} has a no-connect pin — a 2-pin component with an open pin does nothing; wire both pins or remove it")

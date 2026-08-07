@@ -226,8 +226,10 @@ SKIDL의 force-directed 배치(`place.py`)와 maze/switchbox 배선(`route.py`)�
 
 **Qwen3.5 thinking 끄기**: 서버 기동 시 `--reasoning-budget 0`(권장) 또는 요청별 `chat_template_kwargs {"enable_thinking": false}`(`bench_models.py --thinking-off`가 자동 주입).
 
+**Qwen2.5-Coder-7B 기준선 (2026-08-07 확정, 결정론 가드 전체 적용 후)**: led_button ERC 3/3·기능 3/3, divider ERC 3/3·기능 3/3, led_only ERC 1~2/3·기능 ~1/3(레일 병렬 오배선을 고집 — `diode_across_rails` 린트가 구조화 에러로 변환해 수리 루프가 가끔만 교정, 평균 수리 11회 churn). 종합 기능 정합 ~7/9. **결론: 남은 실패는 프롬프트/가드로 흡수 불가능한 모델 설계 추론 한계** — 이것이 Qwen3.5 비교의 측정 대상이다.
+
 **실행 절차**:
-1. Coder 서빙 상태에서: `bench_models.py --label qwen2.5-coder --reps 3`
+1. Coder 서빙 상태에서: `bench_models.py --label qwen2.5-coder --reps 3` ✅ 완료
 2. 서버를 Qwen3.5로 교체 기동(`-m ...Qwen3.5-9B-Q4_K_M.gguf --reasoning-budget 0`, ctx는 VRAM상 6144~8192 실측 조정) 후: `--label qwen3.5-nothink --reps 3 --thinking-off`
 3. jsonl 두 개를 비교.
 

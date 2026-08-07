@@ -58,8 +58,15 @@ _GND_NAMES = {"GND", "VSS", "AGND", "DGND", "0V"}
 
 
 def _normalize_rails(spec: dict) -> dict:
-    """Deterministic rail-name normalization: '5V' → '+5V', '3.3V' → '+3V3'."""
-    for rail in spec.get("power", {}).get("rails", []):
+    """Deterministic rail-name normalization: '5V' → '+5V', '3.3V' → '+3V3'.
+
+    Also guarantees a GND rail: every in-scope DC circuit has a ground
+    reference, and a spec without one silently produces supply-less
+    circuits that can pass every ERC (observed live: the 7B extractor
+    listed only +5V).
+    """
+    rails = spec.setdefault("power", {}).setdefault("rails", [])
+    for rail in rails:
         name = rail.get("name", "").strip().upper().replace(" ", "")
         if name in _GND_NAMES:
             rail["name"] = "GND" if name in ("GND", "0V") else name
@@ -68,6 +75,8 @@ def _normalize_rails(spec: dict) -> dict:
         if name and name[0].isdigit():
             name = "+" + name
         rail["name"] = name
+    if not any(r.get("name") in _GND_NAMES for r in rails):
+        rails.append({"name": "GND", "voltage": "0V"})
     return spec
 
 
@@ -96,7 +105,8 @@ class Agent:
                         "Normalize this circuit request into a RequirementSpec. "
                         "Scope limits: max 24VDC / 3A, no AC mains, no isolation or "
                         "safety-critical circuits — set out_of_scope if exceeded.\n"
-                        "Rail names use KiCad power conventions: +5V, +3V3, +12V, GND.\n"
+                        "Rail names use KiCad power conventions: +5V, +3V3, +12V, GND. "
+                        "power.rails MUST include the ground rail (GND).\n"
                         "search_query must be a GENERIC part type ('LED', 'resistor', "
                         "'push button switch'); colors/specifics belong in value or "
                         "connections_intent, not in the query.\n"
@@ -154,7 +164,17 @@ class Agent:
             "(2-pin Device:R / Device:LED / Switch:SW_Push) over specialized variants.\n"
             "- Do NOT add power:* symbols or PWR_FLAGs — they are attached "
             "automatically. Just name each power net EXACTLY like its SPEC rail "
-            "and put the member pins in it.\n"
+            "(same spelling, e.g. '+5V' not '5V' or 'VCC') and put the member "
+            "pins in it. Every SPEC rail must appear as a net.\n"
+            "- Loads connect IN SERIES between the rails; a switch goes in "
+            "series with its load, NEVER directly between two rails.\n"
+            "EXAMPLE A (LED on 5V): R1=Device:R 330R, D1=Device:LED; nets: "
+            "'+5V':[R1.1], 'R_LED':[R1.2, D1.2(anode)], 'GND':[D1.1(cathode)]. "
+            "Current flows +5V → R1 → LED → GND; the resistor and LED share "
+            "the middle net, NOT the GND net.\n"
+            "EXAMPLE B (button added): SW1=Switch:SW_Push in series before R1; "
+            "nets: '+5V':[SW1.1], 'SW_R':[SW1.2, R1.1], 'R_LED':[R1.2, D1.2], "
+            "'GND':[D1.1]. Follow these series patterns, adapted to the SPEC.\n"
             "- Every non-power pin of every used component must be in a net or in nc_pins.\n"
             "- Apply the KNOWLEDGE rules (decoupling caps beside ICs, pull-ups, "
             "current-limit resistor values).\n"
@@ -170,6 +190,36 @@ class Agent:
             max_tokens=4096,
         )
         return ir_from_json(data), {"candidates": candidates, "knowledge": snippets}
+
+    def resolve_pin_names(self, ir: CircuitIR) -> list[str]:
+        """Rewrite pin NAMES used where numbers belong ('D1.A' → 'D1.2').
+
+        Models naturally write anode/cathode/VCC by name; when the name
+        matches exactly one pin of the component's symbol, substitute its
+        number deterministically instead of burning a repair round.
+        """
+        notes = []
+        symbols = self._resolve_symbols(ir)
+
+        def fix(ref: str, pin: str) -> str:
+            comp = ir.components.get(ref)
+            sym = symbols.get(comp.lib_id) if comp else None
+            if sym is None:
+                return pin
+            numbers = {p.number for p in sym.pins}
+            if pin in numbers:
+                return pin
+            matches = {p.number for p in sym.pins if p.name.upper() == pin.upper()}
+            if len(matches) == 1:
+                new = next(iter(matches))
+                notes.append(f"resolved {ref}.{pin} -> pin {new}")
+                return new
+            return pin
+
+        for net in ir.nets:
+            net.nodes = [(r, fix(r, str(p))) for r, p in net.nodes]
+        ir.nc_pins = [(r, fix(r, str(p))) for r, p in ir.nc_pins]
+        return notes
 
     def attach_power_symbols(self, ir: CircuitIR, spec: dict) -> list[str]:
         """Deterministically add power symbols to rail nets (never the LLM's
@@ -187,8 +237,13 @@ class Agent:
             net = next((n for n in ir.nets if n.name == name), None)
             if net is None:
                 continue
+            # PWR_FLAGs are power:* too but are NOT supply symbols — they
+            # must never satisfy this check (ensure_pwr_flags adds them
+            # during pipeline runs, before repair-round re-attachment).
             has_power = any(
-                r in ir.components and ir.components[r].lib_id.startswith("power:")
+                r in ir.components
+                and ir.components[r].lib_id.startswith("power:")
+                and not ir.components[r].lib_id.endswith("PWR_FLAG")
                 for r, _ in net.nodes
             )
             if has_power:
@@ -267,7 +322,34 @@ class Agent:
             res.log.append(f"IR synthesis failed: {e}")
             return res
         res.ir = ir
+        res.log.extend(self.resolve_pin_names(ir))
         res.log.extend(self.attach_power_symbols(ir, spec))
+
+        # A missing rail net means the model mis-named the supply net — a
+        # supply-less passive loop can pass every ERC, so catch it here and
+        # spend one repair round on it before generating anything.
+        missing = [
+            rail["name"]
+            for rail in spec.get("power", {}).get("rails", [])
+            if not any(n.name == rail["name"] for n in ir.nets)
+        ]
+        if missing:
+            res.stage = "repair-rails"
+            try:
+                notes = self._repair(
+                    ir,
+                    [
+                        f"required power net {name!r} does not exist — rename the "
+                        f"corresponding supply net to exactly {name!r}"
+                        for name in missing
+                    ],
+                    {},
+                )
+                res.repairs.extend(notes)
+                res.log.extend(self.resolve_pin_names(ir))
+                res.log.extend(self.attach_power_symbols(ir, spec))
+            except Exception as e:
+                res.log.append(f"rail repair failed: {e}")
 
         res.stage = "pipeline"
         pr = generate(ir, self.out_dir, symbols=self._resolve_symbols(ir))
@@ -293,7 +375,10 @@ class Agent:
                 res.log.append(f"repair round {rounds} failed: {e}")
                 break
             res.repairs.extend(notes)
-            # patches may introduce new lib_ids — re-resolve symbols each round
+            # patches may use pin names, introduce new lib_ids, or create
+            # rail nets that still need their supply symbol
+            res.log.extend(self.resolve_pin_names(ir))
+            res.log.extend(self.attach_power_symbols(ir, spec))
             pr = generate(ir, self.out_dir, symbols=self._resolve_symbols(ir))
             res.pipeline = pr
 
