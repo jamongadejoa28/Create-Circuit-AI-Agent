@@ -18,7 +18,7 @@ from .ir import CircuitIR, SymbolDef, ValidationIssue
 from .kicad_cli import ErcResult, export_netlist, export_svg, run_erc
 from .netlist import compare_connectivity, generate_netlist
 from .normalize import ensure_pwr_flags
-from .place import grid_place
+from .place import heuristic_place
 from .project import write_project
 from .symbols import load_symbols
 
@@ -60,7 +60,7 @@ def generate(
 
     # 2. placement + emission
     if placements is None:
-        placements = grid_place(ir, symbols)
+        placements = heuristic_place(ir, symbols)
 
     sch_path = out_dir / f"{ir.name}.kicad_sch"
     try:

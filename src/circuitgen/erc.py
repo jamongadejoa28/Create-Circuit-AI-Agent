@@ -131,7 +131,13 @@ def _check_extended(
             if r in ir.components and ir.components[r].lib_id in symbols
             and _pin_type(ir, symbols, r, str(p)) is not None
         }
-        if not any(n in ("SDA", "SCL") or n.endswith("/SDA") or n.endswith("/SCL") for n in pin_names):
+        # Dedicated I2C pins carry SDA/SCL names (sensors, EEPROMs); MCU GPIO
+        # pins usually don't (ESP32: IO21/IO22), so a net NAMED SDA/SCL is
+        # treated as equally strong intent.
+        named_i2c = net.name.upper() in ("SDA", "SCL")
+        if not named_i2c and not any(
+            n in ("SDA", "SCL") or n.endswith("/SDA") or n.endswith("/SCL") for n in pin_names
+        ):
             continue
         has_pullup = any(
             net_kinds.get(other) == "power"

@@ -263,8 +263,19 @@ def emit_schematic(
             w("\t\t(in_pos_files yes)\n")
             w("\t\t(dnp no)\n")
             w(f'\t\t(uuid "{u}")\n')
-            w(_property("Reference", ref, place.x + 2.54, place.y - 2.54, hide=sym.is_power))
-            w(_property("Value", comp.value, place.x + 2.54, place.y + 2.54, hide=False))
+            # Small parts keep compact side annotations; large bodies (ICs)
+            # get Reference above and Value below the pin envelope so text
+            # never lands on top of in-body pin names.
+            unit_pins = [p for p in sym.pins if p.unit in (0, unit)] or sym.pins
+            ey = max((abs(p.y) for p in unit_pins), default=2.54)
+            if ey > 7.62:
+                ref_xy = (place.x, place.y - ey - 3.81)
+                val_xy = (place.x, place.y + ey + 3.81)
+            else:
+                ref_xy = (place.x + 2.54, place.y - 2.54)
+                val_xy = (place.x + 2.54, place.y + 2.54)
+            w(_property("Reference", ref, *ref_xy, hide=sym.is_power))
+            w(_property("Value", comp.value, *val_xy, hide=False))
             w(_property("Footprint", comp.footprint, place.x, place.y, hide=True))
             w(_property("Datasheet", "", place.x, place.y, hide=True))
             w(_property("Description", "", place.x, place.y, hide=True))
