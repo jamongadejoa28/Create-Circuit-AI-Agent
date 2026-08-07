@@ -76,10 +76,55 @@ def _label_orientation(dx: float, dy: float) -> tuple[int, str]:
     return 90, "left"
 
 
+PlacementLike = Placement | dict[int, Placement]
+
+
+def normalize_placements(
+    ir: CircuitIR,
+    symbols: dict[str, SymbolDef],
+    placements: dict[str, PlacementLike],
+) -> dict[str, dict[int, Placement]]:
+    """Canonical {ref: {unit: Placement}} form; a bare Placement is accepted
+    for single-unit symbols only."""
+    out: dict[str, dict[int, Placement]] = {}
+    for ref, comp in ir.components.items():
+        sym = symbols[comp.lib_id]
+        units = sym.placed_units()
+        p = placements.get(ref)
+        if p is None:
+            raise KeyError(f"no placement for {ref}")
+        if isinstance(p, Placement):
+            if len(units) > 1:
+                raise ValueError(
+                    f"{ref} ({sym.lib_id}) has units {units}; give per-unit placements"
+                )
+            out[ref] = {units[0]: p}
+        else:
+            missing = set(units) - set(p)
+            if missing:
+                raise ValueError(f"{ref}: units {sorted(missing)} not placed")
+            out[ref] = dict(p)
+    return out
+
+
+def _instance_unit(pin, units_map: dict[int, Placement], ref: str) -> int:
+    """Which placed instance a pin belongs to.
+
+    Unit-0 pins live on the single instance of a single-unit symbol; for
+    multi-unit symbols they would appear on EVERY instance, which the
+    stub+label strategy can't represent (self-ERC blocks that case first).
+    """
+    if pin.unit in units_map:
+        return pin.unit
+    if pin.unit == 0 and len(units_map) == 1:
+        return next(iter(units_map))
+    raise ValueError(f"{ref}: pin {pin.number} (unit {pin.unit}) has no placed instance")
+
+
 def build_emit_plan(
     ir: CircuitIR,
     symbols: dict[str, SymbolDef],
-    placements: dict[str, Placement],
+    placements: dict[str, dict[int, Placement]],
 ) -> EmitPlan:
     """Stub+label geometry for every net node, no_connect markers for NC pins."""
     plan = EmitPlan()
@@ -89,7 +134,8 @@ def build_emit_plan(
             comp = ir.components[ref]
             sym = symbols[comp.lib_id]
             pin = sym.pin(pin_no)
-            place = placements[ref]
+            units_map = placements[ref]
+            place = units_map[_instance_unit(pin, units_map, ref)]
             start, end = pin_stub_end(place, pin, STUB_LEN)
             plan.wires.append((start, end, f"{ref}.{pin_no}"))
             dx, dy = pin_outward_dir(place, pin)
@@ -105,7 +151,9 @@ def build_emit_plan(
         pin = symbols[comp.lib_id].pin(pin_no)
         from .geometry import pin_absolute_position
 
-        plan.no_connects.append(pin_absolute_position(placements[ref], pin))
+        units_map = placements[ref]
+        place = units_map[_instance_unit(pin, units_map, ref)]
+        plan.no_connects.append(pin_absolute_position(place, pin))
     return plan
 
 
@@ -132,9 +180,10 @@ def _property(
 def emit_schematic(
     ir: CircuitIR,
     symbols: dict[str, SymbolDef],
-    placements: dict[str, Placement],
+    placements: dict[str, PlacementLike],
     plan: EmitPlan | None = None,
 ) -> str:
+    placements = normalize_placements(ir, symbols, placements)
     if plan is None:
         plan = build_emit_plan(ir, symbols, placements)
 
@@ -192,48 +241,51 @@ def emit_schematic(
             f'\t\t(uuid "{uuid_for(project, "root", "label", text, _fmt(x), _fmt(y))}")\n\t)\n'
         )
 
-    # --- placed symbols ---
+    # --- placed symbols: one instance block per placed unit (demo ground
+    # truth: each unit block repeats the same Reference, carries its own
+    # (at)/(unit N)/uuid, and lists ALL pins of the whole symbol) ---
     for ref in sorted(ir.components):
         comp = ir.components[ref]
         sym = symbols[comp.lib_id]
-        place = placements[ref]
-        u = uuid_for(project, "root", ref)
-        w("\t(symbol\n")
-        w(f'\t\t(lib_id "{_esc(comp.lib_id)}")\n')
-        w(f"\t\t(at {_fmt(place.x)} {_fmt(place.y)} {place.rotation})\n")
-        if place.mirror:
-            w(f"\t\t(mirror {place.mirror})\n")
-        w("\t\t(unit 1)\n")
-        w("\t\t(body_style 1)\n")
-        w("\t\t(exclude_from_sim no)\n")
-        w("\t\t(in_bom yes)\n")
-        w("\t\t(on_board yes)\n")
-        w("\t\t(in_pos_files yes)\n")
-        w("\t\t(dnp no)\n")
-        w(f'\t\t(uuid "{u}")\n')
-        w(_property("Reference", ref, place.x + 2.54, place.y - 2.54, hide=sym.is_power))
-        w(_property("Value", comp.value, place.x + 2.54, place.y + 2.54, hide=False))
-        w(_property("Footprint", comp.footprint, place.x, place.y, hide=True))
-        w(_property("Datasheet", "", place.x, place.y, hide=True))
-        w(_property("Description", "", place.x, place.y, hide=True))
-        # Some symbols carry duplicate pin numbers (see the library flag
-        # duplicate_pin_numbers_are_jumpers); disambiguate their uuids by
-        # occurrence index so no two pin entries collide.
-        number_counts: dict[str, int] = {}
-        for pin in sym.pins:
-            idx = number_counts.get(pin.number, 0)
-            number_counts[pin.number] = idx + 1
-            tag = pin.number if idx == 0 else f"{pin.number}#{idx}"
-            w(f'\t\t(pin "{_esc(pin.number)}"\n\t\t\t(uuid "{uuid_for(project, "root", ref, "pin", tag)}")\n\t\t)\n')
-        w(
-            f"\t\t(instances\n"
-            f'\t\t\t(project "{_esc(project)}"\n'
-            f'\t\t\t\t(path "/{root_uuid}"\n'
-            f'\t\t\t\t\t(reference "{_esc(ref)}")\n'
-            f"\t\t\t\t\t(unit 1)\n"
-            f"\t\t\t\t)\n\t\t\t)\n\t\t)\n"
-        )
-        w("\t)\n")
+        for unit in sorted(placements[ref]):
+            place = placements[ref][unit]
+            u = uuid_for(project, "root", ref, "unit", str(unit))
+            w("\t(symbol\n")
+            w(f'\t\t(lib_id "{_esc(comp.lib_id)}")\n')
+            w(f"\t\t(at {_fmt(place.x)} {_fmt(place.y)} {place.rotation})\n")
+            if place.mirror:
+                w(f"\t\t(mirror {place.mirror})\n")
+            w(f"\t\t(unit {unit})\n")
+            w("\t\t(body_style 1)\n")
+            w("\t\t(exclude_from_sim no)\n")
+            w("\t\t(in_bom yes)\n")
+            w("\t\t(on_board yes)\n")
+            w("\t\t(in_pos_files yes)\n")
+            w("\t\t(dnp no)\n")
+            w(f'\t\t(uuid "{u}")\n')
+            w(_property("Reference", ref, place.x + 2.54, place.y - 2.54, hide=sym.is_power))
+            w(_property("Value", comp.value, place.x + 2.54, place.y + 2.54, hide=False))
+            w(_property("Footprint", comp.footprint, place.x, place.y, hide=True))
+            w(_property("Datasheet", "", place.x, place.y, hide=True))
+            w(_property("Description", "", place.x, place.y, hide=True))
+            # Some symbols carry duplicate pin numbers (see the library flag
+            # duplicate_pin_numbers_are_jumpers); disambiguate their uuids by
+            # occurrence index so no two pin entries collide.
+            number_counts: dict[str, int] = {}
+            for pin in sym.pins:
+                idx = number_counts.get(pin.number, 0)
+                number_counts[pin.number] = idx + 1
+                tag = pin.number if idx == 0 else f"{pin.number}#{idx}"
+                w(f'\t\t(pin "{_esc(pin.number)}"\n\t\t\t(uuid "{uuid_for(project, "root", ref, "unit", str(unit), "pin", tag)}")\n\t\t)\n')
+            w(
+                f"\t\t(instances\n"
+                f'\t\t\t(project "{_esc(project)}"\n'
+                f'\t\t\t\t(path "/{root_uuid}"\n'
+                f'\t\t\t\t\t(reference "{_esc(ref)}")\n'
+                f"\t\t\t\t\t(unit {unit})\n"
+                f"\t\t\t\t)\n\t\t\t)\n\t\t)\n"
+            )
+            w("\t)\n")
 
     w('\t(sheet_instances\n\t\t(path "/"\n\t\t\t(page "1")\n\t\t)\n\t)\n')
     w("\t(embedded_fonts no)\n")

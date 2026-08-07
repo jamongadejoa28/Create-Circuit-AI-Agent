@@ -56,6 +56,17 @@ def _check_structure(
             issues.append(
                 _issue("invalid_name", "error", repr(ref), f"reference {ref!r} is empty or contains /, \\, quote, or newline")
             )
+        sym = symbols.get(comp.lib_id)
+        if sym is not None:
+            units = {p.unit for p in sym.pins}
+            if 0 in units and (units - {0}):
+                # A unit-0 pin on a multi-unit symbol is drawn on EVERY
+                # placed instance; the stub+label emitter cannot represent
+                # that (mostly IEEE-variant libraries). Use the standard
+                # library's per-unit power-unit form instead.
+                issues.append(
+                    _issue("unit0_pins_unsupported", "error", ref, f"{ref} ({comp.lib_id}) mixes unit-0 pins with multiple units — unsupported")
+                )
         if comp.lib_id not in symbols:
             issues.append(
                 _issue("unknown_symbol", "error", ref, f"{ref}: symbol {comp.lib_id} not in library set")

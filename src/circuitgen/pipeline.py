@@ -61,13 +61,14 @@ def generate(
     # 2. placement + emission
     if placements is None:
         placements = grid_place(ir, symbols)
-    missing = set(ir.components) - set(placements)
-    if missing:
-        res.errors.append(f"no placement for {sorted(missing)}")
-        return res
 
     sch_path = out_dir / f"{ir.name}.kicad_sch"
-    sch_path.write_text(emit_schematic(ir, symbols, placements), encoding="utf-8")
+    try:
+        sch_text = emit_schematic(ir, symbols, placements)
+    except (KeyError, ValueError) as e:
+        res.errors.append(f"placement/emission error: {e}")
+        return res
+    sch_path.write_text(sch_text, encoding="utf-8")
     write_project(sch_path)
     res.sch_path = sch_path
 

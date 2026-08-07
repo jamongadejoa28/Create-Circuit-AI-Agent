@@ -37,12 +37,25 @@ class SymbolDef:
     pins: list[PinDef] = field(default_factory=list)
     is_power: bool = False
     reference_prefix: str = "U"
+    properties: dict[str, str] = field(default_factory=dict)  # Description, ki_keywords, ...
 
     def pin(self, number: str) -> PinDef:
         for p in self.pins:
             if p.number == str(number):
                 return p
         raise KeyError(f"{self.lib_id} has no pin {number!r}")
+
+    def placed_units(self) -> list[int]:
+        """Units that get their own placed instance.
+
+        Single-unit symbols keep their pins in a `_0_1` or `_1_1` block and
+        are placed as one instance with (unit 1); multi-unit symbols get
+        one instance per non-zero unit (e.g. 74LS00: gates 1-4 + power
+        unit 5 — the power unit is a real instance that must be placed and
+        wired like any other).
+        """
+        units = sorted({p.unit for p in self.pins} - {0})
+        return units or [1]
 
 
 @dataclass

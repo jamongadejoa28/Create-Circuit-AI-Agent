@@ -1,0 +1,18 @@
+[
+  {
+    "id": "schematic-flow-conventions",
+    "type": "convention",
+    "statement": "Draw schematics so signal flow reads left to right: inputs and connectors on the left, processing in the middle, outputs on the right. Positive supply rails go toward the top of the sheet, ground toward the bottom.",
+    "condition": "Every generated schematic sheet.",
+    "tags": ["layout", "convention", "flow", "input", "output", "power", "ground"],
+    "source": {"book": "Practical Electronics for Inventors, 4th ed.", "section": "7.2.1 (schematic drawing rules), printed pp.879-881", "tier": "A"}
+  },
+  {
+    "id": "schematic-annotation-conventions",
+    "type": "convention",
+    "statement": "Use standard reference designators (R1, C3, Q1, IC4/U4, D1, SW1) with values written compactly (100k, 0.1µF). Mark true wire junctions with a dot; unconnected crossings have no dot. Pin numbers are written outside the symbol body. Decoupling capacitors are drawn adjacent to the power pin they serve.",
+    "condition": "Every generated schematic sheet.",
+    "tags": ["reference", "designator", "value", "junction", "dot", "pin", "annotation"],
+    "source": {"book": "Practical Electronics for Inventors, 4th ed.", "section": "7.2.1 (schematic drawing rules), printed pp.879-881", "tier": "A"}
+  }
+]

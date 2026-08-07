@@ -169,7 +169,13 @@ def _flatten_extends(parent_raw: str, parent_name: str, derived_raw: str, derive
 
 
 def _parse_pins(symbol_sx: list) -> list[PinDef]:
-    """Collect pins from a parsed `(symbol "Name" ...)` including unit blocks."""
+    """Collect pins from a parsed `(symbol "Name" ...)` including unit blocks.
+
+    Sub-blocks are named NAME_<unit>_<bodystyle>; body style 2 is the
+    De Morgan alternate drawing of the SAME pins — collecting it would
+    duplicate every pin (74LS00 would show each gate pin twice), so only
+    body styles 0/1 contribute.
+    """
     pins: list[PinDef] = []
     for item in symbol_sx:
         if not (isinstance(item, list) and item and item[0] == "symbol"):
@@ -177,6 +183,8 @@ def _parse_pins(symbol_sx: list) -> list[PinDef]:
         unit_name = str(item[1])
         m = _UNIT_RE.match(unit_name)
         unit = int(m.group("unit")) if m else 0
+        if m and int(m.group("body")) > 1:
+            continue
         for sub in item:
             if not (isinstance(sub, list) and sub and sub[0] == "pin"):
                 continue
@@ -214,6 +222,19 @@ def _property_value(symbol_sx: list, prop_name: str) -> str | None:
     return None
 
 
+def _all_properties(symbol_sx: list) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for item in symbol_sx:
+        if (
+            isinstance(item, list)
+            and item
+            and item[0] == "property"
+            and len(item) >= 3
+        ):
+            out[str(item[1])] = str(item[2])
+    return out
+
+
 def parse_library(path: str | Path, lib_nickname: str | None = None) -> dict[str, SymbolDef]:
     """Parse one .kicad_sym file → {lib_id: SymbolDef}, resolving extends."""
     path = Path(path)
@@ -243,12 +264,14 @@ def parse_library(path: str | Path, lib_nickname: str | None = None) -> dict[str
             pins = [PinDef(**vars(p)) for p in parent.pins]
             is_power = parent.is_power or _has_flag(sx, "power")
             ref = _property_value(sx, "Reference") or parent.reference_prefix
+            props = dict(parent.properties) | _all_properties(sx)
             # parent.raw_sexp is itself already flattened, so chains compose.
             raw = _flatten_extends(parent.raw_sexp, parent_name, raw_blocks[name], name)
         else:
             pins = _parse_pins(sx)
             is_power = _has_flag(sx, "power")
             ref = _property_value(sx, "Reference") or "U"
+            props = _all_properties(sx)
             raw = raw_blocks[name]
         d = SymbolDef(
             lib_id=lib_id,
@@ -256,6 +279,7 @@ def parse_library(path: str | Path, lib_nickname: str | None = None) -> dict[str
             pins=pins,
             is_power=is_power,
             reference_prefix=ref,
+            properties=props,
         )
         defs[lib_id] = d
         return d
