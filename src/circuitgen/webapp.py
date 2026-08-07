@@ -62,7 +62,7 @@ def run_agent(prompt: str, name: str = "agent_circuit") -> JSONResponse:
     llm = LlamaClient()
     if not llm.health():
         return JSONResponse({"ok": False, "error": "llama-server unreachable"}, status_code=503)
-    agent = Agent(llm, PartIndex(), KnowledgeIndex(), OUT_DIR / "agent")
+    agent = Agent(llm, PartIndex(), KnowledgeIndex(), OUT_DIR / "agent" / name)
     res = agent.run(prompt, name=name)
     return JSONResponse(
         {
@@ -80,3 +80,15 @@ def run_agent(prompt: str, name: str = "agent_circuit") -> JSONResponse:
             "log": res.log,
         }
     )
+
+
+@app.post("/agent/{name}/approve")
+def approve(name: str, approver: str = "user", note: str = "") -> JSONResponse:
+    """Final approval — locks the revision against regeneration (§12 audit)."""
+    from .audit import approve_final
+
+    try:
+        rec = approve_final(OUT_DIR / "agent" / name, approver, note)
+    except FileNotFoundError:
+        return JSONResponse({"ok": False, "error": "no such run"}, status_code=404)
+    return JSONResponse({"ok": True, "approvals": rec["approvals"]})

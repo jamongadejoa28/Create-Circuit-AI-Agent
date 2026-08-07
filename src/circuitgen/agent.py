@@ -129,11 +129,15 @@ class Agent:
         parts: PartIndex,
         knowledge: KnowledgeIndex,
         out_dir: str | Path,
+        approve_requirements=None,
     ):
         self.llm = llm
         self.parts = parts
         self.knowledge = knowledge
         self.out_dir = Path(out_dir)
+        # callback(spec) -> (approved: bool, approver: str, note: str);
+        # None = auto-approve, recorded as such in the audit log (§12)
+        self.approve_requirements = approve_requirements
 
     # ---- stage 1: requirements ----
 
@@ -550,17 +554,46 @@ class Agent:
     # ---- full run ----
 
     def run(self, prompt: str, name: str = "agent_circuit") -> AgentResult:
+        from .audit import RevisionLockedError, RunRecord, is_finally_approved
+
+        if is_finally_approved(self.out_dir):
+            # §8.4: a finally-approved revision is immutable
+            raise RevisionLockedError(
+                f"{self.out_dir} holds a finally-approved revision — use a new out_dir"
+            )
+        rec = RunRecord(self.out_dir)
+        rec.set("prompt", prompt)
+        rec.set("name", name)
+
         res = AgentResult(ok=False, stage="requirements")
         try:
             spec = self.extract_requirements(prompt)
         except Exception as e:
             res.log.append(f"requirement extraction failed: {e}")
+            rec.event("failed", stage=res.stage, error=str(e)[:300])
+            rec.save()
             return res
         res.spec = spec
+        rec.set("spec", spec)
         if spec.get("out_of_scope"):
             res.stage = "refused"
             res.refusal = spec.get("out_of_scope_reason") or "request exceeds the safety scope"
+            rec.event("refused", reason=res.refusal)
+            rec.save()
             return res
+
+        # §7.2: no circuit is generated before the requirements are approved
+        if self.approve_requirements is not None:
+            approved, approver, note = self.approve_requirements(spec)
+            if not approved:
+                res.stage = "requirements-rejected"
+                res.refusal = note or "requirements rejected by approver"
+                rec.event("requirements_rejected", approver=approver, note=note)
+                rec.save()
+                return res
+            rec.approve("requirements", approver, note)
+        else:
+            rec.approve("requirements", "auto", "no approver configured — auto-approved")
 
         use_blocks = len(spec.get("parts_needed", [])) >= BLOCK_THRESHOLD
         if use_blocks:
@@ -571,6 +604,8 @@ class Agent:
                 plan, pnotes = self.plan_blocks(spec)
             except Exception as e:
                 res.log.append(f"block planning failed: {e}")
+                rec.event("failed", stage=res.stage, error=str(e)[:300])
+                rec.save()
                 return res
             res.block_plan = plan
             res.log.extend(pnotes)
@@ -594,6 +629,8 @@ class Agent:
             ctx = {"candidates": merged_candidates}
             if not ir.components:
                 res.log.append("no block produced any components")
+                rec.event("failed", stage=res.stage, error="no components from blocks")
+                rec.save()
                 return res
         else:
             res.stage = "synthesis"
@@ -601,8 +638,11 @@ class Agent:
                 ir, ctx = self.synthesize_ir(spec, name)
             except Exception as e:
                 res.log.append(f"IR synthesis failed: {e}")
+                rec.event("failed", stage=res.stage, error=str(e)[:300])
+                rec.save()
                 return res
         res.ir = ir
+        rec.set("block_plan", res.block_plan)
         res.log.extend(self.resolve_pin_names(ir))
         res.log.extend(self.attach_power_symbols(ir, spec))
         res.log.extend(self._fix_footprints(ir))
@@ -656,4 +696,24 @@ class Agent:
 
         res.ok = pr.ok
         res.stage = "done" if pr.ok else res.stage
+
+        from .ir_json import ir_to_json
+
+        rec.set("ir", ir_to_json(ir))
+        rec.set("repairs", res.repairs)
+        rec.set("log", res.log)
+        rec.set(
+            "result",
+            {
+                "ok": res.ok,
+                "stage": res.stage,
+                "kicad_erc_violations": (
+                    len(pr.kicad_erc.violations) if pr.kicad_erc else None
+                ),
+                "connectivity_ok": pr.connectivity_ok,
+                "schematic": str(pr.sch_path) if pr.sch_path else None,
+            },
+        )
+        rec.event("finished", ok=res.ok, stage=res.stage)
+        rec.save()
         return res
