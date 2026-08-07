@@ -99,7 +99,14 @@ class LlamaClient:
         payload.update(self.extra_payload)
         data = self._post("/v1/chat/completions", payload)
         try:
-            content = data["choices"][0]["message"]["content"]
+            choice = data["choices"][0]
+            content = choice["message"]["content"]
             return json.loads(content)
         except (KeyError, IndexError, json.JSONDecodeError) as e:
-            raise LlamaServerError(f"unexpected completion payload: {e}: {data}") from e
+            finish = None
+            try:
+                finish = data["choices"][0].get("finish_reason")
+            except Exception:
+                pass
+            detail = f"finish_reason={finish}" if finish else f"payload={str(data)[:400]}"
+            raise LlamaServerError(f"completion unusable ({e}); {detail}") from e

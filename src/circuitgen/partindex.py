@@ -49,7 +49,8 @@ CREATE TABLE symbols (
     datasheet TEXT NOT NULL DEFAULT '',
     unit_count INTEGER NOT NULL,
     pin_count INTEGER NOT NULL,
-    priority INTEGER NOT NULL
+    priority INTEGER NOT NULL,
+    unit0_mix INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE pins (
     lib_id TEXT NOT NULL REFERENCES symbols(lib_id),
@@ -116,8 +117,10 @@ def build_index(
             stats["libraries"] += 1
             for lib_id, d in defs.items():
                 props = d.properties
+                units = {p.unit for p in d.pins}
+                unit0_mix = int(0 in units and bool(units - {0}))
                 con.execute(
-                    "INSERT INTO symbols VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO symbols VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         lib_id,
                         nickname,
@@ -132,6 +135,7 @@ def build_index(
                         len(d.placed_units()),
                         len(d.pins),
                         src.priority,
+                        unit0_mix,
                     ),
                 )
                 con.executemany(
@@ -187,7 +191,7 @@ class PartIndex:
                    s.is_power, s.unit_count, s.pin_count, s.fp_filters,
                    s.footprint, s.priority, bm25(symbols_fts) AS rank
             FROM symbols_fts JOIN symbols s ON s.lib_id = symbols_fts.lib_id
-            WHERE symbols_fts MATCH ?
+            WHERE symbols_fts MATCH ? AND s.unit0_mix = 0
             ORDER BY (lower(s.name) = lower(?)) DESC, rank, s.priority, s.pin_count
             LIMIT ?
             """,

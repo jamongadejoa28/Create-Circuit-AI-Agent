@@ -14,7 +14,7 @@ REQUIREMENT_SPEC = {
     "required": ["summary", "power", "parts_needed", "connections_intent"],
     "additionalProperties": False,
     "properties": {
-        "summary": {"type": "string", "description": "one-line normalized requirement"},
+        "summary": {"type": "string", "maxLength": 160, "description": "one-line normalized requirement"},
         "power": {
             "type": "object",
             "required": ["rails"],
@@ -28,7 +28,7 @@ REQUIREMENT_SPEC = {
                         "additionalProperties": False,
                         "properties": {
                             "name": {"type": "string", "description": "e.g. +5V, +3V3, GND"},
-                            "voltage": {"type": "string"},
+                            "voltage": {"type": "string", "maxLength": 12},
                         },
                     },
                 }
@@ -43,22 +43,22 @@ REQUIREMENT_SPEC = {
                 "additionalProperties": False,
                 "properties": {
                     "role": {"type": "string", "description": "short role id, e.g. mcu, led1, btn1"},
-                    "search_query": {"type": "string", "description": "part-index search terms, English"},
-                    "value": {"type": "string", "description": "component value if applicable, e.g. 330R"},
+                    "search_query": {"type": "string", "maxLength": 48, "description": "part-index search terms, English"},
+                    "value": {"type": "string", "maxLength": 24, "description": "component value if applicable, e.g. 330R"},
                 },
             },
         },
         "connections_intent": {
             "type": "array",
-            "items": {"type": "string"},
+            "items": {"type": "string", "maxLength": 140},
             "description": "plain statements like 'btn1 between +5V and led1 anode via resistor'",
         },
-        "constraints": {"type": "array", "items": {"type": "string"}},
+        "constraints": {"type": "array", "items": {"type": "string", "maxLength": 120}},
         "out_of_scope": {
             "type": "boolean",
             "description": "true if the request exceeds 24VDC/3A, mains, isolation, or safety-critical scope",
         },
-        "out_of_scope_reason": {"type": "string"},
+        "out_of_scope_reason": {"type": "string", "maxLength": 200},
     },
 }
 
@@ -77,10 +77,10 @@ CIRCUIT_IR = {
                 "required": ["ref", "lib_id", "value"],
                 "additionalProperties": False,
                 "properties": {
-                    "ref": {"type": "string", "pattern": "^#?[A-Za-z]+[0-9]+$"},
-                    "lib_id": {"type": "string", "description": "EXACT id from the candidate list"},
-                    "value": {"type": "string"},
-                    "footprint": {"type": "string"},
+                    "ref": {"type": "string", "maxLength": 12, "pattern": "^#?[A-Za-z]+[0-9]+$"},
+                    "lib_id": {"type": "string", "maxLength": 64, "description": "EXACT id from the candidate list"},
+                    "value": {"type": "string", "maxLength": 24},
+                    "footprint": {"type": "string", "maxLength": 64},
                 },
             },
         },
@@ -212,7 +212,7 @@ REPAIR_PATCH = {
     "required": ["ops"],
     "additionalProperties": False,
     "properties": {
-        "analysis": {"type": "string", "description": "one sentence on the root cause"},
+        "analysis": {"type": "string", "maxLength": 200, "description": "one sentence on the root cause"},
         "ops": {"type": "array", "maxItems": 12, "items": {"anyOf": _OP_VARIANTS}},
     },
 }

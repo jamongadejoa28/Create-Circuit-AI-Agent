@@ -228,8 +228,12 @@ SKIDL의 force-directed 배치(`place.py`)와 maze/switchbox 배선(`route.py`)�
 
 **Qwen2.5-Coder-7B 기준선 (2026-08-07 확정, 결정론 가드 전체 적용 후)**: led_button ERC 3/3·기능 3/3, divider ERC 3/3·기능 3/3, led_only ERC 1~2/3·기능 ~1/3(레일 병렬 오배선을 고집 — `diode_across_rails` 린트가 구조화 에러로 변환해 수리 루프가 가끔만 교정, 평균 수리 11회 churn). 종합 기능 정합 ~7/9. **결론: 남은 실패는 프롬프트/가드로 흡수 불가능한 모델 설계 추론 한계** — 이것이 Qwen3.5 비교의 측정 대상이다.
 
+**Qwen3.5-9B(thinking off) 측정 결과 (2026-08-07, 동결 하네스: 재시도 가드+maxLength 스키마+unit0 필터 인덱스)**: led_button 기능 0~1/3(수리 11회 churn, 66s — 일관된 약점), led_only 2~3/3(Coder가 실패하던 시나리오를 안정 통과), divider 3/3. 종합 기능 ~5-6/9, 평균 소요 Coder 대비 +30~50%. **두 모델의 실패가 상보적**(Coder: led_only 약함 / 3.5: led_button 약함)이고 어느 쪽도 전 지표 우위가 아님.
+
+**잠정 결정**: §7.6 규칙에 따라 — 역할 분담은 VRAM 동시 상주 불가+스왑 비용으로 배제, 종합 우위(기능 정합·속도)인 **Qwen2.5-Coder-7B 단독을 기본 모델로 유지**. 단 Coder 기준선은 하네스 동결 이전 측정이므로, 동결 하네스로 Coder 재측정 후 확정한다.
+
 **실행 절차**:
-1. Coder 서빙 상태에서: `bench_models.py --label qwen2.5-coder --reps 3` ✅ 완료
+1. Coder 서빙 상태에서: `bench_models.py --label qwen2.5-coder --reps 3` ✅ 완료 (동결 하네스 재측정 대기)
 2. 서버를 Qwen3.5로 교체 기동(`-m ...Qwen3.5-9B-Q4_K_M.gguf --reasoning-budget 0`, ctx는 VRAM상 6144~8192 실측 조정) 후: `--label qwen3.5-nothink --reps 3 --thinking-off`
 3. jsonl 두 개를 비교.
 

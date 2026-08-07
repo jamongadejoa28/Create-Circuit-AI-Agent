@@ -36,6 +36,18 @@ class LLMBackend(Protocol):
     def complete_json(self, messages: list[dict], schema: dict, **kw) -> dict: ...
 
 
+def _with_retry(fn, tries: int = 2):
+    """One retry for transient server errors — a benchmark run died on a
+    single failed HTTP call; a whole agent run must not."""
+    last = None
+    for _ in range(tries):
+        try:
+            return fn()
+        except Exception as e:  # LlamaServerError, HTTP hiccups
+            last = e
+    raise last
+
+
 @dataclass
 class AgentResult:
     ok: bool
@@ -96,7 +108,7 @@ class Agent:
     # ---- stage 1: requirements ----
 
     def extract_requirements(self, prompt: str) -> dict:
-        spec = self.llm.complete_json(
+        spec = _with_retry(lambda: self.llm.complete_json(
             [
                 {"role": "system", "content": _SYSTEM},
                 {
@@ -117,7 +129,7 @@ class Agent:
                 },
             ],
             schema=REQUIREMENT_SPEC,
-        )
+        ))
         return _normalize_rails(spec)
 
     # ---- stage 2: part candidates + knowledge + IR synthesis ----
@@ -184,11 +196,11 @@ class Agent:
             f"PIN_TABLES: {json.dumps(pin_tables, ensure_ascii=False)}\n\n"
             f"KNOWLEDGE: {json.dumps(snippets, ensure_ascii=False)}"
         )
-        data = self.llm.complete_json(
+        data = _with_retry(lambda: self.llm.complete_json(
             [{"role": "system", "content": _SYSTEM}, {"role": "user", "content": content}],
             schema=CIRCUIT_IR,
             max_tokens=4096,
-        )
+        ))
         return ir_from_json(data), {"candidates": candidates, "knowledge": snippets}
 
     def resolve_pin_names(self, ir: CircuitIR) -> list[str]:
@@ -293,11 +305,11 @@ class Agent:
             f"CURRENT_IR: {json.dumps(ir_to_json(ir), ensure_ascii=False)}\n\n"
             f"CANDIDATES: {json.dumps(candidates, ensure_ascii=False)}"
         )
-        patch = self.llm.complete_json(
+        patch = _with_retry(lambda: self.llm.complete_json(
             [{"role": "system", "content": _SYSTEM}, {"role": "user", "content": content}],
             schema=REPAIR_PATCH,
             max_tokens=1024,
-        )
+        ))
         return apply_patch(ir, patch.get("ops", []))
 
     # ---- full run ----
