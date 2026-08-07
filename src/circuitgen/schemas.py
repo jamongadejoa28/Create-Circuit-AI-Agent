@@ -216,3 +216,49 @@ REPAIR_PATCH = {
         "ops": {"type": "array", "maxItems": 12, "items": {"anyOf": _OP_VARIANTS}},
     },
 }
+
+
+BLOCK_PLAN = {
+    "type": "object",
+    "required": ["blocks"],
+    "additionalProperties": False,
+    "properties": {
+        "blocks": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 10,
+            "items": {
+                "type": "object",
+                "required": ["id", "description", "roles", "count", "interface_nets"],
+                "additionalProperties": False,
+                "properties": {
+                    "id": {"type": "string", "maxLength": 12, "pattern": "^[A-Z][A-Z0-9]*$"},
+                    "description": {"type": "string", "maxLength": 100},
+                    "roles": {
+                        "type": "array",
+                        "items": {"type": "string", "maxLength": 32},
+                        "description": "role ids from spec.parts_needed handled by this block",
+                    },
+                    "count": {"type": "integer", "minimum": 1, "maximum": 8},
+                    "interface_nets": {
+                        "type": "array",
+                        "maxItems": 14,
+                        "items": {
+                            "type": "object",
+                            "required": ["name", "purpose"],
+                            "additionalProperties": False,
+                            "properties": {
+                                "name": {
+                                    "type": "string",
+                                    "maxLength": 24,
+                                    "description": "net shared with other blocks; use literal {n} for per-instance nets of repeated blocks, e.g. ENC{n}_CS",
+                                },
+                                "purpose": {"type": "string", "maxLength": 60},
+                            },
+                        },
+                    },
+                },
+            },
+        }
+    },
+}

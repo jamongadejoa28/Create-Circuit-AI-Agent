@@ -25,11 +25,13 @@ from .ir_json import apply_patch, ir_from_json
 from .knowledge import KnowledgeIndex
 from .partindex import PartIndex
 from .pipeline import PipelineResult, generate
-from .schemas import CIRCUIT_IR, REPAIR_PATCH, REQUIREMENT_SPEC
+from .schemas import BLOCK_PLAN, CIRCUIT_IR, REPAIR_PATCH, REQUIREMENT_SPEC
 
 MAX_REPAIRS = 3
 CANDIDATES_PER_QUERY = 3
 KNOWLEDGE_PER_TOPIC = 2
+BLOCK_THRESHOLD = 5  # parts_needed roles at/above which block decomposition kicks in
+REPAIR_SLICE_LIMIT = 25  # components above which the repair prompt gets a partial view
 
 
 class LLMBackend(Protocol):
@@ -58,6 +60,7 @@ class AgentResult:
     repairs: list[str] = field(default_factory=list)
     refusal: str | None = None
     log: list[str] = field(default_factory=list)
+    block_plan: list[dict] | None = None
 
 
 _SYSTEM = (
@@ -203,6 +206,98 @@ class Agent:
         ))
         return ir_from_json(data), {"candidates": candidates, "knowledge": snippets}
 
+    # ---- stage 2b: block decomposition (board scale, plan §7.2) ----
+
+    def plan_blocks(self, spec: dict) -> tuple[list[dict], list[str]]:
+        from .blocks import validate_plan
+
+        content = (
+            "Partition this circuit spec into functional blocks for separate "
+            "synthesis.\nRules:\n"
+            "- Every parts_needed role belongs to exactly one block.\n"
+            "- Identical repeated hardware (e.g. one driver per motor) is ONE "
+            "block with count=N — never N separate blocks.\n"
+            "- interface_nets: ONLY nets another block must also connect to "
+            "(signals to the MCU, shared buses, block outputs). Power rails "
+            "are implicit and shared — never list them.\n"
+            "- Per-instance signals of repeated blocks use a literal {n} in "
+            "the net name (DRV{n}_PWM_A); shared bus nets use plain names "
+            "(SPI_SCK).\n\n"
+            f"SPEC: {json.dumps(spec, ensure_ascii=False)}"
+        )
+        data = _with_retry(lambda: self.llm.complete_json(
+            [{"role": "system", "content": _SYSTEM}, {"role": "user", "content": content}],
+            schema=BLOCK_PLAN,
+            max_tokens=2048,
+        ))
+        return validate_plan(data["blocks"], spec)
+
+    @staticmethod
+    def _interface_catalog(plan: list[dict]) -> list[dict]:
+        """Instance-expanded external nets of every block — what the MCU
+        block (or any block) may wire to."""
+        catalog = []
+        for b in plan:
+            for inst in range(1, int(b.get("count", 1)) + 1):
+                for net in b.get("interface_nets", []):
+                    catalog.append(
+                        {
+                            "net": net["name"].replace("{n}", str(inst)),
+                            "purpose": net.get("purpose", "")[:60],
+                            "block": f"{b['id']}#{inst}",
+                        }
+                    )
+        return catalog
+
+    def synthesize_block(
+        self, spec: dict, block: dict, catalog: list[dict], name: str
+    ) -> tuple[CircuitIR, dict]:
+        sub_spec = {
+            "summary": spec.get("summary", ""),
+            "power": spec.get("power", {}),
+            "parts_needed": [
+                p for p in spec.get("parts_needed", []) if p["role"] in block["roles"]
+            ],
+            "connections_intent": [block.get("description", "")],
+        }
+        candidates, snippets, pin_tables = self._gather(sub_spec)
+        own_ifaces = [n["name"] for n in block.get("interface_nets", [])]
+        others = [c for c in catalog if not c["block"].startswith(block["id"] + "#")]
+        rails = [r["name"] for r in spec.get("power", {}).get("rails", [])]
+
+        content = (
+            f"Design ONLY this functional block as CircuitIR JSON: "
+            f"{block['id']} — {block.get('description', '')}\n"
+            "Rules:\n"
+            "- Use ONLY lib_id values from CANDIDATES and pin numbers from PIN_TABLES; "
+            "prefer the FIRST candidate of each role.\n"
+            f"- This block's EXTERNAL nets must use EXACTLY these names "
+            f"(keep any {{n}} literal — instances are stamped later): {own_ifaces}\n"
+            + (
+                f"- Nets exported by other blocks that this block may connect to: "
+                f"{json.dumps(others, ensure_ascii=False)}\n"
+                if others
+                else ""
+            )
+            + f"- Power rails (already exist, connect power pins to them by name, "
+            f"do NOT add power:* symbols): {rails}\n"
+            "- Internal net names are free — they get namespaced automatically.\n"
+            "- Every pin of every used component must be in a net or nc_pins.\n"
+            "- Apply the KNOWLEDGE rules (decoupling beside ICs, pull-ups, "
+            "series resistors).\n"
+            f"- name must be: {name}\n\n"
+            f"SPEC: {json.dumps(sub_spec, ensure_ascii=False)}\n\n"
+            f"CANDIDATES: {json.dumps(candidates, ensure_ascii=False)}\n\n"
+            f"PIN_TABLES: {json.dumps(pin_tables, ensure_ascii=False)}\n\n"
+            f"KNOWLEDGE: {json.dumps(snippets, ensure_ascii=False)}"
+        )
+        data = _with_retry(lambda: self.llm.complete_json(
+            [{"role": "system", "content": _SYSTEM}, {"role": "user", "content": content}],
+            schema=CIRCUIT_IR,
+            max_tokens=4096,
+        ))
+        return ir_from_json(data), {"candidates": candidates}
+
     def resolve_pin_names(self, ir: CircuitIR) -> list[str]:
         """Rewrite pin NAMES used where numbers belong ('D1.A' → 'D1.2').
 
@@ -299,15 +394,57 @@ class Agent:
                 pass
         return self.parts.load_symbols(known)
 
-    def _repair(self, ir: CircuitIR, problems: list[str], candidates: dict) -> list[str]:
+    def _repair_view(self, ir: CircuitIR, problems: list[str]) -> tuple[dict, bool]:
+        """IR view for the repair prompt — sliced to the problem
+        neighborhood for large (block-merged) circuits so board-scale
+        repairs stay inside the context budget."""
         from .ir_json import ir_to_json
 
+        if len(ir.components) <= REPAIR_SLICE_LIMIT:
+            return ir_to_json(ir), False
+
+        import re as _re
+
+        text = " ".join(problems)
+        refs = {
+            r for r in ir.components
+            if _re.search(rf"(?<![A-Za-z0-9_]){_re.escape(r)}(?![A-Za-z0-9_])", text)
+        }
+        net_names = {n.name for n in ir.nets if n.name and n.name in text}
+        for net in ir.nets:
+            if net.name in net_names:
+                refs.update(r for r, _ in net.nodes)
+        touched_nets = [
+            net for net in ir.nets
+            if net.name in net_names or any(r in refs for r, _ in net.nodes)
+        ]
+        for net in touched_nets:
+            refs.update(r for r, _ in net.nodes)
+        refs = set(sorted(refs)[:REPAIR_SLICE_LIMIT])
+
+        full = ir_to_json(ir)
+        view = {
+            "name": full["name"],
+            "components": [c for c in full["components"] if c["ref"] in refs],
+            "nets": [
+                {"name": n["name"], "nodes": [nd for nd in n["nodes"] if nd["ref"] in refs]}
+                for n in full["nets"]
+                if any(nd["ref"] in refs for nd in n["nodes"])
+            ],
+            "nc_pins": [p for p in full["nc_pins"] if p["ref"] in refs],
+        }
+        return view, True
+
+    def _repair(self, ir: CircuitIR, problems: list[str], candidates: dict) -> list[str]:
+        view, partial = self._repair_view(ir, problems)
         content = (
             "The circuit failed validation. Propose the smallest set of repair ops.\n"
             "If a component's lib_id is 'not in library set', replace it (add_component "
             "with the same ref) using an EXACT lib_id from CANDIDATES.\n"
-            f"PROBLEMS: {json.dumps(problems[:12], ensure_ascii=False)}\n\n"
-            f"CURRENT_IR: {json.dumps(ir_to_json(ir), ensure_ascii=False)}\n\n"
+            + ("NOTE: CURRENT_IR is a PARTIAL VIEW around the problems; the "
+               "circuit is larger and your ops apply to the full circuit.\n" if partial else "")
+            + f"PROBLEMS: {json.dumps(problems[:12], ensure_ascii=False)}\n\n"
+            f"CURRENT_IR: {json.dumps(view, ensure_ascii=False)}\n\n"
             f"CANDIDATES: {json.dumps(candidates, ensure_ascii=False)}"
         )
         patch = _with_retry(lambda: self.llm.complete_json(
@@ -332,12 +469,46 @@ class Agent:
             res.refusal = spec.get("out_of_scope_reason") or "request exceeds the safety scope"
             return res
 
-        res.stage = "synthesis"
-        try:
-            ir, ctx = self.synthesize_ir(spec, name)
-        except Exception as e:
-            res.log.append(f"IR synthesis failed: {e}")
-            return res
+        use_blocks = len(spec.get("parts_needed", [])) >= BLOCK_THRESHOLD
+        if use_blocks:
+            from .blocks import instantiate_blocks
+
+            res.stage = "block-plan"
+            try:
+                plan, pnotes = self.plan_blocks(spec)
+            except Exception as e:
+                res.log.append(f"block planning failed: {e}")
+                return res
+            res.block_plan = plan
+            res.log.extend(pnotes)
+            catalog = self._interface_catalog(plan)
+
+            block_irs: dict[str, CircuitIR] = {}
+            merged_candidates: dict = {}
+            for block in plan:
+                res.stage = f"block-{block['id']}"
+                try:
+                    bir, bctx = self.synthesize_block(spec, block, catalog, f"{name}_{block['id']}")
+                    block_irs[block["id"]] = bir
+                    merged_candidates.update(bctx.get("candidates", {}))
+                except Exception as e:
+                    res.log.append(f"block {block['id']} synthesis failed: {e}")
+
+            res.stage = "merge"
+            rails = [r["name"] for r in spec.get("power", {}).get("rails", [])]
+            ir, mnotes = instantiate_blocks(name, plan, block_irs, rails)
+            res.log.extend(mnotes)
+            ctx = {"candidates": merged_candidates}
+            if not ir.components:
+                res.log.append("no block produced any components")
+                return res
+        else:
+            res.stage = "synthesis"
+            try:
+                ir, ctx = self.synthesize_ir(spec, name)
+            except Exception as e:
+                res.log.append(f"IR synthesis failed: {e}")
+                return res
         res.ir = ir
         res.log.extend(self.resolve_pin_names(ir))
         res.log.extend(self.attach_power_symbols(ir, spec))
