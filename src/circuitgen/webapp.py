@@ -49,3 +49,34 @@ def generate_golden() -> JSONResponse:
             "errors": res.errors,
         }
     )
+
+
+@app.post("/agent")
+def run_agent(prompt: str, name: str = "agent_circuit") -> JSONResponse:
+    """Prompt → validated schematic via the real LLM (Phase 4 skeleton;
+    the approval flow in front of generation arrives with the Phase 5 UI)."""
+    from .agent import Agent
+    from .knowledge import KnowledgeIndex
+    from .partindex import PartIndex
+
+    llm = LlamaClient()
+    if not llm.health():
+        return JSONResponse({"ok": False, "error": "llama-server unreachable"}, status_code=503)
+    agent = Agent(llm, PartIndex(), KnowledgeIndex(), OUT_DIR / "agent")
+    res = agent.run(prompt, name=name)
+    return JSONResponse(
+        {
+            "ok": res.ok,
+            "stage": res.stage,
+            "refusal": res.refusal,
+            "summary": (res.spec or {}).get("summary"),
+            "repairs": res.repairs,
+            "schematic": str(res.pipeline.sch_path) if res.pipeline and res.pipeline.sch_path else None,
+            "kicad_erc_violations": (
+                len(res.pipeline.kicad_erc.violations)
+                if res.pipeline and res.pipeline.kicad_erc
+                else None
+            ),
+            "log": res.log,
+        }
+    )

@@ -23,9 +23,30 @@ class LlamaServerError(RuntimeError):
 
 
 class LlamaClient:
-    def __init__(self, base_url: str = DEFAULT_BASE_URL, timeout: float = 120.0):
+    def __init__(
+        self,
+        base_url: str = DEFAULT_BASE_URL,
+        timeout: float = 300.0,
+        model: str | None = None,
+    ):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self.model = model
+
+    def _resolve_model(self) -> str | None:
+        """Router-mode servers require a model name; discover one if needed."""
+        if self.model:
+            return self.model
+        try:
+            req = urllib.request.Request(self.base_url + "/v1/models")
+            with urllib.request.urlopen(req, timeout=10.0) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            models = [m.get("id") for m in data.get("data", []) if m.get("id")]
+            if models:
+                self.model = models[0]
+        except OSError:
+            pass
+        return self.model
 
     def _post(self, path: str, payload: dict) -> dict:
         req = urllib.request.Request(
@@ -68,6 +89,9 @@ class LlamaClient:
                 "json_schema": {"name": "reply", "schema": schema, "strict": True},
             },
         }
+        model = self._resolve_model()
+        if model:
+            payload["model"] = model
         data = self._post("/v1/chat/completions", payload)
         try:
             content = data["choices"][0]["message"]["content"]
