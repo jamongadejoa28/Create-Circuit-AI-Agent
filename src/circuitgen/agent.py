@@ -164,7 +164,43 @@ class Agent:
             ],
             schema=REQUIREMENT_SPEC,
         ))
-        return _normalize_rails(spec)
+        spec = _normalize_rails(spec)
+        self._ensure_named_parts(prompt, spec)
+        return spec
+
+    def _ensure_named_parts(self, prompt: str, spec: dict) -> None:
+        """Explicit part numbers in the request must become roles.
+
+        Live measurement: the spec extractor treated 'STM32G474RET6' as
+        context and listed only its support parts — no block ever held the
+        MCU. Any prompt token that resolves in the part index and is not
+        covered by an existing search_query gets a role appended.
+        """
+        import re as _re
+
+        tokens = set(_re.findall(r"\b[A-Za-z]{2,}[0-9][A-Za-z0-9-]{3,}\b", prompt))
+        parts = spec.setdefault("parts_needed", [])
+        for tok in sorted(tokens)[:5]:
+            if not self.parts.search_parts(tok, 1):
+                continue  # not a resolvable part number
+            up = tok.upper()
+            covered = False
+            for p in parts:
+                if up[:6] in p.get("search_query", "").upper():
+                    covered = True
+                    break
+                # role mentions the part number but the query is generic
+                # (measured: role 'STM32G474RET6' with query 'microcontroller'
+                # made the model pick a 68HC12) — rewrite the query
+                if up[:6] in p.get("role", "").upper():
+                    p["search_query"] = tok
+                    covered = True
+                    break
+            if not covered:
+                parts.append({"role": tok.lower(), "search_query": tok})
+                spec.setdefault("connections_intent", []).append(
+                    f"{tok} is the main named component and must be included"
+                )
 
     # ---- stage 2: part candidates + knowledge + IR synthesis ----
 
@@ -382,6 +418,15 @@ class Agent:
         from .fp_checks import assign_footprints
 
         return assign_footprints(ir, self._resolve_symbols(ir), self.parts)
+
+    def _ensure_pullups(self, ir: CircuitIR, spec: dict) -> list[str]:
+        from .normalize import ensure_bus_pullups
+
+        plus = next(
+            (r["name"] for r in spec.get("power", {}).get("rails", []) if r["name"].startswith("+")),
+            None,
+        )
+        return ensure_bus_pullups(ir, self._resolve_symbols(ir), plus)
 
     def attach_power_symbols(self, ir: CircuitIR, spec: dict) -> list[str]:
         """Deterministically add power symbols to rail nets (never the LLM's
@@ -645,6 +690,7 @@ class Agent:
         rec.set("block_plan", res.block_plan)
         res.log.extend(self.resolve_pin_names(ir))
         res.log.extend(self.attach_power_symbols(ir, spec))
+        res.log.extend(self._ensure_pullups(ir, spec))
         res.log.extend(self._fix_footprints(ir))
 
         # A missing rail net usually means the model mis-named the supply
@@ -690,6 +736,7 @@ class Agent:
             # footprints, or rail nets that still need their supply symbol
             res.log.extend(self.resolve_pin_names(ir))
             res.log.extend(self.attach_power_symbols(ir, spec))
+            res.log.extend(self._ensure_pullups(ir, spec))
             res.log.extend(self._fix_footprints(ir))
             pr = generate(ir, self.out_dir, symbols=self._resolve_symbols(ir), parts_index=self.parts)
             res.pipeline = pr
