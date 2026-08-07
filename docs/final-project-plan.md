@@ -233,13 +233,15 @@ SKIDL의 force-directed 배치(`place.py`)와 maze/switchbox 배선(`route.py`)�
 
 ## 9. 로드맵
 
-- **Phase 0 — 환경/스모크 테스트 + 기반 구축**: WSL2→Windows `localhost` HTTP 연결 실측, Python 3.12 venv, `git init`, `pip install skidl` 1회 설치로 골든 레퍼런스 생성. FastAPI/HTMX 스켈레톤, Windows llama.cpp·KiCad CLI 어댑터(wslpath 래퍼 포함), 설정·로그·리비전 저장 구조 구현.
-- **Phase 1 — 워킹 스켈레톤 (첫 번째 대상: 수동소자+전원, §10 골든 회로 1번과 동일)**:
+> **진행 상황 (2026-08-07)**: Phase 0·1·2 완료. `src/circuitgen/` 패키지 + 54개 테스트. 골든 회로 1번(`golden/golden_led_button.kicad_sch`)과 74LS00 멀티유닛 IC 회로가 KiCad ERC 0건 + 넷리스트 라운드트립 통과. 주요 실측 발견: (1) 핀 변환은 시트축 CW 회전 + 회전 후 미러 — 잘못된 공식도 ERC는 통과하지만 넷이 교차되므로 라운드트립 검증이 필수였음, (2) `extends` 파생 심볼은 KiCad `Flatten()`처럼 평탄화해서 임베드해야 함(그대로 넣으면 핀이 전부 사라짐), (3) llama-server는 아직 미기동(Phase 4 전까지 불필요). 비고: venv는 3.12가 아니라 시스템 3.14.4로 구성(SKIDL·전체 스택 호환 확인됨).
+
+- **Phase 0 — 환경/스모크 테스트 + 기반 구축** ✅: WSL2→Windows `localhost` HTTP 연결 실측, Python venv, `git init`, `pip install skidl` 1회 설치로 골든 레퍼런스 생성. FastAPI/HTMX 스켈레톤, Windows llama.cpp·KiCad CLI 어댑터(wslpath 래퍼 포함), 설정·로그·리비전 저장 구조 구현.
+- **Phase 1 — 워킹 스켈레톤 (첫 번째 대상: 수동소자+전원, §10 골든 회로 1번과 동일)** ✅:
   1. **코드 작성 전, 가장 먼저**: R+LED+`SW_Push`(버튼, 2핀)+`power:GND`+`power:+5V`로 구성된 `.kicad_sch`를 손으로 직접 작성(스텁+라벨 방식)하고 `kicad-cli sch erc --format json`이 0 위반으로 통과할 때까지 반복 수정 — 이 회로가 그대로 §10 골든 회로 1번이 된다. `lib_symbols` 인라인 방식, `version 20260306` 스탬프, 전원 심볼의 `#PWR01` 관례, `PWR_FLAG` 필요 여부, `.kicad_pro` 동반 필요 여부와 ERC severity 설정(풋프린트 체크 제외 여부)을 이 단계에서 전부 확정 — 포맷 이해 오류와 생성기 구현 오류를 분리하기 위함.
   2. `pin_absolute_position()` 구현 + 골든 레퍼런스 기준 단위 테스트.
   3. IR 스키마 → 넷리스트 생성기 → 자체 ERC(§8.1) → 단순 그리드 배치 → 스텁+라벨 이미터 → `kicad-cli sch erc` 게이트.
   4. 목표: 골든 레퍼런스와 동등한 회로를 파이프라인이 자동 생성 + ERC 통과. 이 단계는 아직 LLM 없이 결정론적 코드만으로 관통한다.
-- **Phase 2 — 부품 계층 + 다핀 IC 지원 (MVP 필수)**: KiCad 10 심볼 파서, 멀티유닛 심볼(`_유닛_바디스타일`)·`extends` 상속 파싱(§5.2), §5.3 우선순위 기반 다중 라이브러리 인덱스(SQLite FTS5), 검색·핀 조회 API, 라이선스·provenance 기록, §6 기준으로 큐레이션한 지식 인덱스 구축(3단계 티어 추출 파이프라인, §6.2).
+- **Phase 2 — 부품 계층 + 다핀 IC 지원 (MVP 필수)** ✅: KiCad 10 심볼 파서, 멀티유닛 심볼(`_유닛_바디스타일`)·`extends` 상속 파싱(§5.2), §5.3 우선순위 기반 다중 라이브러리 인덱스(SQLite FTS5 — 270개 라이브러리/24,232심볼/830,761핀, 76초 빌드), 검색·핀 조회 API, 라이선스·provenance 기록, §6 기준으로 큐레이션한 지식 인덱스 구축(3단계 티어 추출 파이프라인, §6.2 — 1차분 10개 엔트리는 PEFI 원문 페이지를 PyMuPDF로 재검증하며 큐레이션, 2차분 Floyd/Sadiku/Sedra 진행 중).
 - **Phase 3 — 회로 계층 + MCU ERC 확장 (MVP 필수)**: `RequirementSpec`/Circuit IR 계층·Bus·Net 연결, §8.2 확장 ERC 규칙 구현, 디커플링 배치 규칙, §7.5의 라벨 밀집 완화 휴리스틱 도입. 이 시점부터 MCU 회로가 결정론적 파이프라인만으로 ERC를 통과할 수 있어야 한다(아직 LLM 미통합).
 - **Phase 4 — 에이전트 통합**: `RequirementSpec` 정규화·승인 UI, §7.3 도구 호출 루프, JSON Schema/GBNF 강제 출력, ERC 실패 → JSON Patch 기반 수정 루프(§8.4). §10의 5종 골든 회로 전체를 프롬프트→생성 경로로 검증.
 - **Phase 5 — 통합 검증 및 MVP 완료**: §10의 5종 골든 회로 전체가 자체 ERC·KiCad ERC 0건, §11의 테스트 매트릭스 통과. 최종 승인 UI 완성.

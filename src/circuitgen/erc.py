@@ -23,6 +23,135 @@ def check_circuit(
     issues += _check_structure(ir, symbols)
     issues += _check_pins(ir, symbols)
     issues += _check_nets(ir, symbols)
+    issues += _check_extended(ir, symbols)
+    return issues
+
+
+# Ground-ish net names for the extended rules; a net is also treated as
+# ground/power if a power symbol of that kind is a member.
+_GND_NAMES = {"GND", "VSS", "AGND", "DGND", "GNDA", "GNDD", "GNDPWR", "GNDREF", "0V"}
+
+
+def _power_symbol_values(ir: CircuitIR, symbols: dict[str, SymbolDef], net) -> set[str]:
+    """Values of supply power symbols (power_in pin, e.g. +5V/GND) on a net."""
+    vals = set()
+    for ref, pin_no in net.nodes:
+        comp = ir.components.get(ref)
+        sym = symbols.get(comp.lib_id) if comp else None
+        if sym is None or not sym.is_power:
+            continue
+        try:
+            if sym.pin(pin_no).etype == PinType.PWRIN:
+                vals.add(comp.value)
+        except KeyError:
+            pass
+    return vals
+
+
+def _net_kind(ir: CircuitIR, symbols: dict[str, SymbolDef], net) -> str:
+    """'gnd' | 'power' | 'signal' for extended-rule purposes."""
+    vals = _power_symbol_values(ir, symbols, net)
+    if vals & _GND_NAMES or net.name in _GND_NAMES:
+        return "gnd"
+    if vals or any(
+        (t := _pin_type(ir, symbols, r, str(p))) == PinType.PWROUT
+        for r, p in net.nodes
+    ):
+        return "power"
+    return "signal"
+
+
+def _check_extended(
+    ir: CircuitIR, symbols: dict[str, SymbolDef]
+) -> list[ValidationIssue]:
+    """Plan §8.2 extended rules (MCU/IC-grade lint).
+
+    Values referenced by these rules are grounded in the curated knowledge
+    base (decoupling-cap-per-ic, pullup-resistor-sizing, ...), not invented
+    here. Severities: electrical impossibilities are errors; best-practice
+    omissions are warnings the agent repair loop can act on.
+    """
+    issues: list[ValidationIssue] = []
+    net_kinds = {net.name: _net_kind(ir, symbols, net) for net in ir.nets}
+    nets_by_name = {net.name: net for net in ir.nets}
+
+    # -- shorted power rails: two different supply symbols on one net --
+    for net in ir.nets:
+        vals = _power_symbol_values(ir, symbols, net)
+        if len(vals) > 1:
+            issues.append(
+                _issue("power_rails_shorted", "error", f"net:{net.name}", f"net {net.name} ties different power rails together: {sorted(vals)}")
+            )
+
+    # nets each component pin belongs to: ref -> {pin_no: net}
+    pin_net: dict[tuple[str, str], str] = {}
+    for net in ir.nets:
+        for ref, pin_no in net.nodes:
+            pin_net[(ref, str(pin_no))] = net.name
+
+    def _two_pin_bridges(prefix: str, net_name: str) -> list[str]:
+        """Nets bridged to net_name through a 2-pin part with ref prefix."""
+        bridged = []
+        for ref, comp in ir.components.items():
+            sym = symbols.get(comp.lib_id)
+            if sym is None or sym.reference_prefix != prefix or len(sym.pins) != 2:
+                continue
+            nets = {pin_net.get((ref, p.number)) for p in sym.pins}
+            if net_name in nets:
+                bridged.extend(n for n in nets if n and n != net_name)
+        return bridged
+
+    # -- decoupling per IC power pin (knowledge: decoupling-cap-per-ic) --
+    for ref, comp in ir.components.items():
+        sym = symbols.get(comp.lib_id)
+        if sym is None or sym.is_power or ref.startswith("#"):
+            continue
+        pwr_nets = {
+            pin_net.get((ref, p.number))
+            for p in sym.pins
+            if p.etype == PinType.PWRIN
+        } - {None}
+        for net_name in sorted(pwr_nets):
+            if net_kinds.get(net_name) != "power":
+                continue
+            has_cap = any(
+                net_kinds.get(other) == "gnd"
+                for other in _two_pin_bridges("C", net_name)
+            )
+            if not has_cap:
+                issues.append(
+                    _issue("decoupling_missing", "warning", f"{ref}@{net_name}", f"{ref} power net {net_name} has no decoupling capacitor to ground (0.01-0.1uF per IC — knowledge: decoupling-cap-per-ic)")
+                )
+
+    # -- I2C pull-ups (knowledge: pullup-resistor-sizing) --
+    for net in ir.nets:
+        pin_names = {
+            (symbols[ir.components[r].lib_id].pin(str(p)).name or "").upper()
+            for r, p in net.nodes
+            if r in ir.components and ir.components[r].lib_id in symbols
+            and _pin_type(ir, symbols, r, str(p)) is not None
+        }
+        if not any(n in ("SDA", "SCL") or n.endswith("/SDA") or n.endswith("/SCL") for n in pin_names):
+            continue
+        has_pullup = any(
+            net_kinds.get(other) == "power"
+            for other in _two_pin_bridges("R", net.name)
+        )
+        if not has_pullup:
+            issues.append(
+                _issue("i2c_pullup_missing", "warning", f"net:{net.name}", f"I2C net {net.name} (SDA/SCL pins) has no pull-up resistor to a power rail (typ. 10k — knowledge: pullup-resistor-sizing)")
+            )
+
+    # -- footprint presence (real parts only) --
+    for ref, comp in ir.components.items():
+        sym = symbols.get(comp.lib_id)
+        if sym is None or sym.is_power or ref.startswith("#"):
+            continue
+        if not comp.footprint:
+            issues.append(
+                _issue("footprint_missing", "warning", ref, f"{ref} has no footprint assigned")
+            )
+
     return issues
 
 
@@ -131,8 +260,11 @@ def _check_pins(ir: CircuitIR, symbols: dict[str, SymbolDef]) -> list[Validation
                     )
             else:
                 if pin.etype != PinType.NOCONNECT and key not in nc:
+                    # Error, not warning: KiCad's pin_not_connected defaults
+                    # to error for every pin type, and agreeing with the
+                    # oracle fails the pipeline before a doomed emission.
                     issues.append(
-                        _issue("unconnected_pin", "warning", f"{ref}.{pin.number}", f"unconnected pin {ref}.{pin.number} ({sym.lib_id} {pin.name})")
+                        _issue("unconnected_pin", "error", f"{ref}.{pin.number}", f"unconnected pin {ref}.{pin.number} ({sym.lib_id} {pin.name}) — connect it or mark it NC")
                     )
     return issues
 

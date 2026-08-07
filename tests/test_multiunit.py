@@ -55,6 +55,9 @@ def test_74ls00_symbol_shape():
 def test_nand_led_pipeline_clean():
     res = generate(nand_led_ir(), OUT / "nand")
     assert res.errors == [], res.errors
+    # the fixture deliberately omits a decoupling cap: the §8.2 lint must
+    # notice (warning — does not gate the pipeline, feeds the repair loop)
+    assert any(i.rule == "decoupling_missing" for i in res.self_erc)
     assert res.kicad_erc.ok, [v.get("type") for v in res.kicad_erc.violations]
     assert res.connectivity_ok, res.connectivity_msg
     assert res.svg_ok
