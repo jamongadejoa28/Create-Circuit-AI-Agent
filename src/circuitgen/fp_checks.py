@@ -36,6 +36,8 @@ def check_footprints(
         sym = symbols.get(comp.lib_id)
         if sym is None or sym.is_power or ref.startswith("#") or not comp.footprint:
             continue
+        if comp.lib_id.startswith("Conceptual:"):
+            continue  # concept boxes have no physical package by definition
         pads = parts.footprint_pads(comp.footprint)
         if pads is None:
             issues.append(
@@ -66,6 +68,9 @@ def assign_footprints(
     for ref, comp in ir.components.items():
         sym = symbols.get(comp.lib_id)
         if sym is None or sym.is_power or ref.startswith("#"):
+            continue
+        if comp.lib_id.startswith("Conceptual:"):
+            comp.footprint = ""  # concept boxes carry no package
             continue
         if comp.footprint and parts.footprint_pads(comp.footprint) is not None:
             continue  # valid as-is

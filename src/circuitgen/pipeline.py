@@ -76,15 +76,25 @@ def generate(
         known = {r for r, c in ir.components.items() if c.lib_id in symbols}
         if not known:
             return res
+
+        def pin_ok(r: str, p) -> bool:
+            try:
+                symbols[ir.components[r].lib_id].pin(str(p))
+                return True
+            except KeyError:
+                return False  # invented pin — emitter would crash on it
+
         draft = CircuitIR(name=ir.name)
         for r in known:
             c = ir.components[r]
             draft.add(type(c)(r, c.lib_id, c.value, c.footprint))
         for net in ir.nets:
-            nodes = [(r, p) for r, p in net.nodes if r in known]
+            nodes = [(r, p) for r, p in net.nodes if r in known and pin_ok(r, p)]
             if nodes:
                 draft.connect(net.name, *nodes)
-        draft.nc_pins = [(r, p) for r, p in ir.nc_pins if r in known]
+        draft.nc_pins = [
+            (r, p) for r, p in ir.nc_pins if r in known and pin_ok(r, p)
+        ]
         ir = draft
         res.draft = True
 
