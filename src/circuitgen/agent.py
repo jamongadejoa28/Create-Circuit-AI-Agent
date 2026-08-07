@@ -72,6 +72,33 @@ _SYSTEM = (
 _GND_NAMES = {"GND", "VSS", "AGND", "DGND", "0V"}
 
 
+_RAIL_ALIASES = {
+    "+3V3": {"VCC", "VDD", "3V3", "3.3V", "+3.3V", "V33"},
+    "+5V": {"VCC5", "5V", "VBUS"},
+    "+12V": {"12V", "VS", "VSERVO"},
+    "GND": {"VSS", "0V", "AGND", "DGND"},
+}
+
+
+def _reconcile_rails(ir: "CircuitIR", spec: dict) -> list[str]:
+    """Rename alias-named nets to their spec rail names, deterministically."""
+    notes = []
+    existing = {n.name: n for n in ir.nets}
+    for rail in spec.get("power", {}).get("rails", []):
+        name = rail["name"]
+        if name in existing:
+            continue
+        aliases = _RAIL_ALIASES.get(name, set()) | {name.lstrip("+"), name.upper()}
+        hit = next((n for n in ir.nets if n.name.upper() in {a.upper() for a in aliases}), None)
+        if hit is not None:
+            notes.append(f"rail {name}: renamed net {hit.name!r}")
+            hit.name = name
+            existing[name] = hit
+        else:
+            notes.append(f"rail {name}: no net found (blocks may not use this rail)")
+    return notes
+
+
 def _normalize_rails(spec: dict) -> dict:
     """Deterministic rail-name normalization: '5V' → '+5V', '3.3V' → '+3V3'.
 
@@ -153,14 +180,17 @@ class Agent:
                     snippets.append(hit)
         snippets = snippets[:6]
 
-        pin_tables: dict[str, list[dict]] = {}
+        pin_tables: dict[str, list] = {}
         for hits in candidates.values():
             for i, h in enumerate(hits):
                 pins = self.parts.get_part_pins(h["lib_id"])
                 if i == 0 and h["lib_id"] not in pin_tables:
-                    # full table for the preferred candidate
+                    # compact [number, name, type] rows — dict-form tables of
+                    # a 64-pin MCU once squeezed the reply budget to nothing
+                    # (finish_reason=length mid-JSON)
                     pin_tables[h["lib_id"]] = [
-                        {k: p[k] for k in ("number", "name", "type", "unit")}
+                        [p["number"], p["name"], p["type"]]
+                        + ([p["unit"]] if p["unit"] not in (0, 1) else [])
                         for p in pins
                     ]
                 else:
@@ -214,6 +244,14 @@ class Agent:
         content = (
             "Partition this circuit spec into functional blocks for separate "
             "synthesis.\nRules:\n"
+            "- A block is a COMPLETE sub-circuit: its main IC plus ALL its "
+            "support parts (decoupling caps, pull-ups, filters, connectors). "
+            "NEVER make a block for a single passive component — passives "
+            "belong to the block of the IC they serve.\n"
+            "- Aim for 3 to 7 blocks total (e.g. POWER, MCU, DRIVER, ENCODER, "
+            "COMM). Off-board devices (motors, servos) appear only as "
+            "connectors inside the block that drives them — a motor and its "
+            "driver are ONE block, never two.\n"
             "- Every parts_needed role belongs to exactly one block.\n"
             "- Identical repeated hardware (e.g. one driver per motor) is ONE "
             "block with count=N — never N separate blocks.\n"
@@ -243,7 +281,7 @@ class Agent:
                     catalog.append(
                         {
                             "net": net["name"].replace("{n}", str(inst)),
-                            "purpose": net.get("purpose", "")[:60],
+                            "purpose": net.get("purpose", "")[:40],
                             "block": f"{b['id']}#{inst}",
                         }
                     )
@@ -261,6 +299,12 @@ class Agent:
             "connections_intent": [block.get("description", "")],
         }
         candidates, snippets, pin_tables = self._gather(sub_spec)
+        # Support passives are always available: without R/C candidates a
+        # block synthesizes its bare IC and no decoupling can ever appear.
+        candidates.setdefault(
+            "support_passives",
+            self.parts.search_parts("resistor", 1) + self.parts.search_parts("capacitor", 1),
+        )
         own_ifaces = [n["name"] for n in block.get("interface_nets", [])]
         others = [c for c in catalog if not c["block"].startswith(block["id"] + "#")]
         rails = [r["name"] for r in spec.get("power", {}).get("rails", [])]
@@ -282,7 +326,9 @@ class Agent:
             + f"- Power rails (already exist, connect power pins to them by name, "
             f"do NOT add power:* symbols): {rails}\n"
             "- Internal net names are free — they get namespaced automatically.\n"
-            "- Every pin of every used component must be in a net or nc_pins.\n"
+            "- Every pin of every used component must be in a net or nc_pins. "
+            "UNUSED pins of large ICs go in nc_pins — NEVER as one-pin nets.\n"
+            "- Be terse: short net names, plain values (100nF, 10k), no prose.\n"
             "- Apply the KNOWLEDGE rules (decoupling beside ICs, pull-ups, "
             "series resistors).\n"
             f"- name must be: {name}\n\n"
@@ -421,38 +467,85 @@ class Agent:
         for net in touched_nets:
             refs.update(r for r, _ in net.nodes)
         refs = set(sorted(refs)[:REPAIR_SLICE_LIMIT])
+        if not refs:
+            # never send an empty view — fall back to a compact component list
+            full = ir_to_json(ir)
+            return {
+                "name": full["name"],
+                "components": [
+                    {"ref": c["ref"], "lib_id": c["lib_id"]} for c in full["components"]
+                ][:40],
+                "nets": [],
+                "nc_pins": [],
+            }, True
 
         full = ir_to_json(ir)
+        nets_view = [
+            {"name": n["name"], "nodes": [nd for nd in n["nodes"] if nd["ref"] in refs]}
+            for n in full["nets"]
+            if any(nd["ref"] in refs for nd in n["nodes"])
+        ][:30]
         view = {
             "name": full["name"],
             "components": [c for c in full["components"] if c["ref"] in refs],
-            "nets": [
-                {"name": n["name"], "nodes": [nd for nd in n["nodes"] if nd["ref"] in refs]}
-                for n in full["nets"]
-                if any(nd["ref"] in refs for nd in n["nodes"])
-            ],
+            "nets": nets_view,
             "nc_pins": [p for p in full["nc_pins"] if p["ref"] in refs],
         }
         return view, True
 
+    def _filter_ops(
+        self, ir: CircuitIR, ops: list[dict], problems: list[str]
+    ) -> tuple[list[dict], list[str]]:
+        """Deterministic op gate.
+
+        (1) add/replace with a lib_id the index does not know is
+        fabrication — one such round once clobbered a whole merged board.
+        (2) destructive ops (remove / replace) on refs never mentioned in
+        the problems are collateral damage — a repair round once removed
+        healthy encoder ICs while 'fixing' a power-block issue.
+        """
+        text = " ".join(problems)
+        kept, notes = [], []
+        for op in ops:
+            kind = op.get("op")
+            ref = op.get("ref", "")
+            if kind == "add_component":
+                lid = op.get("lib_id", "")
+                try:
+                    self.parts.symbol_source(lid)
+                except KeyError:
+                    notes.append(f"rejected op: add/replace {ref} with unknown lib_id {lid!r}")
+                    continue
+            if kind in ("remove_component", "add_component") and ref in ir.components:
+                if ref not in text:
+                    notes.append(f"rejected op: {kind} on {ref} — not part of any reported problem")
+                    continue
+            kept.append(op)
+        return kept, notes
+
     def _repair(self, ir: CircuitIR, problems: list[str], candidates: dict) -> list[str]:
-        view, partial = self._repair_view(ir, problems)
+        shown = problems[:12]
+        view, partial = self._repair_view(ir, shown)
+        # candidates trimmed to the top hit per role — repair only needs
+        # replacements, not the full search context
+        slim = {role: hits[:1] for role, hits in candidates.items()}
         content = (
             "The circuit failed validation. Propose the smallest set of repair ops.\n"
             "If a component's lib_id is 'not in library set', replace it (add_component "
             "with the same ref) using an EXACT lib_id from CANDIDATES.\n"
             + ("NOTE: CURRENT_IR is a PARTIAL VIEW around the problems; the "
                "circuit is larger and your ops apply to the full circuit.\n" if partial else "")
-            + f"PROBLEMS: {json.dumps(problems[:12], ensure_ascii=False)}\n\n"
+            + f"PROBLEMS: {json.dumps(shown, ensure_ascii=False)}\n\n"
             f"CURRENT_IR: {json.dumps(view, ensure_ascii=False)}\n\n"
-            f"CANDIDATES: {json.dumps(candidates, ensure_ascii=False)}"
+            f"CANDIDATES: {json.dumps(slim, ensure_ascii=False)}"
         )
         patch = _with_retry(lambda: self.llm.complete_json(
             [{"role": "system", "content": _SYSTEM}, {"role": "user", "content": content}],
             schema=REPAIR_PATCH,
             max_tokens=1024,
         ))
-        return apply_patch(ir, patch.get("ops", []))
+        ops, gate_notes = self._filter_ops(ir, patch.get("ops", []), shown)
+        return gate_notes + apply_patch(ir, ops)
 
     # ---- full run ----
 
@@ -514,31 +607,13 @@ class Agent:
         res.log.extend(self.attach_power_symbols(ir, spec))
         res.log.extend(self._fix_footprints(ir))
 
-        # A missing rail net means the model mis-named the supply net — a
-        # supply-less passive loop can pass every ERC, so catch it here and
-        # spend one repair round on it before generating anything.
-        missing = [
-            rail["name"]
-            for rail in spec.get("power", {}).get("rails", [])
-            if not any(n.name == rail["name"] for n in ir.nets)
-        ]
-        if missing:
-            res.stage = "repair-rails"
-            try:
-                notes = self._repair(
-                    ir,
-                    [
-                        f"required power net {name!r} does not exist — rename the "
-                        f"corresponding supply net to exactly {name!r}"
-                        for name in missing
-                    ],
-                    {},
-                )
-                res.repairs.extend(notes)
-                res.log.extend(self.resolve_pin_names(ir))
-                res.log.extend(self.attach_power_symbols(ir, spec))
-            except Exception as e:
-                res.log.append(f"rail repair failed: {e}")
+        # A missing rail net usually means the model mis-named the supply
+        # net (VCC vs +3V3). Reconcile DETERMINISTICALLY by alias rename —
+        # an LLM repair here once fabricated replacement components over
+        # the whole merged board (it saw an empty slice and empty
+        # candidates and invented lib_ids), so no model call is allowed.
+        res.log.extend(_reconcile_rails(ir, spec))
+        res.log.extend(self.attach_power_symbols(ir, spec))
 
         res.stage = "pipeline"
         pr = generate(ir, self.out_dir, symbols=self._resolve_symbols(ir), parts_index=self.parts)
@@ -546,12 +621,19 @@ class Agent:
         rounds = 0
         last_problems: list[str] | None = None
         while not pr.ok and rounds < MAX_REPAIRS:
-            problems = list(pr.errors)
-            problems += [f"{i.rule}: {i.message}" for i in pr.self_erc if i.severity == "error"]
+            # Individual issues, each truncated — pipeline.errors joins ALL
+            # self-ERC errors into one string, and a board once produced a
+            # 10k-char blob that no list cap could contain.
+            problems = [
+                f"{i.rule}: {i.message}"[:180]
+                for i in pr.self_erc
+                if i.severity == "error"
+            ]
+            problems += [e[:200] for e in pr.errors if not e.startswith("self ERC errors")]
             if not problems:
                 # KiCad-only violations with no self-ERC error: give the
                 # model our warnings as the best available localization.
-                problems += [f"{i.rule}: {i.message}" for i in pr.self_erc if i.severity == "warning"]
+                problems += [f"{i.rule}: {i.message}"[:180] for i in pr.self_erc if i.severity == "warning"]
             if problems == last_problems:
                 res.log.append("same problems twice — stopping auto-repair")
                 break

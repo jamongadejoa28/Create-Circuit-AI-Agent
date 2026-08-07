@@ -104,9 +104,12 @@ def validate_plan(plan: list[dict], spec: dict) -> tuple[list[dict], list[str]]:
         b["roles"] = [r for r in b.get("roles", []) if r in roles]
         covered.update(b["roles"])
     orphans = roles - covered
-    if orphans and plan:
-        plan[0]["roles"].extend(sorted(orphans))
-        notes.append(f"roles {sorted(orphans)} not planned — assigned to block {plan[0]['id']}")
+    if orphans:
+        # Dropped, not stuffed into one block: orphan roles are almost
+        # always support passives (fuses, caps, LEDs) whose parts emerge
+        # from the IC blocks' knowledge rules; concentrating six of them
+        # in one block once blew that block's output budget.
+        notes.append(f"roles {sorted(orphans)} not planned — dropped (support parts come from IC blocks)")
     seen_ids = set()
     for b in plan:
         if b["id"] in seen_ids:

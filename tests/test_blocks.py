@@ -69,7 +69,8 @@ def test_validate_plan_orphans_and_dup_ids():
     ]
     fixed, notes = validate_plan(plan, spec)
     assert fixed[1]["id"] == "XX"
-    assert "c" in fixed[0]["roles"]          # orphan assigned
+    assert "c" not in fixed[0]["roles"]      # orphan dropped, not stuffed
+    assert any("dropped" in n and "'c'" in n for n in notes)
     assert "ghost" not in fixed[1]["roles"]  # unknown role dropped
     assert notes
 
