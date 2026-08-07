@@ -24,7 +24,15 @@ KNOWLEDGE_DIR = _PROJECT / "data" / "knowledge"
 DEFAULT_DB = _PROJECT / "data" / "knowledge.sqlite"
 
 REQUIRED_FIELDS = {"id", "type", "statement", "tags", "source"}
-VALID_TYPES = {"component_rule", "formula", "table", "example", "convention"}
+# Original curated types plus the Codex knowledge-tier taxonomy
+# (2026-08-08): tier 1 = executable rules, 2 = circuit patterns,
+# 3 = selection guidance / failure modes, 4 = worked designs,
+# 5 = source evidence chunks. Entries may carry an integer "tier" field.
+VALID_TYPES = {
+    "component_rule", "formula", "table", "example", "convention",
+    "device_rule", "circuit_pattern", "selection_guidance",
+    "failure_mode", "worked_design", "source_evidence",
+}
 
 
 def load_entries(knowledge_dir: Path = KNOWLEDGE_DIR) -> list[dict]:
