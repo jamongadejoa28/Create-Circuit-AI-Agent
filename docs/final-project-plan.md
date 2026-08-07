@@ -216,6 +216,26 @@ SKIDL의 force-directed 배치(`place.py`)와 maze/switchbox 배선(`route.py`)�
 
 별도의 KiCad 10 S-expression 시리얼라이저를 직접 구현하며(§5.2 규칙 준수), KiCad 소스 복사는 피하고 파일 형식·동작만 참고한다. 파일 생성 후 Windows `kicad-cli.exe`를 검증 오라클로 사용한다(§4의 wslpath 규칙 필수).
 
+### 7.6 모델 벤치마크와 역할 배정 계획 (2026-08-07 추가)
+
+**목적**: Qwen2.5-Coder-7B-Q5_K_M vs Qwen3.5-9B-Q4_K_M(thinking 비활성) 중 에이전트 LLM 역할(spec 추출 / IR 합성 / 수리 패치)을 어느 모델에 배정할지 실측으로 결정.
+
+**도구**: `scripts/bench_models.py` — 고정 시나리오를 전체 에이전트 루프로 돌리고 결과를 `out/bench/<label>.jsonl`에 누적. 시나리오 3종(LED+버튼 직렬 / R+LED 직렬 / 저항 분배기)은 각각 **기능 체커**(IR 그래프 워크로 직렬 체인·분배기 토폴로지 검증)를 가진다 — 실측에서 "ERC 0인데 스위치가 레일을 단락하는" 회로가 나왔기 때문에 ERC 통과와 기능 정합을 분리 채점한다.
+
+**지표** (스키마 준수는 문법 강제로 항상 100%라 제외): ① KiCad ERC 0 도달률 ② 기능 정합률(체커) ③ 수리 라운드/연산 수(수렴 속도) ④ 소요 시간. 시나리오당 3회 반복.
+
+**Qwen3.5 thinking 끄기**: 서버 기동 시 `--reasoning-budget 0`(권장) 또는 요청별 `chat_template_kwargs {"enable_thinking": false}`(`bench_models.py --thinking-off`가 자동 주입).
+
+**실행 절차**:
+1. Coder 서빙 상태에서: `bench_models.py --label qwen2.5-coder --reps 3`
+2. 서버를 Qwen3.5로 교체 기동(`-m ...Qwen3.5-9B-Q4_K_M.gguf --reasoning-budget 0`, ctx는 VRAM상 6144~8192 실측 조정) 후: `--label qwen3.5-nothink --reps 3 --thinking-off`
+3. jsonl 두 개를 비교.
+
+**결정 규칙**:
+- 한 모델이 전 지표 우위 → 그 모델 단독 채택.
+- 단계별 우위가 갈릴 경우(예: 3.5가 IR 합성 기능 정합 우위, Coder가 수리 수렴 우위) → 역할 분담을 검토하되, **8GB VRAM에 두 모델 동시 상주가 불가능**하다는 제약이 지배적이다: 라우터 모드 스왑은 호출마다 수~수십 초의 재적재 비용이 들어 3-스테이지 루프에는 비현실적. 따라서 역할 분담이 정당화되려면 지표 격차가 스왑 비용을 압도해야 하며, 그렇지 않으면 종합 우위 모델 단독 채택이 기본값이다.
+- 두 모델 모두 기능 정합률이 낮으면 모델 교체가 아니라 **결정론 레이어 강화**(§8.2 설계 린트 확장, 후보 축소, 프롬프트 개선)가 우선 — 실측에서 오류의 다수는 결정론 가드로 흡수 가능했다(전원 심볼 자동 부착, 정확명 랭킹 부스트, per-op 스키마 강제 등).
+
 ## 8. ERC와 수정 루프
 
 ### 8.1 기본 규칙 (SKIDL 인용, §5.1)

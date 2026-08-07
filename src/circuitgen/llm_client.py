@@ -28,10 +28,14 @@ class LlamaClient:
         base_url: str = DEFAULT_BASE_URL,
         timeout: float = 300.0,
         model: str | None = None,
+        extra_payload: dict | None = None,
     ):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.model = model
+        # merged into every request — e.g. {"chat_template_kwargs":
+        # {"enable_thinking": False}} to switch off Qwen3.5 thinking mode
+        self.extra_payload = extra_payload or {}
 
     def _resolve_model(self) -> str | None:
         """Router-mode servers require a model name; discover one if needed."""
@@ -92,6 +96,7 @@ class LlamaClient:
         model = self._resolve_model()
         if model:
             payload["model"] = model
+        payload.update(self.extra_payload)
         data = self._post("/v1/chat/completions", payload)
         try:
             content = data["choices"][0]["message"]["content"]

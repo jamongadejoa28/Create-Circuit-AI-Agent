@@ -148,6 +148,27 @@ def _check_extended(
                 _issue("i2c_pullup_missing", "warning", f"net:{net.name}", f"I2C net {net.name} (SDA/SCL pins) has no pull-up resistor to a power rail (typ. 10k — knowledge: pullup-resistor-sizing)")
             )
 
+    # -- design sanity for 2-pin parts (caught live: a 7B model produced a
+    #    switch straight across the rails and an LED with one pin NC'd —
+    #    ERC-legal, functionally nonsense) --
+    nc = {(r, str(p)) for r, p in ir.nc_pins}
+    for ref, comp in ir.components.items():
+        sym = symbols.get(comp.lib_id)
+        if sym is None or sym.is_power or ref.startswith("#") or len(sym.pins) != 2:
+            continue
+        kinds = []
+        for p in sym.pins:
+            net_name = pin_net.get((ref, p.number))
+            kinds.append(net_kinds.get(net_name) if net_name else None)
+        if sym.reference_prefix == "SW" and sorted(k for k in kinds if k) == ["gnd", "power"]:
+            issues.append(
+                _issue("switch_across_rails", "error", ref, f"{ref} connects a power rail directly to ground — closing it shorts the supply; put it in series with the load instead")
+            )
+        if any((ref, p.number) in nc for p in sym.pins):
+            issues.append(
+                _issue("dead_two_pin_component", "warning", ref, f"{ref} has a no-connect pin — a 2-pin component with an open pin does nothing; wire both pins or remove it")
+            )
+
     # -- footprint presence (real parts only) --
     for ref, comp in ir.components.items():
         sym = symbols.get(comp.lib_id)
@@ -284,9 +305,12 @@ def _check_nets(ir: CircuitIR, symbols: dict[str, SymbolDef]) -> list[Validation
             issues.append(_issue("empty_net", "warning", path, f"no pins attached to net {net.name}"))
             continue
         if len(net.nodes) == 1:
+            # Error, not warning: the stub+label emitter turns every 1-pin
+            # net into a KiCad isolated_pin_label violation, so this can
+            # never pass the oracle. Connect a second pin or mark it NC.
             ref, pin_no = net.nodes[0]
             issues.append(
-                _issue("single_pin_net", "warning", path, f"only one pin ({ref}.{pin_no}) attached to net {net.name}")
+                _issue("single_pin_net", "error", path, f"net {net.name} has only one pin ({ref}.{pin_no}) — connect another pin to it or remove the net and mark {ref}.{pin_no} NC")
             )
 
         typed = [

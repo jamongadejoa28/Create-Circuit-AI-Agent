@@ -289,11 +289,17 @@ def parse_library(path: str | Path, lib_nickname: str | None = None) -> dict[str
     return defs
 
 
-def load_symbols(lib_ids: list[str], symbol_dir: Path = KICAD_SYMBOL_DIR) -> dict[str, SymbolDef]:
+def load_symbols(
+    lib_ids: list[str],
+    symbol_dir: Path = KICAD_SYMBOL_DIR,
+    strict: bool = True,
+) -> dict[str, SymbolDef]:
     """Load specific symbols ("Device:R", ...) from bundled libraries.
 
-    Parses each needed library file once. Phase 2 replaces this with the
-    SQLite-indexed multi-library search; the emitter interface stays the same.
+    With strict=False, unknown libraries/symbols are silently omitted from
+    the result instead of raising — the pipeline uses this so that an
+    LLM-invented lib_id surfaces as a structured unknown_symbol self-ERC
+    error (repairable) rather than as a crash.
     """
     wanted: dict[str, list[str]] = {}
     for lib_id in lib_ids:
@@ -302,10 +308,17 @@ def load_symbols(lib_ids: list[str], symbol_dir: Path = KICAD_SYMBOL_DIR) -> dic
 
     out: dict[str, SymbolDef] = {}
     for lib, names in wanted.items():
-        all_defs = parse_library(symbol_dir / f"{lib}.kicad_sym", lib)
+        lib_path = symbol_dir / f"{lib}.kicad_sym"
+        if not lib_path.exists():
+            if strict:
+                raise KeyError(f"library {lib}.kicad_sym not found")
+            continue
+        all_defs = parse_library(lib_path, lib)
         for name in names:
             lib_id = f"{lib}:{name}"
             if lib_id not in all_defs:
-                raise KeyError(f"symbol {lib_id} not found in {lib}.kicad_sym")
+                if strict:
+                    raise KeyError(f"symbol {lib_id} not found in {lib}.kicad_sym")
+                continue
             out[lib_id] = all_defs[lib_id]
     return out

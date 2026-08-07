@@ -39,48 +39,72 @@ def apply_patch(ir: CircuitIR, ops: list[dict]) -> list[str]:
 
     Ops are intentionally coarse domain operations, not raw JSON Patch:
     the model cannot corrupt invariants it does not know about, and every
-    op is validated by the next self-ERC pass anyway.
+    op is validated by the next self-ERC pass anyway. A malformed op is
+    recorded and skipped — repair must never raise.
     """
     notes = []
     for op in ops:
-        kind = op.get("op")
-        ref = op.get("ref", "")
-        if kind == "add_component":
-            ir.add(Component(ref, op["lib_id"], op.get("value", ""), op.get("footprint", "")))
-            notes.append(f"added {ref} ({op['lib_id']})")
-        elif kind == "remove_component":
-            ir.components.pop(ref, None)
-            for net in ir.nets:
-                net.nodes = [n for n in net.nodes if n[0] != ref]
-            ir.nets = [n for n in ir.nets if n.nodes]
-            ir.nc_pins = [n for n in ir.nc_pins if n[0] != ref]
-            notes.append(f"removed {ref}")
-        elif kind == "connect":
-            ir.connect(op["net"], (ref, str(op["pin"])))
-            ir.nc_pins = [n for n in ir.nc_pins if n != (ref, str(op["pin"]))]
-            notes.append(f"connected {ref}.{op['pin']} to {op['net']}")
-        elif kind == "disconnect":
-            for net in ir.nets:
-                if net.name == op.get("net"):
-                    net.nodes = [n for n in net.nodes if n != (ref, str(op["pin"]))]
-            ir.nets = [n for n in ir.nets if n.nodes]
-            notes.append(f"disconnected {ref}.{op['pin']} from {op.get('net')}")
-        elif kind == "set_nc":
-            pair = (ref, str(op["pin"]))
-            if pair not in ir.nc_pins:
-                ir.nc_pins.append(pair)
-            notes.append(f"marked {ref}.{op['pin']} NC")
-        elif kind == "clear_nc":
-            ir.nc_pins = [n for n in ir.nc_pins if n != (ref, str(op["pin"]))]
-            notes.append(f"cleared NC on {ref}.{op['pin']}")
-        elif kind == "set_value":
-            if ref in ir.components:
-                ir.components[ref].value = op.get("value", "")
-                notes.append(f"set {ref} value {op.get('value')}")
-        elif kind == "set_footprint":
-            if ref in ir.components:
-                ir.components[ref].footprint = op.get("footprint", "")
-                notes.append(f"set {ref} footprint")
-        else:
-            notes.append(f"ignored unknown op {kind!r}")
+        try:
+            notes.append(_apply_one(ir, op))
+        except Exception as e:
+            notes.append(f"skipped bad op {op.get('op')!r}: {e}")
     return notes
+
+
+def _apply_one(ir: CircuitIR, op: dict) -> str:
+    kind = op.get("op")
+    ref = op.get("ref", "")
+    if kind == "add_component":
+        if ref in ir.components:
+            # models often "add" to mean "fix this component" — treat as replace
+            c = ir.components[ref]
+            c.lib_id = op.get("lib_id", c.lib_id)
+            c.value = op.get("value", c.value)
+            c.footprint = op.get("footprint", c.footprint)
+            return f"replaced {ref} -> {c.lib_id}"
+        ir.add(Component(ref, op["lib_id"], op.get("value", ""), op.get("footprint", "")))
+        return f"added {ref} ({op['lib_id']})"
+    if kind == "remove_component":
+        ir.components.pop(ref, None)
+        for net in ir.nets:
+            net.nodes = [n for n in net.nodes if n[0] != ref]
+        ir.nets = [n for n in ir.nets if n.nodes]
+        ir.nc_pins = [n for n in ir.nc_pins if n[0] != ref]
+        return f"removed {ref}"
+    if kind == "connect":
+        pair = (ref, str(op["pin"]))
+        # a pin can live in only one net: drop stale memberships first
+        for net in ir.nets:
+            net.nodes = [n for n in net.nodes if n != pair]
+        ir.nets = [n for n in ir.nets if n.nodes or n.name == op["net"]]
+        ir.connect(op["net"], pair)
+        ir.nc_pins = [n for n in ir.nc_pins if n != pair]
+        return f"connected {ref}.{op['pin']} to {op['net']}"
+    if kind == "disconnect":
+        for net in ir.nets:
+            if net.name == op.get("net"):
+                net.nodes = [n for n in net.nodes if n != (ref, str(op["pin"]))]
+        ir.nets = [n for n in ir.nets if n.nodes]
+        return f"disconnected {ref}.{op['pin']} from {op.get('net')}"
+    if kind == "set_nc":
+        pair = (ref, str(op["pin"]))
+        for net in ir.nets:
+            net.nodes = [n for n in net.nodes if n != pair]
+        ir.nets = [n for n in ir.nets if n.nodes]
+        if pair not in ir.nc_pins:
+            ir.nc_pins.append(pair)
+        return f"marked {ref}.{op['pin']} NC"
+    if kind == "clear_nc":
+        ir.nc_pins = [n for n in ir.nc_pins if n != (ref, str(op["pin"]))]
+        return f"cleared NC on {ref}.{op['pin']}"
+    if kind == "set_value":
+        if ref in ir.components:
+            ir.components[ref].value = op.get("value", "")
+            return f"set {ref} value {op.get('value')}"
+        return f"set_value: unknown ref {ref}"
+    if kind == "set_footprint":
+        if ref in ir.components:
+            ir.components[ref].footprint = op.get("footprint", "")
+            return f"set {ref} footprint"
+        return f"set_footprint: unknown ref {ref}"
+    return f"ignored unknown op {kind!r}"

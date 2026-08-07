@@ -121,41 +121,98 @@ CIRCUIT_IR = {
 }
 
 
+# Per-op variants: required fields are enforced per operation so the model
+# cannot emit e.g. a connect without a net (observed with the 7B model
+# under a permissive schema).
+_OP_VARIANTS = [
+    {
+        "type": "object",
+        "required": ["op", "ref", "lib_id"],
+        "additionalProperties": False,
+        "properties": {
+            "op": {"const": "add_component"},
+            "ref": {"type": "string"},
+            "lib_id": {"type": "string"},
+            "value": {"type": "string"},
+            "footprint": {"type": "string"},
+        },
+    },
+    {
+        "type": "object",
+        "required": ["op", "ref"],
+        "additionalProperties": False,
+        "properties": {"op": {"const": "remove_component"}, "ref": {"type": "string"}},
+    },
+    {
+        "type": "object",
+        "required": ["op", "ref", "pin", "net"],
+        "additionalProperties": False,
+        "properties": {
+            "op": {"const": "connect"},
+            "ref": {"type": "string"},
+            "pin": {"type": "string"},
+            "net": {"type": "string"},
+        },
+    },
+    {
+        "type": "object",
+        "required": ["op", "ref", "pin", "net"],
+        "additionalProperties": False,
+        "properties": {
+            "op": {"const": "disconnect"},
+            "ref": {"type": "string"},
+            "pin": {"type": "string"},
+            "net": {"type": "string"},
+        },
+    },
+    {
+        "type": "object",
+        "required": ["op", "ref", "pin"],
+        "additionalProperties": False,
+        "properties": {
+            "op": {"const": "set_nc"},
+            "ref": {"type": "string"},
+            "pin": {"type": "string"},
+        },
+    },
+    {
+        "type": "object",
+        "required": ["op", "ref", "pin"],
+        "additionalProperties": False,
+        "properties": {
+            "op": {"const": "clear_nc"},
+            "ref": {"type": "string"},
+            "pin": {"type": "string"},
+        },
+    },
+    {
+        "type": "object",
+        "required": ["op", "ref", "value"],
+        "additionalProperties": False,
+        "properties": {
+            "op": {"const": "set_value"},
+            "ref": {"type": "string"},
+            "value": {"type": "string"},
+        },
+    },
+    {
+        "type": "object",
+        "required": ["op", "ref", "footprint"],
+        "additionalProperties": False,
+        "properties": {
+            "op": {"const": "set_footprint"},
+            "ref": {"type": "string"},
+            "footprint": {"type": "string"},
+        },
+    },
+]
+
 REPAIR_PATCH = {
     "type": "object",
     "required": ["ops"],
     "additionalProperties": False,
     "properties": {
         "analysis": {"type": "string", "description": "one sentence on the root cause"},
-        "ops": {
-            "type": "array",
-            "maxItems": 12,
-            "items": {
-                "type": "object",
-                "required": ["op"],
-                "additionalProperties": False,
-                "properties": {
-                    "op": {
-                        "type": "string",
-                        "enum": [
-                            "add_component",
-                            "remove_component",
-                            "connect",
-                            "disconnect",
-                            "set_nc",
-                            "clear_nc",
-                            "set_value",
-                            "set_footprint",
-                        ],
-                    },
-                    "ref": {"type": "string"},
-                    "lib_id": {"type": "string"},
-                    "value": {"type": "string"},
-                    "footprint": {"type": "string"},
-                    "net": {"type": "string"},
-                    "pin": {"type": "string"},
-                },
-            },
-        },
+        "ops": {"type": "array", "maxItems": 12, "items": {"anyOf": _OP_VARIANTS}},
     },
 }

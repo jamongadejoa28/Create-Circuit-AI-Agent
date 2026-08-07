@@ -171,7 +171,13 @@ class PartIndex:
         self.con.row_factory = sqlite3.Row
 
     def search_parts(self, query: str, limit: int = 5) -> list[dict]:
-        """Trimmed search results, best (bm25, then priority) first."""
+        """Trimmed search results, best first.
+
+        Ranking: exact symbol-name match beats everything (a query "LED"
+        must surface Device:LED before every part whose description merely
+        mentions LEDs), then bm25, then source priority, then simplicity
+        (fewer pins first).
+        """
         q = _fts_query(query)
         if not q:
             return []
@@ -182,10 +188,10 @@ class PartIndex:
                    s.footprint, s.priority, bm25(symbols_fts) AS rank
             FROM symbols_fts JOIN symbols s ON s.lib_id = symbols_fts.lib_id
             WHERE symbols_fts MATCH ?
-            ORDER BY rank, s.priority, s.pin_count
+            ORDER BY (lower(s.name) = lower(?)) DESC, rank, s.priority, s.pin_count
             LIMIT ?
             """,
-            (q, limit),
+            (q, query.strip(), limit),
         ).fetchall()
         return [
             {

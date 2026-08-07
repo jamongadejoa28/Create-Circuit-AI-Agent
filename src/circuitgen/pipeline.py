@@ -46,8 +46,11 @@ def generate(
     res = PipelineResult(ok=False)
 
     if symbols is None:
+        # Lenient: an unknown lib_id (e.g. LLM-invented) must surface as a
+        # structured unknown_symbol self-ERC error, not as a crash here.
         symbols = load_symbols(
-            sorted({c.lib_id for c in ir.components.values()} | {"power:PWR_FLAG"})
+            sorted({c.lib_id for c in ir.components.values()} | {"power:PWR_FLAG"}),
+            strict=False,
         )
 
     ensure_pwr_flags(ir, symbols)
