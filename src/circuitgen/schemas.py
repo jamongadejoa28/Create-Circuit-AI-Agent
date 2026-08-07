@@ -45,6 +45,8 @@ REQUIREMENT_SPEC = {
                     "role": {"type": "string", "description": "short role id, e.g. mcu, led1, btn1"},
                     "search_query": {"type": "string", "maxLength": 48, "description": "part-index search terms, English"},
                     "value": {"type": "string", "maxLength": 24, "description": "component value if applicable, e.g. 330R"},
+                    "quantity": {"type": "integer", "minimum": 1, "maximum": 16,
+                                 "description": "physical copies requested; default 1"},
                 },
             },
         },

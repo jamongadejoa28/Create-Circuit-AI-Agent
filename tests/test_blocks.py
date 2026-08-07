@@ -42,6 +42,7 @@ def test_instantiate_repeated_block():
     assert {"LEDBLK1_MID", "LEDBLK2_MID", "LEDBLK3_MID"} <= names
     gnd = [n for n in ir.nets if n.name == "GND"]
     assert len(gnd) == 1 and len(gnd[0].nodes) == 3  # all cathodes on one rail net
+    assert {c.group for c in ir.components.values()} == {"LEDBLK1", "LEDBLK2", "LEDBLK3"}
 
 
 def test_single_instance_block_namespacing():
@@ -73,6 +74,54 @@ def test_validate_plan_orphans_and_dup_ids():
     assert any("dropped" in n and "'c'" in n for n in notes)
     assert "ghost" not in fixed[1]["roles"]  # unknown role dropped
     assert notes
+
+
+def test_validate_plan_corrects_repeated_hardware_count_from_requirements():
+    spec = {
+        "parts_needed": [
+            {"role": "encoder", "search_query": "AS5048A", "quantity": 4},
+            {"role": "driver", "search_query": "BLDC driver", "quantity": 4},
+        ]
+    }
+    plan = [
+        {"id": "ENC", "roles": ["encoder"], "count": 1, "interface_nets": []},
+        {"id": "DRV", "roles": ["driver"], "count": 4, "interface_nets": []},
+    ]
+    fixed, notes = validate_plan(plan, spec)
+    assert fixed[0]["count"] == 4
+    assert fixed[1]["count"] == 4
+    assert any("ENC" in n and "corrected" in n for n in notes)
+
+
+def test_validate_plan_namespaces_repeated_control_but_keeps_shared_spi_bus():
+    spec = {"parts_needed": [{"role": "encoder", "quantity": 4}]}
+    plan = [{
+        "id": "ENC", "roles": ["encoder"], "count": 4,
+        "interface_nets": [
+            {"name": "SPI_SCK", "purpose": "shared clock"},
+            {"name": "SPI_MISO", "purpose": "shared data"},
+            {"name": "ENC_CS", "purpose": "individual select"},
+        ],
+    }]
+    fixed, notes = validate_plan(plan, spec)
+    assert [n["name"] for n in fixed[0]["interface_nets"]] == [
+        "SPI_SCK", "SPI_MISO", "ENC_CS{n}"
+    ]
+    assert any("ENC_CS" in n and "per-instance" in n for n in notes)
+
+
+def test_validate_plan_removes_passive_only_decoupling_block():
+    spec = {"parts_needed": [
+        {"role": "driver", "quantity": 4},
+        {"role": "Decoupling Capacitor", "quantity": 4},
+    ]}
+    plan = [
+        {"id": "MOTOR", "roles": ["driver"], "count": 4, "interface_nets": []},
+        {"id": "DECOUPLING", "roles": ["Decoupling Capacitor"], "count": 4, "interface_nets": []},
+    ]
+    fixed, notes = validate_plan(plan, spec)
+    assert [b["id"] for b in fixed] == ["MOTOR"]
+    assert any("passive-only" in n for n in notes)
 
 
 def test_missing_block_ir_skipped():

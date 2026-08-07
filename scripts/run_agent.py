@@ -59,6 +59,7 @@ def main() -> int:
         if res.pipeline.kicad_erc:
             print(f"KiCad ERC violations: {len(res.pipeline.kicad_erc.violations)}")
         print(f"connectivity: {res.pipeline.connectivity_msg}")
+        print(f"visual QA issues: {len(res.pipeline.visual_issues)}")
         for e in res.pipeline.errors:
             print(f"pipeline error: {e}")
     return 0 if res.ok else 1

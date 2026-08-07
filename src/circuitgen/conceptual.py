@@ -23,8 +23,9 @@ def make_conceptual_symbol(lib_id: str, pin_tokens: list[str]) -> SymbolDef:
     left = tokens[0::2]
     right = tokens[1::2]
     rows = max(len(left), len(right), 1)
-    half_h = ((rows - 1) * 2.54) / 2 + 2.54
-    half_w = max(7.62, 1.27 * max((len(t) for t in tokens), default=4))
+    row_pitch = 5.08
+    half_h = ((rows - 1) * row_pitch) / 2 + 5.08
+    half_w = max(15.24, 1.5 * max((len(t) for t in tokens), default=4))
     # snap to grid
     half_h = round(half_h / 1.27) * 1.27
     half_w = round(half_w / 1.27) * 1.27
@@ -41,7 +42,7 @@ def make_conceptual_symbol(lib_id: str, pin_tokens: list[str]) -> SymbolDef:
 
     def add_pin(tok: str, idx: int, side: int) -> None:
         # side: -1 left (orientation 0, points right toward body), +1 right
-        y = half_h - 2.54 * (idx + 1)
+        y = half_h - row_pitch * (idx + 1)
         x = -(half_w + 2.54) if side < 0 else (half_w + 2.54)
         orientation = 0 if side < 0 else 180
         pins.append(

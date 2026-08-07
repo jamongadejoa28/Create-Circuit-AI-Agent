@@ -33,6 +33,7 @@ class PipelineResult:
     connectivity_msg: str = ""
     svg_ok: bool = False
     draft: bool = False  # emitted despite self-ERC errors (partial view)
+    visual_issues: list = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
 
@@ -87,7 +88,7 @@ def generate(
         draft = CircuitIR(name=ir.name)
         for r in known:
             c = ir.components[r]
-            draft.add(type(c)(r, c.lib_id, c.value, c.footprint))
+            draft.add(type(c)(r, c.lib_id, c.value, c.footprint, c.group))
         for net in ir.nets:
             nodes = [(r, p) for r, p in net.nodes if r in known and pin_ok(r, p)]
             if nodes:
@@ -102,9 +103,17 @@ def generate(
     if placements is None:
         placements = heuristic_place(ir, symbols)
 
+    from .emit import normalize_placements
+    from .visual import check_layout
+
+    canonical_placements = normalize_placements(ir, symbols, placements)
+    res.visual_issues = check_layout(ir, symbols, canonical_placements)
+    if res.visual_issues:
+        res.errors.extend(f"visual QA {i.rule}: {i.message}" for i in res.visual_issues)
+
     sch_path = out_dir / f"{ir.name}.kicad_sch"
     try:
-        sch_text = emit_schematic(ir, symbols, placements)
+        sch_text = emit_schematic(ir, symbols, canonical_placements)
     except (KeyError, ValueError) as e:
         res.errors.append(f"placement/emission error: {e}")
         return res

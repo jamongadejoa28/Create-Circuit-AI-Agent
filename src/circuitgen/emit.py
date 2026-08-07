@@ -35,7 +35,9 @@ SCH_VERSION = 20260306
 GENERATOR = "circuitgen"
 GENERATOR_VERSION = "0.1.0"
 
-STUB_LEN = 2.54
+# 2.54 mm put net labels directly on top of long IC pin names.  A standard
+# 7.62 mm stub leaves a readable gap while remaining compact.
+STUB_LEN = 7.62
 
 
 def _fmt(v: float) -> str:

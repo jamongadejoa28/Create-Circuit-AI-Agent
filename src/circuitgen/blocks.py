@@ -27,6 +27,15 @@ from .ir import CircuitIR, Component
 
 _REF_RE = re.compile(r"^(#?[A-Za-z]+)(\d+)$")
 
+# Repeated peripherals normally share only the clock/data bus.  Control,
+# feedback and chip-select lines must be unique per channel.  Small models
+# regularly omit the documented ``{n}``, silently shorting all four motor
+# channels together during instantiation.
+_REPEAT_SHARED_INTERFACES = {
+    "SPI_SCK", "SPI_CLK", "SPI_MOSI", "SPI_MISO",
+    "I2C_SCL", "I2C_SDA",
+}
+
 
 def _ref_prefix(ref: str) -> str:
     m = _REF_RE.match(ref)
@@ -67,7 +76,10 @@ def instantiate_blocks(
                 new_ref = next_ref(_ref_prefix(old_ref))
                 ref_map[old_ref] = new_ref
                 merged.add(
-                    Component(new_ref, comp.lib_id, comp.value, comp.footprint)
+                    Component(
+                        new_ref, comp.lib_id, comp.value, comp.footprint,
+                        group=f"{bid}{inst if count > 1 else ''}",
+                    )
                 )
 
             def net_name(local: str) -> str:
@@ -98,10 +110,44 @@ def validate_plan(plan: list[dict], spec: dict) -> tuple[list[dict], list[str]]:
     """Deterministic plan sanity: every spec role must belong to a block;
     orphans are appended to the first block rather than silently dropped."""
     notes = []
+    support_words = ("decoupl", "capacitor", "pullup", "pull-up", "filter resistor")
+    kept = []
+    for b in plan:
+        identity = " ".join([str(b.get("id", "")), *map(str, b.get("roles", []))]).lower()
+        if any(word in identity for word in support_words):
+            notes.append(
+                f"block {b.get('id')}: passive-only block removed; support parts belong to their owning IC block"
+            )
+        else:
+            kept.append(b)
+    plan[:] = kept
     roles = {p["role"] for p in spec.get("parts_needed", [])}
     covered: set[str] = set()
     for b in plan:
         b["roles"] = [r for r in b.get("roles", []) if r in roles]
+        # Requirement quantities are ground truth.  A small model often
+        # remembers the four motors but silently collapses four encoders to
+        # one in the block plan.
+        requested = [
+            int(p.get("quantity", 1))
+            for p in spec.get("parts_needed", [])
+            if p["role"] in b["roles"]
+        ]
+        expected = max(requested, default=1)
+        if expected > 1 and int(b.get("count", 1)) != expected:
+            notes.append(
+                f"block {b['id']}: count {b.get('count', 1)} corrected to requirement quantity {expected}"
+            )
+            b["count"] = expected
+        if int(b.get("count", 1)) > 1:
+            for net in b.get("interface_nets", []):
+                name = str(net.get("name", ""))
+                if not name or "{n}" in name or name.upper() in _REPEAT_SHARED_INTERFACES:
+                    continue
+                net["name"] = name + "{n}"
+                notes.append(
+                    f"block {b['id']}: repeated interface {name} made per-instance as {name}{{n}}"
+                )
         covered.update(b["roles"])
     orphans = roles - covered
     if orphans:

@@ -160,3 +160,41 @@ def test_agent_stops_on_repeated_problems(agent_env):
     # a useless patch leaves problems identical -> loop must stop early
     assert any("same problems twice" in line for line in res.log)
     assert llm.calls.count("patch") == 1
+
+
+def test_duplicate_requirement_roles_are_made_unique():
+    spec = {
+        "parts_needed": [
+            {"role": "Input Protection", "search_query": "Fuse"},
+            {"role": "Input Protection", "search_query": "TVS"},
+            {"role": "Input Protection", "search_query": "Bulk Capacitor"},
+        ]
+    }
+    Agent._normalize_part_roles(spec)
+    roles = [p["role"] for p in spec["parts_needed"]]
+    assert len(roles) == len(set(roles)) == 3
+    assert all(p["quantity"] == 1 for p in spec["parts_needed"])
+
+
+def test_incompatible_stepper_candidate_is_rejected_for_bldc():
+    need = {"role": "Motor Driver", "search_query": "BLDC motor driver"}
+    hits = [
+        {"lib_id": "Vendor:TC78H670FTG", "description": "dual stepper motor driver", "keywords": "stepper"},
+        {"lib_id": "Vendor:DRV8323", "description": "three phase brushless gate driver", "keywords": "BLDC"},
+    ]
+    assert Agent._filter_incompatible_candidates(need, hits) == [hits[1]]
+
+
+def test_repeated_block_template_keeps_one_main_part_per_role():
+    from circuitgen.ir import CircuitIR, Component
+
+    ir = CircuitIR("driver_template")
+    for n in range(1, 5):
+        ir.add(Component(f"U{n}", "Driver_Motor:DRV8311H", "DRV8311H"))
+        ir.connect(f"PWM{n}", (f"U{n}", "1"))
+    notes = Agent._limit_template_copies(
+        ir, {"driver": [{"lib_id": "Driver_Motor:DRV8311H"}]}
+    )
+    assert list(ir.components) == ["U1"]
+    assert all(node[0] == "U1" for net in ir.nets for node in net.nodes)
+    assert any("removed duplicate" in n for n in notes)

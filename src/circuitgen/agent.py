@@ -158,6 +158,10 @@ class Agent:
                         "connections_intent, not in the query.\n"
                         "Power symbols and PWR_FLAGs are added automatically later; "
                         "do not list them as parts_needed.\n\n"
+                        "Every parts_needed item must include quantity. Preserve explicit "
+                        "counts such as four motors AND four encoders; use quantity=1 when "
+                        "no count is stated. Give every item a UNIQUE role id — protection "
+                        "parts such as fuse, TVS and bulk capacitor are separate roles.\n\n"
                         f"REQUEST: {prompt}"
                     ),
                 },
@@ -165,8 +169,29 @@ class Agent:
             schema=REQUIREMENT_SPEC,
         ))
         spec = _normalize_rails(spec)
+        self._normalize_part_roles(spec)
         self._ensure_named_parts(prompt, spec)
         return spec
+
+    @staticmethod
+    def _normalize_part_roles(spec: dict) -> None:
+        """Make role keys unique so candidate dictionaries cannot overwrite.
+
+        The BLDC v9 requirement extraction emitted four separate protection
+        parts all named ``Input Protection``.  _gather used role as a dict key,
+        so only the last (bulk capacitor) survived and the block hallucinated
+        thirty copies of it.
+        """
+        seen: dict[str, int] = {}
+        for part in spec.get("parts_needed", []):
+            base = (part.get("role") or part.get("search_query") or "part").strip()
+            seen[base] = seen.get(base, 0) + 1
+            if seen[base] > 1:
+                detail = (part.get("search_query") or str(seen[base])).strip()
+                part["role"] = f"{base}:{detail}"[:32]
+            else:
+                part["role"] = base[:32]
+            part["quantity"] = max(1, int(part.get("quantity", 1)))
 
     def _ensure_named_parts(self, prompt: str, spec: dict) -> None:
         """Explicit part numbers in the request must become roles.
@@ -208,6 +233,7 @@ class Agent:
         candidates: dict[str, list[dict]] = {}
         for need in spec.get("parts_needed", []):
             hits = self.parts.search_parts(need["search_query"], CANDIDATES_PER_QUERY)
+            hits = self._filter_incompatible_candidates(need, hits)
             candidates[need["role"]] = hits
 
         topics = [n["search_query"] for n in spec.get("parts_needed", [])]
@@ -238,6 +264,77 @@ class Agent:
                     # possible without inventing pins
                     h["pin_numbers"] = [p["number"] for p in pins]
         return candidates, snippets, pin_tables
+
+    @staticmethod
+    def _filter_incompatible_candidates(need: dict, hits: list[dict]) -> list[dict]:
+        """Reject confidently wrong functional substitutes.
+
+        Similar packages/names are not similar circuits.  In v9, a BLDC
+        query selected TC78H670FTG (a stepper driver), then repeated it sixteen
+        times.  When the local catalog has no real three-phase/brushless part,
+        a clearly labelled conceptual box is safer and more useful to an
+        engineer than a fabricated exact implementation.
+        """
+        intent = " ".join(
+            str(need.get(k, "")) for k in ("role", "search_query", "value")
+        ).lower()
+        if not any(k in intent for k in ("bldc", "brushless", "3-phase", "three phase")):
+            return hits
+        accepted = []
+        for hit in hits:
+            description = str(hit.get("description", "")).lower()
+            keywords = str(hit.get("keywords", "")).lower()
+            text = " ".join(
+                str(hit.get(k, "")) for k in ("lib_id", "description", "keywords")
+            ).lower()
+            if any(k in description for k in ("stepper", "stepping motor")):
+                continue
+            if "mcu" in keywords or "microcontroller" in description:
+                continue
+            if any(k in text for k in ("bldc", "brushless", "3-phase", "three phase")):
+                accepted.append(hit)
+        return accepted
+
+    @staticmethod
+    def _limit_template_copies(ir: CircuitIR, candidates: dict[str, list[dict]]) -> list[str]:
+        """Keep one main component per role in a repeated-block template."""
+        notes: list[str] = []
+
+        def remove_ref(ref: str) -> None:
+            ir.components.pop(ref, None)
+            for net in ir.nets:
+                net.nodes = [node for node in net.nodes if node[0] != ref]
+            ir.nets = [net for net in ir.nets if net.nodes]
+            ir.nc_pins = [node for node in ir.nc_pins if node[0] != ref]
+
+        protected: set[str] = set()
+        for role, hits in candidates.items():
+            if role == "support_passives":
+                continue
+            ids = {h.get("lib_id") for h in hits if h.get("lib_id")}
+            refs = [r for r, c in ir.components.items() if c.lib_id in ids and r not in protected]
+            if len(refs) <= 1:
+                protected.update(refs)
+                continue
+            keep = refs[0]
+            protected.add(keep)
+            for ref in refs[1:]:
+                remove_ref(ref)
+            notes.append(
+                f"template role {role}: kept {keep}, removed duplicate main components {refs[1:]}"
+            )
+        conceptual: dict[str, list[str]] = {}
+        for ref, comp in ir.components.items():
+            if comp.lib_id.startswith("Conceptual:"):
+                conceptual.setdefault(comp.lib_id, []).append(ref)
+        for lib_id, refs in conceptual.items():
+            for ref in refs[1:]:
+                remove_ref(ref)
+            if len(refs) > 1:
+                notes.append(
+                    f"template conceptual {lib_id}: kept {refs[0]}, removed {refs[1:]}"
+                )
+        return notes
 
     def synthesize_ir(self, spec: dict, name: str) -> tuple[CircuitIR, dict]:
         candidates, snippets, pin_tables = self._gather(spec)
@@ -359,6 +456,10 @@ class Agent:
             "module, servo, etc.), use lib_id 'Conceptual:<Name>' and invent "
             "short descriptive pin numbers (VCC, GND, DATA...) — it renders "
             "as a labeled concept box.\n"
+            f"- IMPORTANT: this is a TEMPLATE for a block with count={block.get('count', 1)}. "
+            "Generate EXACTLY ONE canonical hardware instance now; deterministic code "
+            "will copy it count times later. Include at most one main IC/device for each "
+            "role. Never emit four drivers or four encoders in this template.\n"
             f"- This block's EXTERNAL nets must use EXACTLY these names "
             f"(keep any {{n}} literal — instances are stamped later): {own_ifaces}\n"
             + (
@@ -386,7 +487,9 @@ class Agent:
             schema=CIRCUIT_IR,
             max_tokens=4096,
         ))
-        return ir_from_json(data), {"candidates": candidates}
+        ir = ir_from_json(data)
+        template_notes = self._limit_template_copies(ir, candidates)
+        return ir, {"candidates": candidates, "notes": template_notes}
 
     def wire_mcu_interfaces(self, ir: CircuitIR, catalog: list[dict]) -> list[str]:
         """Connect dangling interface nets to free MCU pins.
@@ -503,11 +606,27 @@ class Agent:
                 new = next(iter(matches))
                 notes.append(f"resolved {ref}.{pin} -> pin {new}")
                 return new
+            # Common model notation for anonymous two-terminal parts:
+            # A1/A2, P1/P2, terminal1/terminal2.  If the library really is a
+            # 1/2 device, the trailing digit is unambiguous.
+            if len(sym.pins) == 2 and pin[-1:] in ("1", "2") and pin[-1:] in numbers:
+                new = pin[-1:]
+                notes.append(f"resolved {ref}.{pin} -> two-pin terminal {new}")
+                return new
             return pin
+
+        connected = {(r, str(p)) for net in ir.nets for r, p in net.nodes}
 
         for net in ir.nets:
             net.nodes = [(r, fix(r, str(p))) for r, p in net.nodes]
         ir.nc_pins = [(r, fix(r, str(p))) for r, p in ir.nc_pins]
+        # Block synthesis frequently marks all unused pins NC, then the merge
+        # or MCU-interface pass connects a subset.  Connected always wins.
+        before = len(ir.nc_pins)
+        connected = {(r, str(p)) for net in ir.nets for r, p in net.nodes}
+        ir.nc_pins = [pair for pair in ir.nc_pins if pair not in connected]
+        if len(ir.nc_pins) != before:
+            notes.append(f"cleared {before - len(ir.nc_pins)} stale NC markers from connected pins")
         return notes
 
     def _fix_footprints(self, ir: CircuitIR) -> list[str]:
@@ -666,6 +785,14 @@ class Agent:
                     except KeyError:
                         notes.append(f"rejected op: add/replace {ref} with unknown lib_id {lid!r}")
                         continue
+                if ref in ir.components:
+                    current = ir.components[ref].lib_id
+                    unknown_problem = "unknown_symbol" in text and ref in text
+                    if not unknown_problem:
+                        notes.append(
+                            f"rejected op: replacement of valid {ref} ({current}) with {lid}"
+                        )
+                        continue
             if kind in ("remove_component", "add_component") and ref in ir.components:
                 if ref not in text:
                     notes.append(f"rejected op: {kind} on {ref} — not part of any reported problem")
@@ -765,6 +892,7 @@ class Agent:
                     bir, bctx = self.synthesize_block(spec, block, catalog, f"{name}_{block['id']}")
                     block_irs[block["id"]] = bir
                     merged_candidates.update(bctx.get("candidates", {}))
+                    res.log.extend(bctx.get("notes", []))
                 except Exception as e:
                     res.log.append(f"block {block['id']} synthesis failed: {e}")
 
@@ -802,6 +930,20 @@ class Agent:
         # candidates and invented lib_ids), so no model call is allowed.
         res.log.extend(_reconcile_rails(ir, spec))
         res.log.extend(self.attach_power_symbols(ir, spec))
+        from .normalize import (
+            add_shared_spi_miso_series_resistors,
+            complete_known_device_pins,
+            ensure_drv8311_vm_decoupling,
+        )
+
+        symbols = self._resolve_symbols(ir)
+        rails = [r["name"] for r in spec.get("power", {}).get("rails", [])]
+        res.log.extend(complete_known_device_pins(ir, symbols, rails))
+        res.log.extend(add_shared_spi_miso_series_resistors(ir, symbols))
+        res.log.extend(ensure_drv8311_vm_decoupling(ir, symbols))
+        res.log.extend(self.resolve_pin_names(ir))
+        res.log.extend(self._ensure_pullups(ir, spec))
+        res.log.extend(self._fix_footprints(ir))
 
         res.stage = "pipeline"
         pr = generate(ir, self.out_dir, symbols=self._resolve_symbols(ir), parts_index=self.parts)
@@ -860,6 +1002,7 @@ class Agent:
                     len(pr.kicad_erc.violations) if pr.kicad_erc else None
                 ),
                 "connectivity_ok": pr.connectivity_ok,
+                "visual_issues": len(pr.visual_issues),
                 "schematic": str(pr.sch_path) if pr.sch_path else None,
             },
         )

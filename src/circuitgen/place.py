@@ -143,85 +143,93 @@ def heuristic_place(
     symbols: dict[str, SymbolDef],
     origin: tuple[float, float] = (40.64, 55.88),
 ) -> dict[str, dict[int, Placement]]:
-    roles, decouple_target = _classify(ir, symbols)
+    roles, _ = _classify(ir, symbols)
     placements: dict[str, dict[int, Placement]] = {}
 
-    columns = {"input": origin[0], "mid": origin[0] + 40.64, "ic": origin[0] + 86.36, "output": origin[0] + 137.16}
+    # Build functional tiles.  Before Component.group existed, board-scale
+    # drafts were sorted only by reference and became one enormous vertical
+    # strip.  Block ownership is now preserved during merge and each block
+    # gets a compact shelf-packed tile.
+    grouped: dict[str, list[tuple[str, int]]] = {}
+    power_refs: list[str] = []
+    for ref, comp in ir.components.items():
+        if symbols[comp.lib_id].is_power and not (
+            comp.lib_id == "power:PWR_FLAG" and comp.group
+        ):
+            power_refs.append(ref)
+            continue
+        group = comp.group or "CIRCUIT"
+        for unit in symbols[comp.lib_id].placed_units():
+            grouped.setdefault(group, []).append((ref, unit))
 
-    # Sheet discipline: wrap a column sideways before it runs off the
-    # bottom (board-scale drafts overflowed even A2). The paper picker in
-    # the emitter then only has to fit the wrapped width.
-    Y_LIMIT = 235.0
+    role_order = {"input": 0, "ic": 1, "decouple": 2, "mid": 3, "output": 4}
+    for items in grouped.values():
+        items.sort(key=lambda ru: (role_order.get(roles.get(ru[0], "mid"), 3), ru[0], ru[1]))
 
-    def stack(refs_units: list[tuple[str, int]], x: float) -> tuple[float, float]:
-        """Stack items at column x, wrapping into sub-columns at Y_LIMIT;
-        returns (lowest y used, rightmost x used)."""
-        col_ex = max(
-            (
-                _unit_extent(symbols[ir.components[ref].lib_id], unit)[0]
-                for ref, unit in refs_units
-            ),
-            default=15.24,
-        )
-        step_x = 2 * col_ex + 30.48  # clearance for stubs/labels/decap satellites
-        y = origin[1]
-        cx = x
-        low = y
-        for ref, unit in refs_units:
-            sym = symbols[ir.components[ref].lib_id]
-            _, ey = _unit_extent(sym, unit)
-            if y + 2 * ey > Y_LIMIT and y > origin[1]:
-                cx += step_x
-                y = origin[1]
-            y += ey
-            placements.setdefault(ref, {})[unit] = Placement(x=_snap(cx), y=_snap(y), rotation=0)
-            y += ey + 7.62
-            low = max(low, y)
-        return low, cx + col_ex
+    TILE_CONTENT_W = 145.0
+    SHEET_RIGHT = 555.0
+    H_GAP, V_GAP = 15.24, 15.24
 
-    max_y = origin[1]
-    next_col_x = 0.0
-    for role in ("input", "mid", "ic", "output"):
-        items = [
-            (ref, unit)
-            for ref in sorted(ir.components)
-            if roles.get(ref) == role
-            for unit in symbols[ir.components[ref].lib_id].placed_units()
-        ]
-        if items:
-            # push the column start right if a previous column wrapped wide
-            x = max(columns[role], next_col_x)
-            low, right = stack(items, x)
-            max_y = max(max_y, low)
-            next_col_x = right + 25.4
+    def local_tile(items: list[tuple[str, int]]):
+        local: list[tuple[str, int, float, float]] = []
+        x = y = 0.0
+        row_h = 0.0
+        max_x = 0.0
+        for ref, unit in items:
+            ex, ey = _unit_extent(symbols[ir.components[ref].lib_id], unit)
+            width, height = max(2 * ex, 25.4), max(2 * ey, 17.78)
+            if x and x + width > TILE_CONTENT_W:
+                x = 0.0
+                y += row_h + 7.62
+                row_h = 0.0
+            local.append((ref, unit, x + width / 2, y + height / 2))
+            x += width + 7.62
+            row_h = max(row_h, height)
+            max_x = max(max_x, x - 7.62)
+        return local, max(max_x, 30.48), y + row_h
 
-    # decoupling caps: directly beside the IC unit they serve; slots wrap
-    # into satellite columns of 8 (a model once emitted 30 caps on one
-    # rail — the single-column stack ran 450mm off the sheet)
-    per_target: dict[tuple[str, int], int] = {}
-    for ref in sorted(r for r, role in roles.items() if role == "decouple"):
-        ic, unit = decouple_target[ref]
-        ic_sym = symbols[ir.components[ic].lib_id]
-        ic_place = placements[ic][unit]
-        ex, _ = _unit_extent(ic_sym, unit)
-        slot = per_target.get((ic, unit), 0)
-        per_target[(ic, unit)] = slot + 1
-        col, row = divmod(slot, 8)
-        placements.setdefault(ref, {})[1] = Placement(
-            x=_snap(ic_place.x + ex + 10.16 + col * 20.32),
-            y=_snap(ic_place.y - 5.08 + row * 15.24),
-            rotation=0,
-        )
+    def group_key(name: str):
+        upper = name.upper()
+        rank = 0 if upper.startswith("POWER") else 1 if upper.startswith("MCU") else 2
+        return (rank, upper)
 
-    # power symbols: positive rails in a top row, grounds in a bottom row
-    rail_x, gnd_x = columns["input"], columns["input"]
-    top_y = origin[1] - 17.78
-    bottom_y = max_y + 12.7
-    for ref in sorted(r for r, role in roles.items() if role == "rail_sym"):
-        placements.setdefault(ref, {})[1] = Placement(x=_snap(rail_x), y=_snap(top_y), rotation=0)
-        rail_x += 20.32
-    for ref in sorted(r for r, role in roles.items() if role == "gnd_sym"):
-        placements.setdefault(ref, {})[1] = Placement(x=_snap(gnd_x), y=_snap(bottom_y), rotation=0)
-        gnd_x += 20.32
+    tile_x, tile_y = origin[0], origin[1]
+    row_height = 0.0
+    max_bottom = tile_y
+    for group in sorted(grouped, key=group_key):
+        local, width, height = local_tile(grouped[group])
+        # Reserve a heading band even before textual section headings are
+        # emitted; this creates the visual whitespace engineers use between
+        # repeated channels.
+        tile_w = width + 10.16
+        tile_h = height + 15.24
+        if tile_x > origin[0] and tile_x + tile_w > SHEET_RIGHT:
+            tile_x = origin[0]
+            tile_y += row_height + V_GAP
+            row_height = 0.0
+        for ref, unit, lx, ly in local:
+            placements.setdefault(ref, {})[unit] = Placement(
+                x=_snap(tile_x + 5.08 + lx),
+                y=_snap(tile_y + 10.16 + ly),
+                rotation=0,
+            )
+        tile_x += tile_w + H_GAP
+        row_height = max(row_height, tile_h)
+        max_bottom = max(max_bottom, tile_y + tile_h)
+
+    # Supply symbols form short horizontal rails around the content instead
+    # of another component column.  Place grounds at the bottom with ample
+    # title-block clearance.
+    rail_x = gnd_x = origin[0]
+    top_y = max(20.32, origin[1] - 15.24)
+    bottom_y = max_bottom + 12.7
+    for ref in sorted(power_refs):
+        role = roles.get(ref)
+        if role == "gnd_sym":
+            placements.setdefault(ref, {})[1] = Placement(_snap(gnd_x), _snap(bottom_y), 0)
+            gnd_x += 20.32
+        else:
+            placements.setdefault(ref, {})[1] = Placement(_snap(rail_x), _snap(top_y), 0)
+            rail_x += 20.32
 
     return placements

@@ -64,6 +64,10 @@ class Component:
     lib_id: str
     value: str
     footprint: str = ""
+    # Deterministic functional-block ownership.  The LLM does not emit this;
+    # instantiate_blocks stamps it so placement and visual QA can keep a
+    # board-scale schematic readable.
+    group: str = ""
 
 
 @dataclass

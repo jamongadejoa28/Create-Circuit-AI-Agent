@@ -87,7 +87,9 @@ def test_esp32_decoupling_cap_placed_beside_mcu():
     placements = heuristic_place(ir, symbols)
     mcu = placements["U1"][1]
     cap = placements["C1"][1]
-    assert abs(cap.x - mcu.x) < 45 and abs(cap.y - mcu.y) < 30, (
+    # shelf-packed group tiles place the cap in the MCU's tile row; the
+    # adjacency budget widened accordingly (was satellite-column 45/30)
+    assert abs(cap.x - mcu.x) < 85 and abs(cap.y - mcu.y) < 55, (
         f"decoupling cap at {cap} not adjacent to MCU at {mcu}"
     )
 
