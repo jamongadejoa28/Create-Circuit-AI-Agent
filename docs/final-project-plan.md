@@ -234,6 +234,10 @@ SKIDL의 force-directed 배치(`place.py`)와 maze/switchbox 배선(`route.py`)�
 
 **잠정 결정**: §7.6 규칙에 따라 — 역할 분담은 VRAM 동시 상주 불가+스왑 비용으로 배제, 종합 우위(기능 정합·속도)인 **Qwen2.5-Coder-7B 단독을 기본 모델로 유지**. 단 Coder 기준선은 하네스 동결 이전 측정이므로, 동결 하네스로 Coder 재측정 후 확정한다.
 
+**동결 하네스 Coder 재측정 결과 (2026-08-07)와 수정된 해석**: Coder 3/9 (led_button 0/3·led_only 1/3·divider 2/3) — 구 프롬프트에서 7/9였던 것이 few-shot 예시 A 추가 후 오히려 크게 하락(예시 A는 led_only를 돕기 위한 것이었으나 Coder가 잘하던 led_button까지 흔들었음). 동일 조건 비교로는 **3.5-nothink(5~6/9) > Coder(3/9)**. 종합 교훈: 7B급에서 few-shot 프롬프트 개입은 시나리오 간 제로섬에 가깝고(모델마다 예시에 다르게 앵커링), 프롬프트 미세조정은 수익 체감에 도달했다. **구조적 해법은 §7.2의 "기능 블록 구성" 단계 구현** — 블록별 합성으로 각 LLM 호출을 자명한 소회로 수준으로 줄이는 것이며, 이는 아래 BLDC 스트레스 테스트가 정량화한 컨텍스트 한계와 같은 결론을 가리킨다.
+
+**보드 규모 스트레스 테스트 (STM32G474 4축 BLDC FOC 보드, 2026-08-07)**: spec 추출은 성공(11개 기능 역할 도출, 부품번호 접두어 폴백으로 STM32G474RETx·AS5048A 정확 검색)했으나 **IR 합성 요청이 11,205토큰으로 8,192 컨텍스트를 초과**(`exceed_context_size_error`) — STM32 64핀 테이블 3.9k자 + 41핀 드라이버 + 11역할 spec. §6.3이 예측한 단일 호출 한계의 정량 측정치. 결론: 보드 규모는 단일 시트·단일 합성 호출로 불가능하며, RequirementSpec→기능 블록 분해→블록별 IR 합성→병합(+Phase 6 계층 시트) 경로가 필수다.
+
 **실행 절차**:
 1. Coder 서빙 상태에서: `bench_models.py --label qwen2.5-coder --reps 3` ✅ 완료 (동결 하네스 재측정 대기)
 2. 서버를 Qwen3.5로 교체 기동(`-m ...Qwen3.5-9B-Q4_K_M.gguf --reasoning-budget 0`, ctx는 VRAM상 6144~8192 실측 조정) 후: `--label qwen3.5-nothink --reps 3 --thinking-off`

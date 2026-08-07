@@ -303,6 +303,8 @@ class PartIndex:
             """,
             (q, query.strip(), limit),
         ).fetchall()
+        if not rows:
+            rows = self._prefix_fallback(query, limit)
         return [
             {
                 "lib_id": r["lib_id"],
@@ -317,6 +319,32 @@ class PartIndex:
             }
             for r in rows
         ]
+
+    def _prefix_fallback(self, query: str, limit: int) -> list:
+        """Part-number prefix search when FTS misses.
+
+        Ordering codes rarely match symbol names exactly (STM32G474RET6 vs
+        symbol STM32G474RETx), so retry the longest token as a shrinking
+        name prefix until something matches.
+        """
+        tokens = sorted((t for t in query.split() if len(t) >= 6), key=len, reverse=True)
+        for tok in tokens[:2]:
+            for cut in range(len(tok), max(5, len(tok) - 5), -1):
+                rows = self.con.execute(
+                    """
+                    SELECT s.lib_id, s.description, s.keywords, s.reference_prefix,
+                           s.is_power, s.unit_count, s.pin_count, s.fp_filters,
+                           s.footprint, s.priority, 0 AS rank
+                    FROM symbols s
+                    WHERE s.name LIKE ? AND s.unit0_mix = 0
+                    ORDER BY s.priority, length(s.name), s.name
+                    LIMIT ?
+                    """,
+                    (tok[:cut] + "%", limit),
+                ).fetchall()
+                if rows:
+                    return rows
+        return []
 
     def get_part_pins(self, lib_id: str) -> list[dict]:
         """Full pin table of one symbol — numbers/names/types/units only."""

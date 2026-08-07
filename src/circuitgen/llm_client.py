@@ -62,6 +62,12 @@ class LlamaClient:
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            try:
+                body = e.read().decode("utf-8", "replace")[:400]
+            except Exception:
+                body = ""
+            raise LlamaServerError(f"llama-server HTTP {e.code}: {body}") from e
         except urllib.error.URLError as e:
             raise LlamaServerError(
                 f"llama-server unreachable at {self.base_url} — start it on the "
