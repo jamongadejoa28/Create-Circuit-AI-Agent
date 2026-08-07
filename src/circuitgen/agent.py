@@ -388,6 +388,98 @@ class Agent:
         ))
         return ir_from_json(data), {"candidates": candidates}
 
+    def wire_mcu_interfaces(self, ir: CircuitIR, catalog: list[dict]) -> list[str]:
+        """Connect dangling interface nets to free MCU pins.
+
+        Measured pattern (golden guard cycles): blocks complete internally
+        but the hub-side wiring stays thin — SWD/SPI/LED nets end up
+        single-pin. Deterministic code computes the dangling-net and
+        free-pin lists; a single tightly-scoped LLM call only maps
+        net→pin (round-robin fallback if it fails).
+        """
+        symbols = self._resolve_symbols(ir)
+        hub = None
+        hub_pins = 0
+        for ref, comp in ir.components.items():
+            sym = symbols.get(comp.lib_id)
+            if sym and not sym.is_power and len(sym.pins) > hub_pins:
+                hub, hub_pins = ref, len(sym.pins)
+        if hub is None or hub_pins < 16:
+            return []
+
+        cat_names = {c["net"] for c in catalog}
+        net_sizes = {n.name: len(n.nodes) for n in ir.nets}
+        used_pins = {p for n in ir.nets for r, p in n.nodes if r == hub}
+        used_pins |= {p for r, p in ir.nc_pins if r == hub}
+        dangling = [
+            n for n in cat_names
+            if net_sizes.get(n, 0) == 1 and hub not in {r for net in ir.nets if net.name == n for r, _ in net.nodes}
+        ]
+        if not dangling:
+            return []
+        sym = symbols[ir.components[hub].lib_id]
+        free = [
+            p.number for p in sym.pins
+            if p.number not in used_pins and p.etype.name in ("BIDIR", "INPUT", "OUTPUT")
+        ]
+        if not free:
+            return []
+
+        assignments: list[dict] = []
+        try:
+            reply = _with_retry(lambda: self.llm.complete_json(
+                [
+                    {"role": "system", "content": _SYSTEM},
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Map each dangling net to ONE free GPIO pin of {hub} "
+                            f"({ir.components[hub].lib_id}). Use each pin at most once.\n"
+                            f"DANGLING_NETS: {json.dumps(sorted(dangling))}\n"
+                            f"FREE_PINS: {json.dumps(free[:40])}"
+                        ),
+                    },
+                ],
+                schema={
+                    "type": "object",
+                    "required": ["assignments"],
+                    "additionalProperties": False,
+                    "properties": {
+                        "assignments": {
+                            "type": "array",
+                            "maxItems": 24,
+                            "items": {
+                                "type": "object",
+                                "required": ["net", "pin"],
+                                "additionalProperties": False,
+                                "properties": {
+                                    "net": {"type": "string", "maxLength": 24},
+                                    "pin": {"type": "string", "maxLength": 8},
+                                },
+                            },
+                        }
+                    },
+                },
+                max_tokens=768,
+            ))
+            assignments = reply.get("assignments", [])
+        except Exception:
+            assignments = []
+        if not assignments:  # deterministic fallback
+            assignments = [{"net": n, "pin": p} for n, p in zip(sorted(dangling), free)]
+
+        notes = []
+        taken: set[str] = set()
+        for a in assignments:
+            net_name, pin = a.get("net"), str(a.get("pin"))
+            if net_name not in dangling or pin not in free or pin in taken:
+                continue
+            ir.nc_pins = [x for x in ir.nc_pins if x != (hub, pin)]
+            ir.connect(net_name, (hub, pin))
+            taken.add(pin)
+            notes.append(f"wired {hub}.{pin} to dangling interface net {net_name}")
+        return notes
+
     def resolve_pin_names(self, ir: CircuitIR) -> list[str]:
         """Rewrite pin NAMES used where numbers belong ('D1.A' → 'D1.2').
 
@@ -680,6 +772,7 @@ class Agent:
             rails = [r["name"] for r in spec.get("power", {}).get("rails", [])]
             ir, mnotes = instantiate_blocks(name, plan, block_irs, rails)
             res.log.extend(mnotes)
+            res.log.extend(self.wire_mcu_interfaces(ir, catalog))
             ctx = {"candidates": merged_candidates}
             if not ir.components:
                 res.log.append("no block produced any components")
