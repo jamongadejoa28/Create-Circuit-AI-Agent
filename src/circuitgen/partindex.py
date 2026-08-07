@@ -64,7 +64,57 @@ CREATE INDEX pins_by_symbol ON pins(lib_id);
 CREATE VIRTUAL TABLE symbols_fts USING fts5(
     lib_id UNINDEXED, name, description, keywords
 );
+CREATE TABLE footprints (
+    fp_id TEXT PRIMARY KEY,      -- "Resistor_SMD:R_0805_2012Metric"
+    lib TEXT NOT NULL,
+    name TEXT NOT NULL,
+    descr TEXT NOT NULL DEFAULT '',
+    tags TEXT NOT NULL DEFAULT '',
+    pad_count INTEGER NOT NULL,  -- distinct electrical pad numbers
+    fp_type TEXT NOT NULL DEFAULT ''  -- smd | through_hole | ''
+);
+CREATE TABLE fp_pads (
+    fp_id TEXT NOT NULL REFERENCES footprints(fp_id),
+    number TEXT NOT NULL
+);
+CREATE INDEX fp_pads_by_fp ON fp_pads(fp_id);
 """
+
+_PAD_RE = None  # compiled lazily in _parse_footprint_meta
+
+
+def _parse_footprint_meta(path: Path) -> dict:
+    """name/descr/tags/pads from one .kicad_mod — regex-level, no full parse.
+
+    Pad numbers repeat for thermal/stacked pads; the distinct non-empty set
+    is what a symbol's pin numbers must map onto.
+    """
+    global _PAD_RE
+    import re as _re
+
+    if _PAD_RE is None:
+        _PAD_RE = {
+            "pad": _re.compile(r'\(pad\s+(?:"((?:[^"\\]|\\.)*)"|([^\s()]+))'),
+            "descr": _re.compile(r'\(descr\s+"((?:[^"\\]|\\.)*)"'),
+            "tags": _re.compile(r'\(tags\s+"((?:[^"\\]|\\.)*)"'),
+            "attr": _re.compile(r"\(attr\s+([a-z_]+)"),
+        }
+    text = path.read_text(encoding="utf-8", errors="replace")
+    pads = set()
+    for m in _PAD_RE["pad"].finditer(text):
+        num = m.group(1) if m.group(1) is not None else m.group(2)
+        if num:
+            pads.add(num)
+    d = _PAD_RE["descr"].search(text)
+    t = _PAD_RE["tags"].search(text)
+    a = _PAD_RE["attr"].search(text)
+    return {
+        "name": path.stem,
+        "descr": d.group(1) if d else "",
+        "tags": t.group(1) if t else "",
+        "pads": pads,
+        "fp_type": a.group(1) if a else "",
+    }
 
 
 @dataclass
@@ -108,10 +158,16 @@ def _library_checksum(path: Path) -> str:
     return h.hexdigest()[:16]
 
 
+def default_footprint_root() -> Path | None:
+    root = Path(__file__).resolve().parents[2] / "kicad-footprints"
+    return root if root.is_dir() else None
+
+
 def build_index(
     db_path: str | Path = DEFAULT_DB,
     sources: list[LibrarySource] | None = None,
     on_progress=None,
+    footprint_root: Path | None = None,
 ) -> dict:
     """(Re)build the index from scratch. Returns summary counts."""
     db_path = Path(db_path)
@@ -176,6 +232,33 @@ def build_index(
                 stats["pins"] += len(d.pins)
             if on_progress:
                 on_progress(nickname, len(defs))
+
+    # --- footprints (official kicad-footprints clone): existence, pad
+    # numbers for pin↔pad matching, descr/tags for future search ---
+    stats["footprints"] = 0
+    fp_root = footprint_root or default_footprint_root()
+    if fp_root is not None:
+        for pretty in sorted(fp_root.glob("*.pretty")):
+            lib = pretty.stem
+            for mod in sorted(pretty.glob("*.kicad_mod")):
+                try:
+                    meta = _parse_footprint_meta(mod)
+                except Exception as e:
+                    stats["errors"].append(f"{mod}: {e!r}")
+                    continue
+                fp_id = f"{lib}:{meta['name']}"
+                con.execute(
+                    "INSERT OR REPLACE INTO footprints VALUES (?,?,?,?,?,?,?)",
+                    (fp_id, lib, meta["name"], meta["descr"], meta["tags"], len(meta["pads"]), meta["fp_type"]),
+                )
+                con.executemany(
+                    "INSERT INTO fp_pads VALUES (?,?)",
+                    [(fp_id, n) for n in sorted(meta["pads"])],
+                )
+                stats["footprints"] += 1
+            if on_progress:
+                on_progress(f"fp:{lib}", stats["footprints"])
+
     con.commit()
     con.close()
     return stats
@@ -275,6 +358,68 @@ class PartIndex:
             for lib_id in ids:
                 out[lib_id] = defs[lib_id]
         return out
+
+    # ---- footprints ----
+
+    def has_footprints(self) -> bool:
+        row = self.con.execute("SELECT COUNT(*) c FROM footprints").fetchone()
+        return row["c"] > 0
+
+    def footprint_pads(self, fp_id: str) -> set[str] | None:
+        """Distinct pad numbers of a footprint, or None if unknown."""
+        if self.con.execute(
+            "SELECT 1 FROM footprints WHERE fp_id = ?", (fp_id,)
+        ).fetchone() is None:
+            return None
+        rows = self.con.execute(
+            "SELECT number FROM fp_pads WHERE fp_id = ?", (fp_id,)
+        ).fetchall()
+        return {r["number"] for r in rows}
+
+    def _all_footprint_names(self) -> list[tuple[str, str, int]]:
+        if not hasattr(self, "_fp_cache"):
+            self._fp_cache = [
+                (r["fp_id"], r["name"], r["pad_count"])
+                for r in self.con.execute("SELECT fp_id, name, pad_count FROM footprints")
+            ]
+        return self._fp_cache
+
+    def match_footprints(
+        self, filters: list[str], required_pins: set[str], limit: int = 10
+    ) -> list[str]:
+        """Footprints matching KiCad fp_filters whose pads cover required_pins.
+
+        Filter semantics per KiCad: '*'/'?' globs, case-insensitive; a
+        pattern containing ':' matches the full "Lib:Name", otherwise the
+        bare name. Results ordered: exact pad-count match first, then
+        preferred common sizes (0805 > 0603 — the golden circuits' default
+        scale), then name.
+        """
+        import fnmatch
+
+        hits = []
+        for fp_id, name, pad_count in self._all_footprint_names():
+            for pat in filters:
+                target = fp_id if ":" in pat else name
+                if fnmatch.fnmatch(target.lower(), pat.lower()):
+                    hits.append((fp_id, pad_count))
+                    break
+        good = []
+        for fp_id, pad_count in hits:
+            pads = self.footprint_pads(fp_id)
+            if pads is not None and required_pins <= pads:
+                good.append((fp_id, pad_count))
+
+        def rank(item):
+            fp_id, pad_count = item
+            return (
+                pad_count != len(required_pins),
+                "0805" not in fp_id,
+                "0603" not in fp_id,
+                fp_id,
+            )
+
+        return [fp_id for fp_id, _ in sorted(good, key=rank)[:limit]]
 
     def provenance(self, lib_id: str) -> dict:
         row = self.con.execute(

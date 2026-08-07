@@ -60,7 +60,7 @@ SPEC = {
 GOOD_IR = {
     "name": "agent_led_button",
     "components": [
-        {"ref": "SW1", "lib_id": "Switch:SW_Push", "value": "SW_Push", "footprint": "Button_Switch_SMD:SW_SPST_PTS645"},
+        {"ref": "SW1", "lib_id": "Switch:SW_Push", "value": "SW_Push", "footprint": "Button_Switch_SMD:SW_SPST_PTS645Sx43SMTR92"},
         {"ref": "R1", "lib_id": "Device:R", "value": "330R", "footprint": "Resistor_SMD:R_0805_2012Metric"},
         {"ref": "D1", "lib_id": "Device:LED", "value": "LED", "footprint": "LED_SMD:LED_0805_2012Metric"},
         {"ref": "#PWR01", "lib_id": "power:+5V", "value": "+5V"},

@@ -233,6 +233,11 @@ class Agent:
         ir.nc_pins = [(r, fix(r, str(p))) for r, p in ir.nc_pins]
         return notes
 
+    def _fix_footprints(self, ir: CircuitIR) -> list[str]:
+        from .fp_checks import assign_footprints
+
+        return assign_footprints(ir, self._resolve_symbols(ir), self.parts)
+
     def attach_power_symbols(self, ir: CircuitIR, spec: dict) -> list[str]:
         """Deterministically add power symbols to rail nets (never the LLM's
         job — an invented 'power:5V' cost a repair round in live testing).
@@ -336,6 +341,7 @@ class Agent:
         res.ir = ir
         res.log.extend(self.resolve_pin_names(ir))
         res.log.extend(self.attach_power_symbols(ir, spec))
+        res.log.extend(self._fix_footprints(ir))
 
         # A missing rail net means the model mis-named the supply net — a
         # supply-less passive loop can pass every ERC, so catch it here and
@@ -364,7 +370,7 @@ class Agent:
                 res.log.append(f"rail repair failed: {e}")
 
         res.stage = "pipeline"
-        pr = generate(ir, self.out_dir, symbols=self._resolve_symbols(ir))
+        pr = generate(ir, self.out_dir, symbols=self._resolve_symbols(ir), parts_index=self.parts)
         res.pipeline = pr
         rounds = 0
         last_problems: list[str] | None = None
@@ -387,11 +393,12 @@ class Agent:
                 res.log.append(f"repair round {rounds} failed: {e}")
                 break
             res.repairs.extend(notes)
-            # patches may use pin names, introduce new lib_ids, or create
-            # rail nets that still need their supply symbol
+            # patches may use pin names, introduce new lib_ids, invalid
+            # footprints, or rail nets that still need their supply symbol
             res.log.extend(self.resolve_pin_names(ir))
             res.log.extend(self.attach_power_symbols(ir, spec))
-            pr = generate(ir, self.out_dir, symbols=self._resolve_symbols(ir))
+            res.log.extend(self._fix_footprints(ir))
+            pr = generate(ir, self.out_dir, symbols=self._resolve_symbols(ir), parts_index=self.parts)
             res.pipeline = pr
 
         res.ok = pr.ok

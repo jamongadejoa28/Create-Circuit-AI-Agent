@@ -40,6 +40,7 @@ def generate(
     out_dir: str | Path,
     placements: dict[str, Placement] | None = None,
     symbols: dict[str, SymbolDef] | None = None,
+    parts_index=None,
 ) -> PipelineResult:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -57,6 +58,10 @@ def generate(
 
     # 1. self ERC on the IR — errors stop the pipeline before any file exists
     res.self_erc = check_circuit(ir, symbols)
+    if parts_index is not None:
+        from .fp_checks import check_footprints
+
+        res.self_erc += check_footprints(ir, symbols, parts_index)
     if any(i.severity == "error" for i in res.self_erc):
         res.errors.append("self ERC errors: " + "; ".join(i.message for i in res.self_erc if i.severity == "error"))
         return res

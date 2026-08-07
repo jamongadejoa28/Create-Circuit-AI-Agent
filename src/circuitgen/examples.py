@@ -13,7 +13,7 @@ from .ir import CircuitIR, Component
 def golden_led_button_ir() -> CircuitIR:
     """Golden circuit 1: LED + current-limit resistor + push button."""
     ir = CircuitIR(name="golden_led_button")
-    ir.add(Component("SW1", "Switch:SW_Push", "SW_Push", "Button_Switch_SMD:SW_SPST_PTS645"))
+    ir.add(Component("SW1", "Switch:SW_Push", "SW_Push", "Button_Switch_SMD:SW_SPST_PTS645Sx43SMTR92"))
     ir.add(Component("R1", "Device:R", "330R", "Resistor_SMD:R_0805_2012Metric"))
     ir.add(Component("D1", "Device:LED", "LED", "LED_SMD:LED_0805_2012Metric"))
     ir.add(Component("#PWR01", "power:+5V", "+5V"))

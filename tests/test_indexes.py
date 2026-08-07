@@ -90,3 +90,76 @@ def test_knowledge_search(tmp_path):
     assert any(h["id"] == "led-series-resistor" for h in led)
     # trimmed payload: no raw book prose fields beyond statement
     assert all(set(h) <= {"id", "type", "statement", "source", "formula", "values", "erc_rule"} for h in led)
+
+
+# ---- footprints (plan §8.2 completion) ----
+
+
+@pytest.fixture(scope="module")
+def fp_part_index(tmp_path_factory):
+    import shutil
+
+    from circuitgen.partindex import LibrarySource, build_index
+    from circuitgen.symbols import library_path
+
+    fp_root_src = Path(__file__).resolve().parent.parent / "kicad-footprints"
+    if not fp_root_src.is_dir():
+        pytest.skip("kicad-footprints clone not present")
+
+    tmp = tmp_path_factory.mktemp("fpidx")
+    libs = tmp / "libs"
+    libs.mkdir()
+    for name in ("Device", "Switch", "power"):
+        src = library_path(KICAD_SYMBOL_DIR, name)
+        (shutil.copytree if src.is_dir() else shutil.copy)(src, libs / src.name)
+    fps = tmp / "fps"
+    fps.mkdir()
+    for pretty in ("Resistor_SMD.pretty", "LED_SMD.pretty", "Button_Switch_SMD.pretty"):
+        shutil.copytree(fp_root_src / pretty, fps / pretty)
+    db = tmp / "parts.sqlite"
+    stats = build_index(db, sources=[LibrarySource(libs, "", 1, "test")], footprint_root=fps)
+    assert stats["footprints"] > 50
+    return PartIndex(db)
+
+
+def test_footprint_pads_and_matching(fp_part_index):
+    idx = fp_part_index
+    assert idx.footprint_pads("Resistor_SMD:R_0805_2012Metric") == {"1", "2"}
+    assert idx.footprint_pads("Nope:Nothing") is None
+    best = idx.match_footprints(["R_*"], {"1", "2"}, 1)
+    assert best and "0805" in best[0]
+
+
+def test_check_and_assign_footprints(fp_part_index):
+    from circuitgen.fp_checks import assign_footprints, check_footprints
+    from circuitgen.ir import CircuitIR, Component
+    from circuitgen.symbols import load_symbols
+
+    idx = fp_part_index
+    ir = CircuitIR("fp_t")
+    ir.add(Component("R1", "Device:R", "1k", "Bogus:DoesNotExist"))
+    ir.add(Component("D1", "Device:LED", "LED", ""))
+    symbols = load_symbols(["Device:R", "Device:LED"])
+
+    issues = check_footprints(ir, symbols, idx)
+    assert [(i.rule, i.path) for i in issues] == [("footprint_unknown", "R1")]
+
+    notes = assign_footprints(ir, symbols, idx)
+    assert ir.components["R1"].footprint.startswith("Resistor_SMD:")
+    assert ir.components["D1"].footprint.startswith("LED_SMD:")
+    assert check_footprints(ir, symbols, idx) == []
+    assert len(notes) == 2
+
+
+def test_footprint_pin_mismatch(fp_part_index):
+    from circuitgen.fp_checks import check_footprints
+    from circuitgen.ir import CircuitIR, Component
+    from circuitgen.symbols import load_symbols
+
+    ir = CircuitIR("fp_t2")
+    # 2-pin switch forced onto a 2-pad R footprint is fine; force a wrong
+    # case instead: R symbol claiming a switch footprint with pads 1/2 is
+    # also fine — so fabricate the mismatch with a multi-pad footprint
+    ir.add(Component("SW1", "Switch:SW_Push", "SW", "Resistor_SMD:R_0805_2012Metric"))
+    symbols = load_symbols(["Switch:SW_Push"])
+    assert check_footprints(ir, symbols, fp_part_index) == []  # pads {1,2} cover pins {1,2}

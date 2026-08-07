@@ -1567,7 +1567,7 @@
 				)
 			)
 		)
-		(property "Footprint" "Button_Switch_SMD:SW_SPST_PTS645"
+		(property "Footprint" "Button_Switch_SMD:SW_SPST_PTS645Sx43SMTR92"
 			(at 63.5 63.5 0)
 			(show_name no)
 			(do_not_autoplace no)
