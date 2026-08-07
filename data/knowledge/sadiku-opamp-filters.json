@@ -209,9 +209,9 @@
     ],
     "source": {
       "book": "Fundamentals of Electric Circuits, 7th International Student Edition (Alexander & Sadiku)",
-      "section": "5.2 Operational Amplifiers, Table 5.1 (741 values in Example 5.1, pdf index 202)",
+      "section": "5.2 Operational Amplifiers, Table 5.1 (741 values in Example 5.1, pdf index 202) — Table 5.1 values verified against the rendered page image (vision pass, 2026-08-07)",
       "pdf_page_index": 201,
-      "tier": "B"
+      "tier": "A"
     }
   }
 ]

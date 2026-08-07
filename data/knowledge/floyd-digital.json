@@ -206,6 +206,34 @@
         "LV": 9,
         "LVC": 4.3,
         "ALVC": 3
+      },
+      "ff_max_clock_MHz": {
+        "F": 145,
+        "LS": 33,
+        "ALS": 45,
+        "ABT": 150,
+        "HC": 50,
+        "AC": 160,
+        "AHC": 170,
+        "LV": 90,
+        "LVC": 100,
+        "ALVC": 150
+      },
+      "power_per_gate": {
+        "bipolar_50pct_dc_mW": {
+          "F": 6,
+          "LS": 2.2,
+          "ALS": 1.4
+        },
+        "cmos_quiescent_uW": {
+          "ABT": 17,
+          "HC": 2.75,
+          "AC": 0.55,
+          "AHC": 2.75,
+          "LV": 1.6,
+          "LVC": 0.8,
+          "ALVC": 0.8
+        }
       }
     },
     "erc_rule": "Flag any net where total sunk current (LED + resistive + input loads) exceeds the driving family's IOL, e.g. more than 4 mA on a 74HC output.",
@@ -219,9 +247,9 @@
     ],
     "source": {
       "book": "Digital Fundamentals, 11th ed., Thomas L. Floyd",
-      "section": "15-5 Comparison of CMOS and TTL Performance, Table 15-1",
+      "section": "15-5 Comparison of CMOS and TTL Performance, Table 15-1 — Table 15-1 values verified against the rendered page image (vision pass, 2026-08-07)",
       "pdf_page_index": 881,
-      "tier": "B"
+      "tier": "A"
     }
   }
 ]
