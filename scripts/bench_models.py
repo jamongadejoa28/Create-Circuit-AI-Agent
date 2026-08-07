@@ -162,10 +162,178 @@ def check_divider(ir: CircuitIR) -> tuple[bool, str]:
     return False, "no R-R divider between rails with midpoint"
 
 
+# ---- golden 2-5 checkers: structure vs the deterministic fixtures ----
+
+
+def _find(ir, pred):
+    return [r for r, c in ir.components.items() if pred(c)]
+
+
+def _mcu_ref(ir):
+    hits = _find(ir, lambda c: "STM32G474" in c.lib_id)
+    return hits[0] if hits else None
+
+
+def _shared_nets(ir, nets, a, b, exclude=()):
+    """Nets where components a and b both have pins (rails excluded)."""
+    out = []
+    for name, nodes in nets.items():
+        if name in exclude:
+            continue
+        refs = {r for r, _p, _t in nodes}
+        if a in refs and b in refs:
+            out.append(name)
+    return out
+
+
+def _bridges(ir, nets, prefix, net_a_pred, net_b_pred):
+    """2-pin comps with ref prefix bridging a net matching pred_a to pred_b."""
+    count = 0
+    for r, c in ir.components.items():
+        if not r.startswith(prefix):
+            continue
+        touched = [n for n, nodes in nets.items() if any(x == r for x, _p, _t in nodes)]
+        if len(touched) == 2 and (
+            (net_a_pred(touched[0]) and net_b_pred(touched[1]))
+            or (net_a_pred(touched[1]) and net_b_pred(touched[0]))
+        ):
+            count += 1
+    return count
+
+
+def _rails_of(ir, nets):
+    rails = _rail_nets(ir, nets)
+    plus = next((n for v, n in rails.items() if v.startswith("+")), None)
+    gnd = rails.get("GND")
+    return plus, gnd
+
+
+def check_g2_mcu_minimal(ir):
+    nets = _adjacency(ir)
+    mcu = _mcu_ref(ir)
+    if not mcu:
+        return False, "no STM32G474 MCU"
+    plus, gnd = _rails_of(ir, nets)
+    if not plus or not gnd:
+        return False, "missing rails"
+    decaps = _bridges(ir, nets, "C", lambda n: n == plus, lambda n: n == gnd)
+    if decaps < 3:
+        return False, f"only {decaps} decoupling caps on the rail"
+    swd = [
+        j for j in _find(ir, lambda c: True)
+        if j.startswith("J") and len(_shared_nets(ir, nets, mcu, j, exclude=(plus, gnd))) >= 2
+    ]
+    if not swd:
+        return False, "no debug connector sharing >=2 signal nets with the MCU"
+    strap = _bridges(ir, nets, "R", lambda n: n == gnd or n == plus,
+                     lambda n: mcu in {r for r, _p, _t in nets.get(n, [])})
+    if strap < 1:
+        return False, "no boot/reset strap resistor to a rail"
+    return True, f"MCU minimal ok (decaps={decaps}, swd={swd[0]})"
+
+
+def check_g3_mcu_i2c(ir):
+    nets = _adjacency(ir)
+    mcu = _mcu_ref(ir)
+    if not mcu:
+        return False, "no STM32G474 MCU"
+    plus, gnd = _rails_of(ir, nets)
+    if not plus or not gnd:
+        return False, "missing rails"
+    sensors = _find(ir, lambda c: c.lib_id.startswith("Sensor_") or "SI70" in c.lib_id.upper())
+    if not sensors:
+        return False, "no I2C sensor component"
+    bus = _shared_nets(ir, nets, mcu, sensors[0], exclude=(plus, gnd))
+    if len(bus) < 2:
+        return False, f"MCU and sensor share {len(bus)} nets (need SDA+SCL)"
+    pullups = sum(
+        1 for net in bus
+        if _bridges(ir, nets, "R", lambda n, net=net: n == net, lambda n: n == plus)
+    )
+    if pullups < 2:
+        return False, f"only {pullups}/2 bus nets have pull-ups to the rail"
+    return True, f"I2C ok (bus={bus[:2]}, sensor={sensors[0]})"
+
+
+def check_g4_mcu_spi(ir):
+    nets = _adjacency(ir)
+    mcu = _mcu_ref(ir)
+    if not mcu:
+        return False, "no STM32G474 MCU"
+    plus, gnd = _rails_of(ir, nets)
+    if not plus or not gnd:
+        return False, "missing rails"
+    flash = _find(
+        ir,
+        lambda c: c.lib_id.startswith("Memory_")
+        or "W25Q" in (c.lib_id + c.value).upper()
+        or "FLASH" in (c.lib_id + c.value).upper(),
+    )
+    if not flash:
+        return False, "no SPI flash component"
+    bus = _shared_nets(ir, nets, mcu, flash[0], exclude=(plus, gnd))
+    if len(bus) < 3:
+        return False, f"MCU and flash share {len(bus)} nets (need SCK/MISO/MOSI/CS)"
+    cs_pullup = sum(
+        1 for net in bus
+        if _bridges(ir, nets, "R", lambda n, net=net: n == net, lambda n: n == plus)
+    )
+    if cs_pullup < 1:
+        return False, "no pull-up on any SPI net (CS pull-up required)"
+    return True, f"SPI ok (bus={len(bus)} nets, flash={flash[0]})"
+
+
+def check_g5_mcu_uart(ir):
+    nets = _adjacency(ir)
+    mcu = _mcu_ref(ir)
+    if not mcu:
+        return False, "no STM32G474 MCU"
+    plus, gnd = _rails_of(ir, nets)
+    if not plus or not gnd:
+        return False, "missing rails"
+    conns = [r for r in ir.components if r.startswith("J")]
+    power_conn = [
+        j for j in conns
+        if any(j in {r for r, _p, _t in nets.get(n, [])} for n in (plus, gnd))
+    ]
+    if not power_conn:
+        return False, "no power input connector on the rails"
+    uart_conn = [
+        j for j in conns if len(_shared_nets(ir, nets, mcu, j, exclude=(plus, gnd))) >= 2
+    ]
+    if not uart_conn:
+        return False, "no UART header sharing >=2 signal nets with the MCU"
+    # LED chain: MCU signal net -> R -> LED -> gnd (or LED then R)
+    led_ok = False
+    for r, c in ir.components.items():
+        if _type_of(c.lib_id) != "LED":
+            continue
+        n1 = _net_of(nets, r)
+        n2 = _other_pin_net(ir, nets, r, n1)
+        for a, b in ((n1, n2), (n2, n1)):
+            if b == gnd and a and a != plus:
+                # other side must reach the MCU through a resistor or directly
+                for rr, _p, tt in nets.get(a, []):
+                    if tt == "R":
+                        other = _other_pin_net(ir, nets, rr, a)
+                        if other and mcu in {x for x, _p, _t in nets.get(other, [])}:
+                            led_ok = True
+                    if rr == mcu:
+                        led_ok = True
+        # also accept MCU -> R -> LED -> gnd with LED anode on the R net
+    if not led_ok:
+        return False, "no GPIO-driven LED chain to GND"
+    return True, "UART board ok"
+
+
 SCENARIOS = [
     ("led_button", "5V에서 버튼을 누르면 빨간 LED가 켜지는 회로", check_led_button),
     ("led_only", "5V 전원에 저항으로 전류를 제한해서 빨간 LED 하나를 켜는 회로", check_led_only),
     ("divider", "5V를 절반 전압으로 나누는 저항 전압 분배기", check_divider),
+    ("golden2", "STM32G474RET6 최소 동작 회로를 설계해줘. 전원 디커플링 커패시터, 리셋(NRST) 회로, BOOT0 풀다운 스트랩, SWD 디버그 헤더를 포함할 것", check_g2_mcu_minimal),
+    ("golden3", "STM32G474 MCU에 I2C 온도 센서를 연결한 회로. SDA/SCL 풀업 저항과 디커플링 포함", check_g3_mcu_i2c),
+    ("golden4", "STM32G474 MCU에 SPI NOR 플래시 메모리를 연결한 회로. CS 풀업과 WP/HOLD 핀 처리, 디커플링 포함", check_g4_mcu_spi),
+    ("golden5", "STM32G474 MCU 보드: 3.3V 전원 입력 커넥터, UART 디버그 헤더, GPIO로 구동하는 상태 LED를 포함한 회로", check_g5_mcu_uart),
 ]
 
 
