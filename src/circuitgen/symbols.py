@@ -20,7 +20,17 @@ from simp_sexp import Sexp
 from .ir import PinDef, SymbolDef
 from .pins import KICAD_PIN_TYPES
 
-KICAD_SYMBOL_DIR = Path("/mnt/c/Program Files/KiCad/10.0/share/kicad/symbols")
+# Preferred source: the native kicad-symbols clone pinned to the 10.0.5 tag
+# (per-symbol *.kicad_symdir layout — the single-file libraries in the
+# Windows install are assembled from these at packaging time). Native ext4
+# reads are ~6x faster than /mnt/c's 9P filesystem, and provenance becomes
+# a git tag instead of an installer artifact. Falls back to the install.
+_PROJECT = Path(__file__).resolve().parents[2]
+_NATIVE_CLONE = _PROJECT / "kicad-symbols"
+_WINDOWS_INSTALL = Path("/mnt/c/Program Files/KiCad/10.0/share/kicad/symbols")
+KICAD_SYMBOL_DIR = (
+    _NATIVE_CLONE if (_NATIVE_CLONE / "Device.kicad_symdir").is_dir() else _WINDOWS_INSTALL
+)
 
 
 _SYMBOL_NAME_RE = re.compile(r'\(symbol\s+"((?:[^"\\]|\\.)*)"')
@@ -235,18 +245,38 @@ def _all_properties(symbol_sx: list) -> dict[str, str]:
     return out
 
 
+def library_path(symbol_dir: Path, lib: str) -> Path | None:
+    """Path of a library under symbol_dir in either layout, or None."""
+    d = symbol_dir / f"{lib}.kicad_symdir"
+    if d.is_dir():
+        return d
+    f = symbol_dir / f"{lib}.kicad_sym"
+    return f if f.exists() else None
+
+
 def parse_library(path: str | Path, lib_nickname: str | None = None) -> dict[str, SymbolDef]:
-    """Parse one .kicad_sym file → {lib_id: SymbolDef}, resolving extends."""
+    """Parse one library → {lib_id: SymbolDef}, resolving extends.
+
+    Accepts either a single .kicad_sym file (Windows-install / vendor
+    layout) or a *.kicad_symdir directory (official kicad-symbols repo:
+    one file per symbol; extends parents are sibling files, so the whole
+    directory is one namespace).
+    """
     path = Path(path)
     nickname = lib_nickname or path.stem
-    text = path.read_text(encoding="utf-8")
-    raw_blocks = _extract_toplevel_blocks(text)
+    if path.is_dir():
+        texts = [f.read_text(encoding="utf-8") for f in sorted(path.glob("*.kicad_sym"))]
+    else:
+        texts = [path.read_text(encoding="utf-8")]
 
+    raw_blocks: dict[str, str] = {}
     parsed: dict[str, list] = {}
-    root = Sexp(text)
-    for item in root:
-        if isinstance(item, list) and item and item[0] == "symbol":
-            parsed[str(item[1])] = item
+    for text in texts:
+        raw_blocks.update(_extract_toplevel_blocks(text))
+        root = Sexp(text)
+        for item in root:
+            if isinstance(item, list) and item and item[0] == "symbol":
+                parsed[str(item[1])] = item
 
     defs: dict[str, SymbolDef] = {}
 
@@ -308,10 +338,10 @@ def load_symbols(
 
     out: dict[str, SymbolDef] = {}
     for lib, names in wanted.items():
-        lib_path = symbol_dir / f"{lib}.kicad_sym"
-        if not lib_path.exists():
+        lib_path = library_path(symbol_dir, lib)
+        if lib_path is None:
             if strict:
-                raise KeyError(f"library {lib}.kicad_sym not found")
+                raise KeyError(f"library {lib} not found in {symbol_dir}")
             continue
         all_defs = parse_library(lib_path, lib)
         for name in names:

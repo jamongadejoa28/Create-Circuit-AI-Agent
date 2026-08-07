@@ -56,7 +56,9 @@ def test_extends_inheritance_flattened():
     # embedded derived block would be silently pin-less, so our parser
     # must deliver flattened raw blocks (verified against kicad-cli:
     # the flattened embed ERCs clean and exports all pins).
-    defs = parse_library(KICAD_SYMBOL_DIR / "Switch.kicad_sym", "Switch")
+    from circuitgen.symbols import library_path
+
+    defs = parse_library(library_path(KICAD_SYMBOL_DIR, "Switch"), "Switch")
     for d in defs.values():
         assert "(extends" not in d.raw_sexp, f"{d.lib_id}: unflattened extends"
 

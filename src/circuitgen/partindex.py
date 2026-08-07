@@ -78,11 +78,34 @@ class LibrarySource:
 def default_sources() -> list[LibrarySource]:
     project = Path(__file__).resolve().parents[2]
     return [
-        LibrarySource(KICAD_SYMBOL_DIR, "", 1, "CC-BY-SA-4.0 WITH KiCad-libraries-exception"),
+        # native kicad-symbols clone pinned to tag 10.0.5 (falls back to the
+        # Windows install via the KICAD_SYMBOL_DIR resolver)
+        LibrarySource(KICAD_SYMBOL_DIR, "", 1, "CC-BY-SA-4.0 WITH KiCad-libraries-exception (kicad-symbols tag 10.0.5)"),
         LibrarySource(project / "ESP-kicad-libraries" / "symbols", "ESP_", 2, "CC-BY-SA-4.0 WITH exception"),
         LibrarySource(project / "SparkFun-KiCad-Libraries" / "symbols", "SparkFun_", 2, "CC-BY-4.0"),
         LibrarySource(project / "OLIMEX-kicad" / "KiCAD_Components" / "Used-In-KiCad_v7", "OLIMEX_", 3, "Apache-2.0"),
     ]
+
+
+def _library_paths(root: Path) -> list[Path]:
+    """Libraries under a source root: *.kicad_symdir directories (official
+    repo layout) plus standalone .kicad_sym files not inside a symdir."""
+    symdirs = sorted(root.glob("*.kicad_symdir"))
+    files = sorted(
+        p for p in root.rglob("*.kicad_sym") if p.parent.suffix != ".kicad_symdir"
+    )
+    return symdirs + files
+
+
+def _library_checksum(path: Path) -> str:
+    h = hashlib.sha256()
+    if path.is_dir():
+        for f in sorted(path.glob("*.kicad_sym")):
+            h.update(f.name.encode())
+            h.update(f.read_bytes())
+    else:
+        h.update(path.read_bytes())
+    return h.hexdigest()[:16]
 
 
 def build_index(
@@ -102,14 +125,14 @@ def build_index(
         if not src.root.exists():
             stats["errors"].append(f"missing source root: {src.root}")
             continue
-        for f in sorted(src.root.rglob("*.kicad_sym")):
+        for f in _library_paths(src.root):
             nickname = src.nickname_prefix + f.stem
             try:
                 defs = parse_library(f, nickname)
             except Exception as e:  # a broken vendor file must not kill the build
                 stats["errors"].append(f"{f}: {e!r}")
                 continue
-            checksum = hashlib.sha256(f.read_bytes()).hexdigest()[:16]
+            checksum = _library_checksum(f)
             con.execute(
                 "INSERT INTO libraries VALUES (?,?,?,?,?)",
                 (nickname, str(f), src.priority, src.license, checksum),

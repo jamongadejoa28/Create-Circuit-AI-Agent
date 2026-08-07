@@ -16,13 +16,19 @@ pytestmark = pytest.mark.skipif(
 @pytest.fixture(scope="module")
 def small_part_index(tmp_path_factory):
     """Index over a 3-library subset — fast enough for every test run."""
+    import shutil
+
+    from circuitgen.symbols import library_path
+
     tmp = tmp_path_factory.mktemp("pidx")
     subset = tmp / "libs"
     subset.mkdir()
     for name in ("Device", "Switch", "power", "74xx"):
-        (subset / f"{name}.kicad_sym").write_bytes(
-            (KICAD_SYMBOL_DIR / f"{name}.kicad_sym").read_bytes()
-        )
+        src = library_path(KICAD_SYMBOL_DIR, name)
+        if src.is_dir():
+            shutil.copytree(src, subset / src.name)
+        else:
+            shutil.copy(src, subset / src.name)
     db = tmp / "parts.sqlite"
     stats = build_parts(db, sources=[LibrarySource(subset, "", 1, "CC-BY-SA-4.0")])
     assert stats["errors"] == []

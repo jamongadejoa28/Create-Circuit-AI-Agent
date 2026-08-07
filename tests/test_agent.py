@@ -78,13 +78,19 @@ GOOD_IR = {
 
 @pytest.fixture(scope="module")
 def agent_env(tmp_path_factory):
+    import shutil
+
+    from circuitgen.symbols import library_path
+
     tmp = tmp_path_factory.mktemp("agent")
     subset = tmp / "libs"
     subset.mkdir()
     for name in ("Device", "Switch", "power"):
-        (subset / f"{name}.kicad_sym").write_bytes(
-            (KICAD_SYMBOL_DIR / f"{name}.kicad_sym").read_bytes()
-        )
+        src = library_path(KICAD_SYMBOL_DIR, name)
+        if src.is_dir():
+            shutil.copytree(src, subset / src.name)
+        else:
+            shutil.copy(src, subset / src.name)
     pdb = tmp / "parts.sqlite"
     build_parts(pdb, sources=[LibrarySource(subset, "", 1, "CC-BY-SA-4.0")])
     kdb = tmp / "knowledge.sqlite"

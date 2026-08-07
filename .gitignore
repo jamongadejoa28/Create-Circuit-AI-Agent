@@ -30,3 +30,8 @@ golden/svg/
 fp-info-cache
 *.kicad-export.net
 golden/*.net
+/kicad-symbols/
+/kicad-footprints/
+/kicad-packages3D/
+/kicad-packages3D-source/
+/kicad-templates/
