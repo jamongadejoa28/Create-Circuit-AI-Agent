@@ -912,43 +912,23 @@
 	)
 	(wire
 		(pts
-			(xy 68.58 63.5) (xy 71.12 63.5)
+			(xy 68.58 63.5) (xy 78.74 63.5)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
-		(uuid "77a5edf8-dbe6-5ae4-a012-44de4e6cd70e")
+		(uuid "c12a6def-9f20-5138-a3ba-c56cc03efdc4")
 	)
 	(wire
 		(pts
-			(xy 78.74 63.5) (xy 76.2 63.5)
+			(xy 86.36 63.5) (xy 91.44 63.5)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
-		(uuid "26e12f37-eb19-542a-8009-1524e65ee52c")
-	)
-	(wire
-		(pts
-			(xy 86.36 63.5) (xy 88.9 63.5)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "93e35482-719f-51e6-8104-b6f922c44baf")
-	)
-	(wire
-		(pts
-			(xy 91.44 63.5) (xy 88.9 63.5)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "09b811d3-51fa-564f-a8d9-a617b4e9499d")
+		(uuid "0950c6e2-0a5c-53b8-a9fd-2b99c6604b81")
 	)
 	(wire
 		(pts
@@ -1011,34 +991,24 @@
 		(uuid "5f696421-17ac-586d-859e-ee955bf673e0")
 	)
 	(label "SW_R"
-		(at 71.12 63.5 0)
+		(at 68.58 63.5 0)
 		(effects
 			(font
 				(size 1.27 1.27)
 			)
 			(justify left bottom)
 		)
-		(uuid "1d88b5de-2f49-5ebf-8674-eb68c948bd74")
-	)
-	(label "SW_R"
-		(at 76.2 63.5 180)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify right bottom)
-		)
-		(uuid "966d8df7-626a-5183-bd7e-14fd7cbbb071")
+		(uuid "cf748d88-b8c8-5baa-a838-c04459a83899")
 	)
 	(label "R_LED"
-		(at 88.9 63.5 0)
+		(at 86.36 63.5 0)
 		(effects
 			(font
 				(size 1.27 1.27)
 			)
 			(justify left bottom)
 		)
-		(uuid "a9b17f42-7d07-5cac-b405-2c66184f1bda")
+		(uuid "dc385357-e2f4-52f1-9835-2e8a5d7cce8a")
 	)
 	(label "GND"
 		(at 101.6 63.5 0)

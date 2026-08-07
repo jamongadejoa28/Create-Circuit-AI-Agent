@@ -355,6 +355,10 @@ class Agent:
             "Rules:\n"
             "- Use ONLY lib_id values from CANDIDATES and pin numbers from PIN_TABLES; "
             "prefer the FIRST candidate of each role.\n"
+            "- EXCEPTION: if NO candidate fits a required device (off-catalog "
+            "module, servo, etc.), use lib_id 'Conceptual:<Name>' and invent "
+            "short descriptive pin numbers (VCC, GND, DATA...) — it renders "
+            "as a labeled concept box.\n"
             f"- This block's EXTERNAL nets must use EXACTLY these names "
             f"(keep any {{n}} literal — instances are stamped later): {own_ifaces}\n"
             + (
@@ -487,7 +491,11 @@ class Agent:
                 known.append(lid)
             except KeyError:
                 pass
-        return self.parts.load_symbols(known)
+        symbols = self.parts.load_symbols(known)
+        from .conceptual import resolve_conceptual
+
+        resolve_conceptual(ir, symbols)
+        return symbols
 
     def _repair_view(self, ir: CircuitIR, problems: list[str]) -> tuple[dict, bool]:
         """IR view for the repair prompt — sliced to the problem
@@ -560,11 +568,12 @@ class Agent:
             ref = op.get("ref", "")
             if kind == "add_component":
                 lid = op.get("lib_id", "")
-                try:
-                    self.parts.symbol_source(lid)
-                except KeyError:
-                    notes.append(f"rejected op: add/replace {ref} with unknown lib_id {lid!r}")
-                    continue
+                if not lid.startswith("Conceptual:"):
+                    try:
+                        self.parts.symbol_source(lid)
+                    except KeyError:
+                        notes.append(f"rejected op: add/replace {ref} with unknown lib_id {lid!r}")
+                        continue
             if kind in ("remove_component", "add_component") and ref in ir.components:
                 if ref not in text:
                     notes.append(f"rejected op: {kind} on {ref} — not part of any reported problem")

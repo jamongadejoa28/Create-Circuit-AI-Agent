@@ -121,15 +121,65 @@ def _instance_unit(pin, units_map: dict[int, Placement], ref: str) -> int:
     raise ValueError(f"{ref}: pin {pin.number} (unit {pin.unit}) has no placed instance")
 
 
+DIRECT_WIRE_MAX = 60.0  # facing aligned pins closer than this get a real wire
+
+
+def _try_direct_wire(
+    ir: CircuitIR,
+    symbols: dict[str, SymbolDef],
+    placements: dict[str, dict[int, Placement]],
+    net,
+) -> tuple[tuple[float, float], tuple[float, float]] | None:
+    """A 2-node net whose pins face each other on one axis gets a real
+    wire pin-to-pin instead of two stubs+labels — visually a schematic,
+    not a symbol cloud (user feedback vs the Gemini comparison). The
+    netlist round-trip still proves equivalence."""
+    if len(net.nodes) != 2:
+        return None
+    pts, dirs = [], []
+    for ref, pin_no in net.nodes:
+        sym = symbols[ir.components[ref].lib_id]
+        pin = sym.pin(pin_no)
+        units_map = placements[ref]
+        place = units_map[_instance_unit(pin, units_map, ref)]
+        from .geometry import pin_absolute_position
+
+        pts.append(pin_absolute_position(place, pin))
+        dirs.append(pin_outward_dir(place, pin))
+    (x1, y1), (x2, y2) = pts
+    vx, vy = x2 - x1, y2 - y1
+    dist = abs(vx) + abs(vy)
+    aligned = abs(vx) < 0.01 or abs(vy) < 0.01
+    if not aligned or dist < 0.01 or dist > DIRECT_WIRE_MAX:
+        return None
+    # both pins must point toward each other
+    if dirs[0][0] * vx + dirs[0][1] * vy <= 0:
+        return None
+    if dirs[1][0] * -vx + dirs[1][1] * -vy <= 0:
+        return None
+    return (x1, y1), (x2, y2)
+
+
 def build_emit_plan(
     ir: CircuitIR,
     symbols: dict[str, SymbolDef],
     placements: dict[str, dict[int, Placement]],
 ) -> EmitPlan:
-    """Stub+label geometry for every net node, no_connect markers for NC pins."""
+    """Stub+label geometry for every net node, no_connect markers for NC
+    pins; facing 2-pin nets get direct wires."""
     plan = EmitPlan()
     seen_labels: set[tuple[str, float, float]] = set()
     for net in ir.nets:
+        direct = _try_direct_wire(ir, symbols, placements, net)
+        if direct is not None:
+            (x1, y1), (x2, y2) = direct
+            plan.wires.append(((x1, y1), (x2, y2), f"net.{net.name}"))
+            # name label on the wire itself — without it KiCad auto-names
+            # the net (Net-(D1-A)) and the by-name round-trip loses the IR
+            # name (caught by the oracle on first run)
+            rot, justify = _label_orientation(x2 - x1, y2 - y1)
+            plan.labels.append((net.name, x1, y1, rot, justify))
+            continue
         for ref, pin_no in net.nodes:
             comp = ir.components[ref]
             sym = symbols[comp.lib_id]
@@ -192,12 +242,28 @@ def emit_schematic(
     out: list[str] = []
     w = out.append
 
+    # paper auto-size: content must stay inside the frame (margins + title
+    # block reserve) — the 85mm-tall STM32 symbol overflowed A4 (user report)
+    max_x = max_y = 0.0
+    for ref, units in placements.items():
+        sym = symbols[ir.components[ref].lib_id]
+        ex = max((abs(p.x) for p in sym.pins), default=5.08) + 10.16
+        ey = max((abs(p.y) for p in sym.pins), default=5.08) + 10.16
+        for place in units.values():
+            max_x = max(max_x, place.x + ex)
+            max_y = max(max_y, place.y + ey)
+    paper = "A4"
+    for cand, w_mm, h_mm in (("A4", 297, 210), ("A3", 420, 297), ("A2", 594, 420)):
+        paper = cand
+        if max_x <= w_mm - 15 and max_y <= h_mm - 30:
+            break
+
     w("(kicad_sch\n")
     w(f"\t(version {SCH_VERSION})\n")
     w(f'\t(generator "{GENERATOR}")\n')
     w(f'\t(generator_version "{GENERATOR_VERSION}")\n')
     w(f'\t(uuid "{root_uuid}")\n')
-    w('\t(paper "A4")\n')
+    w(f'\t(paper "{paper}")\n')
 
     # --- lib_symbols: embed each used symbol once, renamed to full lib_id ---
     # Raw blocks start unindented at their "(symbol" token with original

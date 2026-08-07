@@ -32,6 +32,7 @@ class PipelineResult:
     connectivity_ok: bool = False
     connectivity_msg: str = ""
     svg_ok: bool = False
+    draft: bool = False  # emitted despite self-ERC errors (partial view)
     errors: list[str] = field(default_factory=list)
 
 
@@ -54,9 +55,12 @@ def generate(
             strict=False,
         )
 
+    from .conceptual import resolve_conceptual
+
+    resolve_conceptual(ir, symbols)
     ensure_pwr_flags(ir, symbols)
 
-    # 1. self ERC on the IR — errors stop the pipeline before any file exists
+    # 1. self ERC on the IR
     res.self_erc = check_circuit(ir, symbols)
     if parts_index is not None:
         from .fp_checks import check_footprints
@@ -64,7 +68,25 @@ def generate(
         res.self_erc += check_footprints(ir, symbols, parts_index)
     if any(i.severity == "error" for i in res.self_erc):
         res.errors.append("self ERC errors: " + "; ".join(i.message for i in res.self_erc if i.severity == "error"))
-        return res
+        # DRAFT emission: an imperfect-but-visible schematic beats an
+        # invisible one (user decision after the Gemini comparison — a
+        # healthy CAN section was never seen because other blocks' errors
+        # suppressed the file). Components whose symbols are unknown are
+        # dropped from the draft only.
+        known = {r for r, c in ir.components.items() if c.lib_id in symbols}
+        if not known:
+            return res
+        draft = CircuitIR(name=ir.name)
+        for r in known:
+            c = ir.components[r]
+            draft.add(type(c)(r, c.lib_id, c.value, c.footprint))
+        for net in ir.nets:
+            nodes = [(r, p) for r, p in net.nodes if r in known]
+            if nodes:
+                draft.connect(net.name, *nodes)
+        draft.nc_pins = [(r, p) for r, p in ir.nc_pins if r in known]
+        ir = draft
+        res.draft = True
 
     # 2. placement + emission
     if placements is None:
