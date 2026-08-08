@@ -144,6 +144,127 @@ def _classify(ir: CircuitIR, symbols: dict[str, SymbolDef]):
     return roles, decouple_target
 
 
+# --- signal-flow layered placement (topology-based, replaces shelf order) ---
+
+_GNDISH = {"GND", "VSS", "AGND", "DGND", "PGND", "0V"}
+_DRIVER_ETYPES = {"OUTPUT", "PWROUT", "OPENCOLL", "OPENEMIT", "TRISTATE"}
+
+
+def _signal_edges(ir: CircuitIR, symbols: dict[str, SymbolDef], refs: set[str]):
+    """Component adjacency over signal nets: [(a, b, directed_a_to_b)].
+
+    Direction comes from pin electrical types: a net's driver-side member
+    points toward its non-driver members. Rails (power-symbol nets, ground
+    names) carry no flow information and are skipped."""
+    edges: list[tuple[str, str, bool]] = []
+    for net in ir.nets:
+        if net.name.upper() in _GNDISH:
+            continue
+        if any(
+            symbols[c.lib_id].is_power
+            for r, _p in net.nodes
+            if (c := ir.components.get(r)) and c.lib_id in symbols
+        ):
+            continue
+        members = [(r, str(p)) for r, p in net.nodes if r in refs]
+        if len(members) < 2:
+            continue
+        drivers = set()
+        for r, p in members:
+            try:
+                if symbols[ir.components[r].lib_id].pin(p).etype.name in _DRIVER_ETYPES:
+                    drivers.add(r)
+            except KeyError:
+                pass
+        seen_pairs: set[tuple[str, str]] = set()
+        for i, (a, _pa) in enumerate(members):
+            for b, _pb in members[i + 1:]:
+                if a == b or (a, b) in seen_pairs or (b, a) in seen_pairs:
+                    continue
+                seen_pairs.add((a, b))
+                if a in drivers and b not in drivers:
+                    edges.append((a, b, True))
+                elif b in drivers and a not in drivers:
+                    edges.append((b, a, True))
+                else:
+                    edges.append((a, b, False))
+    return edges
+
+
+def _flow_columns(
+    ir: CircuitIR,
+    symbols: dict[str, SymbolDef],
+    roles: dict[str, str],
+    refs: list[str],
+) -> list[list[str]] | None:
+    """Order refs into left-to-right signal-flow columns, or None when the
+    group carries no discernible flow (falls back to the shelf)."""
+    refset = set(refs)
+    edges = _signal_edges(ir, symbols, refset)
+    if not any(directed for _a, _b, directed in edges):
+        return None
+
+    layer: dict[str, float] = {r: 0.0 for r in refs}
+    for r in refs:
+        if roles.get(r) == "input":
+            layer[r] = 0.0
+    # longest-path relaxation along driven edges; capped so feedback
+    # cycles terminate instead of pushing layers to infinity
+    cap = float(len(refs))
+    for _ in range(len(refs)):
+        changed = False
+        for a, b, directed in edges:
+            if directed and layer[b] < layer[a] + 1 and layer[a] + 1 <= cap:
+                layer[b] = layer[a] + 1
+                changed = True
+        if not changed:
+            break
+    # 2-pin passives with no directed edge of their own sit between their
+    # neighbours; passives already pushed by a driver keep that layer
+    directed_refs = {r for a, b, d in edges if d for r in (a, b)}
+    for _ in range(2):
+        for r in refs:
+            sym = symbols[ir.components[r].lib_id]
+            if len(sym.pins) != 2 or roles.get(r) in ("input", "ic") or r in directed_refs:
+                continue
+            neigh = [
+                layer[b if a == r else a]
+                for a, b, _d in edges
+                if r in (a, b)
+            ]
+            if neigh:
+                layer[r] = sum(neigh) / len(neigh)
+    # outputs drift right of everything they hear from
+    for r in refs:
+        if roles.get(r) == "output":
+            neigh = [layer[b if a == r else a] for a, b, _d in edges if r in (a, b)]
+            if neigh:
+                layer[r] = max(neigh) + 0.5
+
+    columns: dict[float, list[str]] = {}
+    for r in refs:
+        columns.setdefault(round(layer[r], 2), []).append(r)
+    ordered_cols = [columns[k] for k in sorted(columns)]
+
+    # barycenter sweep: order each column by the mean position of already
+    # placed neighbours (crossing reduction, one pass)
+    pos: dict[str, int] = {}
+
+    def bary(r: str) -> float:
+        vals = [
+            pos[b if a == r else a]
+            for a, b, _d in edges
+            if r in (a, b) and (b if a == r else a) in pos
+        ]
+        return sum(vals) / len(vals) if vals else 1e9
+
+    for col in ordered_cols:
+        col.sort(key=lambda r: (bary(r), r))
+        for i, r in enumerate(col):
+            pos[r] = i
+    return ordered_cols
+
+
 # --- chain alignment: place series passives so the wire router can fire ---
 
 _CHAIN_GAP = 5.08  # facing-pin gap; must stay under emit.DIRECT_WIRE_MAX
@@ -175,7 +296,7 @@ def align_chains(
     symbols: dict[str, SymbolDef],
     placements: dict[str, dict[int, Placement]],
     roles: dict[str, str],
-) -> None:
+) -> dict[str, str]:
     """Re-place 2-pin passives that sit on 2-node signal nets so their pins
     face the neighbour across a small gap: series/filter chains (sense R →
     RC → port, dividers, gate resistors) then come out as REAL wires from
@@ -186,6 +307,13 @@ def align_chains(
     Movement is conservative: a part moves at most once, only into space
     where its body/pins collide with nothing, else the chain stops there
     and the stub+label fallback keeps correctness.
+
+    Returns a rigid-cluster map {ref: cluster_id}: an aligned satellite and
+    its anchor share an id, and any later pass that nudges one member MUST
+    move the whole cluster — a lone nudge breaks the pin-facing geometry
+    (measured on golden2: the label-dedup loop moved the STM32 +7.62 mm
+    after alignment, leaving the BOOT0 resistor's pins inside its pin
+    field: silent stacked-pin merges + pin_to_pin ERC).
     """
     net_nodes = {net.name: [(r, str(p)) for r, p in net.nodes] for net in ir.nets}
     net_of: dict[tuple[str, str], str] = {}
@@ -241,6 +369,7 @@ def align_chains(
         return True
 
     moved: set[str] = set()
+    cluster: dict[str, str] = {}
 
     def try_place(ref: str, pin, want_dir, target) -> bool:
         """Put `ref` so `pin` sits at `target` facing -want_dir; retry with a
@@ -267,6 +396,7 @@ def align_chains(
     def walk(from_ref: str, from_pin_no: str) -> None:
         """Extend a chain outward from an already-final pin."""
         ref, pin_no = from_ref, from_pin_no
+        cid = cluster.get(from_ref, from_ref)
         for _ in range(8):  # chain length guard
             net = net_of.get((ref, pin_no))
             if net is None:
@@ -291,6 +421,10 @@ def align_chains(
             nxt_pin = nxt_sym.pin(nxt[1])
             if not try_place(nxt[0], nxt_pin, out, target):
                 return
+            # anchor and satellite are now one rigid body: whoever nudges
+            # one later must carry the other (see docstring)
+            cluster[from_ref] = cid
+            cluster[nxt[0]] = cid
             # continue from the far pin of the part just placed
             far = next(p for p in nxt_sym.pins if p.number != nxt_pin.number)
             ref, pin_no = nxt[0], far.number
@@ -308,6 +442,7 @@ def align_chains(
             sym = symbols[ir.components[ref].lib_id]
             for pin in sym.pins:
                 walk(ref, pin.number)
+    return cluster
 
 
 def heuristic_place(
@@ -363,6 +498,43 @@ def heuristic_place(
             max_x = max(max_x, x - 7.62)
         return local, max(max_x, 30.48), y + row_h
 
+    def layered_tile(items: list[tuple[str, int]]):
+        """Signal-flow columns (inputs left, outputs right); None when the
+        group carries no discernible flow — the shelf then takes over."""
+        refs = sorted({r for r, _u in items})
+        if len(refs) < 3:
+            return None
+        cols = _flow_columns(ir, symbols, roles, refs)
+        if cols is None or len(cols) < 2:
+            return None
+        units_of: dict[str, list[int]] = {}
+        for r, u in items:
+            units_of.setdefault(r, []).append(u)
+        local: list[tuple[str, int, float, float]] = []
+        x = 0.0
+        max_h = 0.0
+        for col in cols:
+            col_items = [(r, u) for r in col for u in sorted(units_of.get(r, []))]
+            if not col_items:
+                continue
+            y = 0.0
+            col_w = 0.0
+            stacked: list[tuple[str, int, float, float, float]] = []
+            for r, u in col_items:
+                ex, ey = _unit_extent(symbols[ir.components[r].lib_id], u)
+                w, h = max(2 * ex, 20.32), max(2 * ey, 15.24)
+                stacked.append((r, u, w, h, y))
+                y += h + 5.08
+                col_w = max(col_w, w)
+            for r, u, _w, h, iy in stacked:
+                local.append((r, u, x + col_w / 2, iy + h / 2))
+            x += col_w + 7.62
+            max_h = max(max_h, y - 5.08)
+        width = x - 7.62
+        if width > SHEET_RIGHT - 50.8:
+            return None  # a flow this wide reads worse than the shelf
+        return local, max(width, 30.48), max_h
+
     def group_key(name: str):
         upper = name.upper()
         rank = 0 if upper.startswith("POWER") else 1 if upper.startswith("MCU") else 2
@@ -372,7 +544,7 @@ def heuristic_place(
     row_height = 0.0
     max_bottom = tile_y
     for group in sorted(grouped, key=group_key):
-        local, width, height = local_tile(grouped[group])
+        local, width, height = layered_tile(grouped[group]) or local_tile(grouped[group])
         # Reserve a heading band even before textual section headings are
         # emitted; this creates the visual whitespace engineers use between
         # repeated channels.
@@ -410,12 +582,14 @@ def heuristic_place(
     # Gather series/filter chains into facing rows so the wire router can
     # draw them as real wires (runs before the label-endpoint pass, which
     # remains the final electrical-safety net for anything it nudges).
-    align_chains(ir, symbols, placements, roles)
+    clusters = align_chains(ir, symbols, placements, roles)
 
     # Labels are electrical objects in KiCad: two different labels at the
     # exact same stub endpoint silently merge their nets. Body-overlap QA
     # cannot see this. Nudge one whole symbol by one grid until every label
-    # endpoint coordinate belongs to only one net.
+    # endpoint coordinate belongs to only one net. Chain-aligned parts form
+    # rigid bodies with their anchor: nudging only one member would leave
+    # satellite pins inside the anchor's pin field (measured on golden2).
     for _ in range(96):
         endpoints: dict[tuple[float, float], list[tuple[str, str]]] = {}
         for net in ir.nets:
@@ -438,10 +612,17 @@ def heuristic_place(
         if collision is None:
             break
         refs = [r for _, r in collision if not symbols[ir.components[r].lib_id].is_power]
-        target = sorted(set(refs or [r for _, r in collision]))[-1]
-        placements[target] = {
-            unit: Placement(_snap(p.x + 2 * GRID), p.y, p.rotation, p.mirror)
-            for unit, p in placements[target].items()
-        }
+        candidates = sorted(set(refs or [r for _, r in collision]))
+        # prefer a part outside any rigid cluster; else move the whole cluster
+        target = next((r for r in candidates if r not in clusters), candidates[-1])
+        cid = clusters.get(target)
+        move_refs = (
+            [r for r in placements if clusters.get(r) == cid] if cid is not None else [target]
+        )
+        for mr in move_refs:
+            placements[mr] = {
+                unit: Placement(_snap(p.x + 2 * GRID), p.y, p.rotation, p.mirror)
+                for unit, p in placements[mr].items()
+            }
 
     return placements
