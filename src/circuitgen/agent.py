@@ -859,12 +859,54 @@ class Agent:
         (2) destructive ops (remove / replace) on refs never mentioned in
         the problems are collateral damage — a repair round once removed
         healthy encoder ICs while 'fixing' a power-block issue.
+        (3) connect of an output-class pin onto a rail/GND net — the model
+        "fixes" unconnected pins by dumping them on GND (measured: encoder
+        A/B/INDEX outputs to GND, ERC 21→58); pin-type math says that can
+        never be right.
         """
+        gnd_like = {"GND", "VSS", "AGND", "DGND", "PGND", "0V"}
+        symbols = self._resolve_symbols(ir)
+
+        def is_rail(net_name: str) -> tuple[bool, bool]:
+            """(is a supply net, is ground-like)"""
+            grounded = net_name.upper() in gnd_like
+            supply = grounded or net_name.startswith("+")
+            if not supply:
+                for net in ir.nets:
+                    if net.name != net_name:
+                        continue
+                    for r, _p in net.nodes:
+                        c = ir.components.get(r)
+                        sym = symbols.get(c.lib_id) if c else None
+                        if sym and sym.is_power and c.lib_id != "power:PWR_FLAG":
+                            supply = True
+                            grounded = grounded or (c.value or "").upper() in gnd_like
+            return supply, grounded
+
         text = " ".join(problems)
         kept, notes = [], []
         for op in ops:
             kind = op.get("op")
             ref = op.get("ref", "")
+            if kind == "connect" and ref in ir.components:
+                sym = symbols.get(ir.components[ref].lib_id)
+                try:
+                    etype = sym.pin(str(op.get("pin", ""))).etype.name if sym else None
+                except KeyError:
+                    etype = None
+                if etype:
+                    supply, grounded = is_rail(str(op.get("net", "")))
+                    bad = (
+                        (etype in ("OUTPUT", "TRISTATE") and supply)
+                        or (etype in ("OPENCOLL", "OPENEMIT") and supply)
+                        or (etype == "PWROUT" and grounded)
+                    )
+                    if bad:
+                        notes.append(
+                            f"rejected op: connect {ref}.{op.get('pin')} ({etype}) "
+                            f"to supply net {op.get('net')!r}"
+                        )
+                        continue
             if kind == "add_component":
                 lid = op.get("lib_id", "")
                 if not lid.startswith("Conceptual:"):

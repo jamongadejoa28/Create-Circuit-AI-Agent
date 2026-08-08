@@ -224,3 +224,32 @@ def test_repeated_block_template_keeps_one_main_part_per_role():
     assert list(ir.components) == ["U1"]
     assert all(node[0] == "U1" for net in ir.nets for node in net.nodes)
     assert any("removed duplicate" in n for n in notes)
+
+
+def test_repair_gate_rejects_output_pin_to_supply_net(agent_env):
+    from circuitgen.ir import CircuitIR, Component, PinDef, SymbolDef
+    from circuitgen.pins import PinType
+
+    parts, knowledge, tmp = agent_env
+    agent = Agent(MockLLM(), parts, knowledge, tmp / "out_gate")
+
+    ir = CircuitIR("gate")
+    ir.add(Component("U1", "X:ENC", "ENC"))
+    ir.add(Component("#PWR01", "power:GND", "GND"))
+    ir.connect("GND", ("#PWR01", "1"))
+
+    enc = SymbolDef("X:ENC", "", [
+        PinDef("3", "A", PinType.OUTPUT, 0, 0, 0, 2.54),
+        PinDef("4", "CS", PinType.INPUT, 0, 0, 0, 2.54),
+    ])
+    gnd = SymbolDef("power:GND", "", [PinDef("1", "GND", PinType.PWRIN, 0, 0, 0, 2.54)], is_power=True)
+    agent._resolve_symbols = lambda _ir: {"X:ENC": enc, "power:GND": gnd}
+
+    ops = [
+        {"op": "connect", "ref": "U1", "pin": "3", "net": "GND"},   # output -> GND: reject
+        {"op": "connect", "ref": "U1", "pin": "3", "net": "+3V3"},  # output -> rail: reject
+        {"op": "connect", "ref": "U1", "pin": "4", "net": "GND"},   # input -> GND: fine
+    ]
+    kept, notes = agent._filter_ops(ir, ops, ["unconnected pin U1.3", "unconnected pin U1.4"])
+    assert [(o["pin"], o["net"]) for o in kept] == [("4", "GND")]
+    assert sum("rejected op: connect U1.3" in n for n in notes) == 2
