@@ -1559,7 +1559,15 @@ class Agent:
             ]
             + list(map(str, spec.get("connections_intent", [])))
         ).lower()
-        if any(k in domain_text for k in ("bldc", "foc", "motor control", "모터 제어")):
+        if any(
+            k in domain_text
+            for k in (
+                "bldc", "foc", "motor control", "motor driver",
+                # Korean particles break exact-phrase matching: "모터를 제어",
+                # "모터 컨트롤러", "모터 드라이버" must all count
+                "모터 제어", "모터를 제어", "모터 컨트롤", "모터 드라이버",
+            )
+        ):
             res.log.extend(apply_stm32g474ret6_foc_pinmap(ir, self._resolve_symbols(ir)))
         res.log.extend(ensure_canfd_bus_protection(ir))
         res.log.extend(mark_documented_no_connects(ir, self._resolve_symbols(ir)))
