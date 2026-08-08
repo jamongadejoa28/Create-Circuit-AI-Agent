@@ -179,3 +179,28 @@ def test_relay_driver_binds_and_verifies():
     assert verify_pattern_instance(ir, pattern, binding, refs, ports) == []
     coil_low = next(n for n in ir.nets if ("Q1", "1") in n.nodes)  # collector
     assert ("D1", "2") in coil_low.nodes and ("K1", "A2") in coil_low.nodes
+
+
+@oracle
+def test_led_switch_pattern_binds_and_verifies():
+    patterns = load_patterns(PATTERN_DIR)
+    pattern = patterns["led_switch_indicator"]
+    lib_ids = {"SW": "Switch:SW_Push", "R": "Device:R", "D": "Device:LED"}
+    symbols = load_symbols(sorted(set(lib_ids.values())))
+    binding, errors = bind_pattern(
+        pattern, {role: (lid, symbols[lid]) for role, lid in lib_ids.items()}
+    )
+    assert errors == [], errors
+    ir = CircuitIR("led_t")
+    refs = {"SW": "SW1", "R": "R1", "D": "D1"}
+    ports = {"VCC": "+5V"}
+    instantiate_pattern(ir, pattern, binding, refs, ports)
+    assert verify_pattern_instance(ir, pattern, binding, refs, ports) == []
+    # series chain: the switch is NOT across the rails
+    nets = {n.name: n.nodes for n in ir.nets}
+    assert ("SW1", "1") in nets["+5V"] and not any(
+        ("SW1", p) in nets["GND"] for p in ("1", "2")
+    )
+    # keyword safety: 'led' substrings must not trigger
+    assert pattern not in match_patterns("coupled inductor board", patterns)
+    assert pattern in match_patterns("5V 전원에서 스위치로 켜는 LED 회로", patterns)
