@@ -17,7 +17,13 @@ model; the pin envelope plus a stub/label margin is a reliable proxy).
 
 from __future__ import annotations
 
-from .geometry import GRID, Placement, pin_stub_end
+from .geometry import (
+    GRID,
+    Placement,
+    pin_absolute_position,
+    pin_outward_dir,
+    pin_stub_end,
+)
 from .ir import CircuitIR, SymbolDef
 from .pins import PinType
 
@@ -138,6 +144,172 @@ def _classify(ir: CircuitIR, symbols: dict[str, SymbolDef]):
     return roles, decouple_target
 
 
+# --- chain alignment: place series passives so the wire router can fire ---
+
+_CHAIN_GAP = 5.08  # facing-pin gap; must stay under emit.DIRECT_WIRE_MAX
+_CHAIN_MIN, _CHAIN_MAX_X, _CHAIN_MAX_Y = 15.24, 390.0, 260.0
+
+
+def _body_box(sym: SymbolDef, unit: int, place: Placement, pad: float = 1.27):
+    """Body-approximate box (pin envelope minus pin stick-out), sheet space."""
+    pins = [p for p in sym.pins if p.unit in (0, unit)] or sym.pins
+    stick = max((p.length for p in pins), default=2.54)
+    ex = max(max((abs(p.x) for p in pins), default=5.08) - stick, 2.54) + pad
+    ey = max(max((abs(p.y) for p in pins), default=5.08) - stick, 2.54) + pad
+    if place.rotation % 180 == 90:
+        ex, ey = ey, ex
+    return (place.x - ex, place.y - ey, place.x + ex, place.y + ey)
+
+
+def _facing_rotation(pin, want_dir: tuple[float, float]) -> int | None:
+    """Rotation making the pin's outward direction equal want_dir."""
+    for rot in (0, 90, 180, 270):
+        d = pin_outward_dir(Placement(0.0, 0.0, rot), pin)
+        if abs(d[0] - want_dir[0]) < 0.01 and abs(d[1] - want_dir[1]) < 0.01:
+            return rot
+    return None
+
+
+def align_chains(
+    ir: CircuitIR,
+    symbols: dict[str, SymbolDef],
+    placements: dict[str, dict[int, Placement]],
+    roles: dict[str, str],
+) -> None:
+    """Re-place 2-pin passives that sit on 2-node signal nets so their pins
+    face the neighbour across a small gap: series/filter chains (sense R →
+    RC → port, dividers, gate resistors) then come out as REAL wires from
+    the clearance router instead of stub+label pairs. This is the placement
+    half of the user's "analog circuits must be fully drawn" requirement —
+    the router alone cannot wire pins the shelf never aligned.
+
+    Movement is conservative: a part moves at most once, only into space
+    where its body/pins collide with nothing, else the chain stops there
+    and the stub+label fallback keeps correctness.
+    """
+    net_nodes = {net.name: [(r, str(p)) for r, p in net.nodes] for net in ir.nets}
+    net_of: dict[tuple[str, str], str] = {}
+    for name, nodes in net_nodes.items():
+        for key in nodes:
+            net_of[key] = name
+
+    def movable(ref: str) -> bool:
+        comp = ir.components.get(ref)
+        if comp is None or ref not in placements:
+            return False
+        sym = symbols[comp.lib_id]
+        return (
+            not sym.is_power
+            and len(sym.pins) == 2
+            and len(placements[ref]) == 1
+            and roles.get(ref) not in ("ic", "input")
+        )
+
+    # occupied space: body boxes + exact pin points of everything placed
+    boxes: dict[str, tuple[float, float, float, float]] = {}
+    pin_pts: dict[str, list[tuple[float, float]]] = {}
+    for ref, units_map in placements.items():
+        sym = symbols[ir.components[ref].lib_id]
+        for unit, place in units_map.items():
+            box = _body_box(sym, unit, place)
+            prev = boxes.get(ref)
+            boxes[ref] = (
+                min(prev[0], box[0]), min(prev[1], box[1]),
+                max(prev[2], box[2]), max(prev[3], box[3]),
+            ) if prev else box
+            pins = [p for p in sym.pins if p.unit in (0, unit)] or sym.pins
+            pin_pts.setdefault(ref, []).extend(
+                pin_absolute_position(place, p) for p in pins
+            )
+
+    def fits(ref: str, box, pts) -> bool:
+        if box[0] < _CHAIN_MIN or box[1] < _CHAIN_MIN:
+            return False
+        if box[2] > _CHAIN_MAX_X or box[3] > _CHAIN_MAX_Y:
+            return False
+        for other, ob in boxes.items():
+            if other == ref:
+                continue
+            if box[2] > ob[0] and box[0] < ob[2] and box[3] > ob[1] and box[1] < ob[3]:
+                return False
+            for px, py in pin_pts.get(other, ()):
+                if box[0] - 0.01 <= px <= box[2] + 0.01 and box[1] - 0.01 <= py <= box[3] + 0.01:
+                    return False
+                for qx, qy in pts:
+                    if abs(qx - px) < 1.27 and abs(qy - py) < 1.27:
+                        return False
+        return True
+
+    moved: set[str] = set()
+
+    def try_place(ref: str, pin, want_dir, target) -> bool:
+        """Put `ref` so `pin` sits at `target` facing -want_dir; retry with a
+        growing gap when blocked."""
+        sym = symbols[ir.components[ref].lib_id]
+        rot = _facing_rotation(pin, (-want_dir[0], -want_dir[1]))
+        if rot is None:
+            return False
+        for extra in range(6):
+            tx = target[0] + want_dir[0] * extra * 2 * GRID
+            ty = target[1] + want_dir[1] * extra * 2 * GRID
+            off = pin_absolute_position(Placement(0.0, 0.0, rot), pin)
+            place = Placement(round(tx - off[0], 4), round(ty - off[1], 4), rot)
+            box = _body_box(sym, 1, place)
+            pts = [pin_absolute_position(place, p) for p in sym.pins]
+            if fits(ref, box, pts):
+                placements[ref] = {1: place}
+                boxes[ref] = box
+                pin_pts[ref] = pts
+                moved.add(ref)
+                return True
+        return False
+
+    def walk(from_ref: str, from_pin_no: str) -> None:
+        """Extend a chain outward from an already-final pin."""
+        ref, pin_no = from_ref, from_pin_no
+        for _ in range(8):  # chain length guard
+            net = net_of.get((ref, pin_no))
+            if net is None:
+                return
+            nodes = net_nodes[net]
+            if len(nodes) != 2:
+                return
+            nxt = next(((r, p) for r, p in nodes if r != ref), None)
+            if nxt is None or nxt[0] in moved or not movable(nxt[0]):
+                return
+            sym = symbols[ir.components[ref].lib_id]
+            src = sym.pin(pin_no)
+            units_map = placements[ref]
+            unit = src.unit if src.unit in units_map else next(iter(units_map))
+            place = units_map[unit]
+            pos = pin_absolute_position(place, src)
+            out = pin_outward_dir(place, src)
+            if abs(out[0]) + abs(out[1]) < 0.5:
+                return
+            target = (round(pos[0] + out[0] * _CHAIN_GAP, 4), round(pos[1] + out[1] * _CHAIN_GAP, 4))
+            nxt_sym = symbols[ir.components[nxt[0]].lib_id]
+            nxt_pin = nxt_sym.pin(nxt[1])
+            if not try_place(nxt[0], nxt_pin, out, target):
+                return
+            # continue from the far pin of the part just placed
+            far = next(p for p in nxt_sym.pins if p.number != nxt_pin.number)
+            ref, pin_no = nxt[0], far.number
+        return
+
+    # anchored chains first (IC / connector pins), deterministic order
+    for ref in sorted(ir.components):
+        if roles.get(ref) in ("ic", "input") and ref in placements:
+            sym = symbols[ir.components[ref].lib_id]
+            for pin in sorted(sym.pins, key=lambda p: (p.unit, len(p.number), p.number)):
+                walk(ref, pin.number)
+    # then free passive-passive chains (dividers etc.), first part stays put
+    for ref in sorted(ir.components):
+        if movable(ref) and ref not in moved:
+            sym = symbols[ir.components[ref].lib_id]
+            for pin in sym.pins:
+                walk(ref, pin.number)
+
+
 def heuristic_place(
     ir: CircuitIR,
     symbols: dict[str, SymbolDef],
@@ -234,6 +406,11 @@ def heuristic_place(
         else:
             placements.setdefault(ref, {})[1] = Placement(_snap(rail_x), _snap(top_y), 0)
             rail_x += 20.32
+
+    # Gather series/filter chains into facing rows so the wire router can
+    # draw them as real wires (runs before the label-endpoint pass, which
+    # remains the final electrical-safety net for anything it nudges).
+    align_chains(ir, symbols, placements, roles)
 
     # Labels are electrical objects in KiCad: two different labels at the
     # exact same stub endpoint silently merge their nets. Body-overlap QA
