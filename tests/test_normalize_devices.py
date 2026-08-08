@@ -284,3 +284,22 @@ def test_stm32g4_system_aliases_create_reset_boot_and_swd_support():
     assert any(c.value == "ARM_SWD_10PIN" for c in ir.components.values())
     assert any(c.value == "BOOT_MODE" for c in ir.components.values())
     assert any("NRST protection" in note for note in notes)
+
+
+def test_merge_dangling_interface_nets():
+    from circuitgen.normalize import merge_dangling_interface_nets
+
+    ir = CircuitIR("m")
+    ir.add(Component("U1", "MCU_ST_STM32G4:STM32G474RETx", "MCU"))
+    ir.add(Component("U2", "Sensor_Magnetic:AS5048A", "ENC"))
+    ir.connect("SPI_MOSI", ("U1", "21"))
+    ir.connect("MOSI", ("U2", "4"))
+    ir.connect("ENC1_CS", ("U1", "22"), ("U2", "5"))
+    notes = merge_dangling_interface_nets(ir)
+    assert any("MOSI" in n for n in notes)
+    names = [n.name for n in ir.nets]
+    assert "MOSI" not in names and "SPI_MOSI" in names
+    spi = next(n for n in ir.nets if n.name == "SPI_MOSI")
+    assert ("U2", "4") in [(r, p) for r, p in spi.nodes]
+    # untouched: already-connected net
+    assert len(next(n for n in ir.nets if n.name == "ENC1_CS").nodes) == 2

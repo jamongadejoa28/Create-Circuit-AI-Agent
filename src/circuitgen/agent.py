@@ -1013,6 +1013,9 @@ class Agent:
             rails = [r["name"] for r in spec.get("power", {}).get("rails", [])]
             ir, mnotes = instantiate_blocks(name, plan, block_irs, rails)
             res.log.extend(mnotes)
+            from .normalize import merge_dangling_interface_nets
+
+            res.log.extend(merge_dangling_interface_nets(ir))
             res.log.extend(self.wire_mcu_interfaces(ir, catalog))
             ctx = {"candidates": merged_candidates}
             if not ir.components:
@@ -1034,6 +1037,7 @@ class Agent:
         from .normalize import (
             ensure_dc_power_entry,
             enforce_requested_stm32_variant,
+            merge_dangling_interface_nets,
             normalize_common_symbol_aliases,
             sanitize_known_device_nets,
         )
@@ -1041,6 +1045,7 @@ class Agent:
         res.log.extend(normalize_common_symbol_aliases(ir))
         res.log.extend(enforce_requested_stm32_variant(ir, prompt, self._resolve_symbols(ir)))
         res.log.extend(sanitize_known_device_nets(ir, self._resolve_symbols(ir)))
+        res.log.extend(merge_dangling_interface_nets(ir))
         dc_rail = "+12V" if any(r.get("name") == "+12V" for r in spec.get("power", {}).get("rails", [])) else "+5V"
         res.log.extend(ensure_dc_power_entry(ir, dc_rail))
         res.log.extend(self.resolve_pin_names(ir))
