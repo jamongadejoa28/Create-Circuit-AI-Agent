@@ -1562,7 +1562,11 @@ class Agent:
             res.log.extend(self._limit_main_device_copies(ir, ctx.get("candidates", {}), spec))
             from .blocks import validate_block_template
 
-            completeness = validate_block_template(
+            # pattern-synthesized runs carry no role candidates: the cited
+            # topology + contract validation already proved completeness,
+            # and the spec's role names are an LLM paraphrase of the same
+            # parts — the name-presence gate would only false-abort
+            completeness = [] if ctx.get("pattern") else validate_block_template(
                 {"id": "CIRCUIT", "roles": [p["role"] for p in spec.get("parts_needed", [])]},
                 ir,
                 ctx.get("candidates", {}),
@@ -1661,13 +1665,19 @@ class Agent:
                      "ferrite_bead": "FB", "diode": "D"}
         for role, rspec in pattern["roles"].items():
             fixed = rspec.get("lib_id")
-            cands = [fixed] if fixed else [
-                h["lib_id"]
-                for h in self.parts.search_parts(
-                    rspec.get("query", rspec.get("kind", "")), limit=6
-                )
-                if not h.get("is_power")
-            ]
+            if fixed:
+                cands = [fixed]
+            else:
+                hits = [
+                    h for h in self.parts.search_parts(
+                        rspec.get("query", rspec.get("kind", "")), limit=60
+                    )
+                    if not h.get("is_power")
+                ]
+                # closest fit first: a 5-pin MAX1616 outranked the 3-pin
+                # AMS1117 by bm25 and left FB/~SHDN dangling
+                hits.sort(key=lambda h: h.get("pins") or 99)
+                cands = [h["lib_id"] for h in hits]
             bound = None
             for lid in cands:
                 try:
@@ -1675,9 +1685,19 @@ class Agent:
                 except Exception:
                     continue
                 pins = bind_role_pins(pattern, role, sym)
-                if pins is not None:
-                    bound = (lid, pins)
-                    break
+                if pins is None:
+                    continue
+                # the pattern must account for EVERY visible pin of the
+                # part — an unbound control pin (FB, EN) would dangle
+                extras = [
+                    p for p in sym.pins
+                    if p.number not in set(pins.values())
+                    and not p.hidden and p.etype.name != "NOCONNECT"
+                ]
+                if extras:
+                    continue
+                bound = (lid, pins)
+                break
             if bound is None:
                 log.append(f"pattern {pattern['id']}: role {role} unbindable — LLM fallback")
                 return None
@@ -1685,10 +1705,16 @@ class Agent:
             log.append(f"pattern bind: {role} -> {bound[0]}")
 
         rails = [r.get("name") for r in spec.get("power", {}).get("rails", [])]
-        supply = next(
-            (r for r in rails if r and r.upper() not in ("GND", "0V", "VSS")), "+3V3"
-        )
+        supplies = [r for r in rails if r and r.upper() not in ("GND", "0V", "VSS")]
+        supply = supplies[0] if supplies else "+3V3"
         ports = {"VCC": supply} if "VCC" in pattern.get("ports", []) else {}
+        # power patterns name their rails through ports (regulator VIN/VOUT
+        # ARE the spec's input/output rails — measured: unmapped ports left
+        # +12V/+5V without nets and the rails never got supply symbols)
+        for port, kind in pattern.get("rail_ports", {}).items():
+            if not supplies:
+                continue
+            ports[port] = supplies[0] if kind == "supply_input" else supplies[-1]
 
         ir = CircuitIR(name)
         counters: dict[str, int] = {}
@@ -1745,7 +1771,7 @@ class Agent:
             log.append(f"pattern contract check failed: {'; '.join(issues)} — LLM fallback")
             return None
         log.append(f"pattern synthesis: {pattern['id']} instantiated deterministically")
-        return ir, {"candidates": {}, "contracts": contracts}
+        return ir, {"candidates": {}, "contracts": contracts, "pattern": pattern["id"]}
 
     def _limit_main_device_copies(
         self, ir: CircuitIR, candidates: dict[str, list[dict]], spec: dict | None = None

@@ -118,7 +118,7 @@ def agent_env(tmp_path_factory):
     tmp = tmp_path_factory.mktemp("agent")
     subset = tmp / "libs"
     subset.mkdir()
-    for name in ("Device", "Switch", "power", "Amplifier_Operational", "Connector_Generic"):
+    for name in ("Device", "Switch", "power", "Amplifier_Operational", "Connector_Generic", "Regulator_Linear"):
         src = library_path(KICAD_SYMBOL_DIR, name)
         if src.is_dir():
             shutil.copytree(src, subset / src.name)
@@ -424,3 +424,30 @@ def test_pattern_synthesis_replaces_llm_for_matched_textbook_circuit(agent_env):
     # requested values flowed from the spec into the pattern params
     assert res.ir.components["R1"].value == "100k"
     assert res.ir.components["R2"].value == "10k"
+
+
+def test_pattern_synthesis_maps_regulator_ports_to_spec_rails(agent_env):
+    parts, knowledge, tmp = agent_env
+    spec = {
+        "summary": "12V to 5V linear regulator",
+        "power": {"rails": [
+            {"name": "+12V", "voltage": "12V"},
+            {"name": "GND", "voltage": "0V"},
+            {"name": "+5V", "voltage": "5V"},
+        ]},
+        "parts_needed": [
+            {"role": "regulator", "search_query": "linear voltage regulator"},
+            {"role": "input capacitor Cin", "search_query": "capacitor", "value": "10uF"},
+            {"role": "output capacitor Cout", "search_query": "capacitor", "value": "22uF"},
+        ],
+        "connections_intent": ["12V in, 5V out, bypass caps both sides"],
+    }
+    llm = MockLLM(spec=spec)
+    agent = Agent(llm, parts, knowledge, tmp / "out-reg-pattern")
+    res = agent.run("12V 입력에서 5V를 만드는 레귤레이터 회로를 만들어줘", name="agent_ldo")
+    assert any("pattern synthesis: ldo_linear_regulator" in n for n in res.log), res.log[-10:]
+    assert llm.calls == ["spec"], llm.calls
+    assert res.ok, (res.stage, res.log[-8:], res.pipeline.errors if res.pipeline else None)
+    # regulator ports landed on the SPEC rails, not literal VIN/VOUT
+    names = {n.name for n in res.ir.nets}
+    assert "+12V" in names and "+5V" in names and "VIN" not in names

@@ -4,7 +4,8 @@
   "apply_when": [
     "non-inverting amplifier",
     "noninverting amplifier",
-    "비반전 증폭"
+    "비반전 증폭",
+    "비반전"
   ],
   "roles": {
     "AMP": {

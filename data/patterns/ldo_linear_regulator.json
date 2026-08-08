@@ -10,7 +10,7 @@
   "roles": {
     "REG": {
       "kind": "regulator",
-      "query": "linear voltage regulator",
+      "query": "regulator",
       "pins": {
         "IN": {
           "names": [
@@ -104,5 +104,9 @@
     "pdf_page_index": 1135,
     "tier": "A"
   },
-  "status": "verified"
+  "status": "verified",
+  "rail_ports": {
+    "VIN": "supply_input",
+    "VOUT": "supply_output"
+  }
 }
