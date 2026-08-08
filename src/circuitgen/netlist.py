@@ -125,9 +125,17 @@ def compare_connectivity(
     prefix on local labels) must match too, member-for-member.
     """
     exported = parse_kicad_netlist(exported_netlist)
+    # KiCad prefixes sheet-local net names with their sheet path
+    # ("/MOTOR_1/M1_SOA_RAW"). IR net names are unique, and a name spanning
+    # sheets is emitted as a global label (exported un-prefixed), so mapping
+    # to the basename is unambiguous — EXCEPT when KiCad split one IR net
+    # into pieces (broken hierarchy): then two exports share a basename, and
+    # the extra piece must stay visible under its full path so the mismatch
+    # is reported instead of silently merged.
     by_name: dict[str, set[tuple[str, str]]] = {}
     for name, nodes in exported.items():
-        by_name[name.lstrip("/")] = nodes
+        key = name.rsplit("/", 1)[-1] or name
+        by_name[name if key in by_name else key] = nodes
 
     msg: list[str] = []
 

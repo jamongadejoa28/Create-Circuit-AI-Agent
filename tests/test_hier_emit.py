@@ -33,12 +33,18 @@ def _board() -> CircuitIR:
     ir.add(Component("R2", "Device:R", "10k", "Resistor_SMD:R_0603_1608Metric", "SENSOR"))
     ir.add(Component("R3", "Device:R", "330R", "Resistor_SMD:R_0603_1608Metric", "MCU"))
     ir.add(Component("D1", "Device:LED", "LED", "LED_SMD:LED_0603_1608Metric", "MCU"))
+    ir.add(Component("R4", "Device:R", "1k", "Resistor_SMD:R_0603_1608Metric", "MCU"))
+    ir.add(Component("C2", "Device:C", "10nF", "Capacitor_SMD:C_0603_1608Metric", "MCU"))
     ir.add(Component("#PWR01", "power:+3V3", "+3V3"))
     ir.add(Component("#PWR02", "power:GND", "GND"))
-    ir.connect("+3V3", ("C1", "1"), ("U1", "5"), ("R1", "1"), ("R2", "1"), ("R3", "1"), ("#PWR01", "1"))
-    ir.connect("GND", ("C1", "2"), ("U1", "2"), ("D1", "1"), ("#PWR02", "1"))
+    ir.connect("+3V3", ("C1", "1"), ("U1", "5"), ("R1", "1"), ("R2", "1"), ("R3", "1"),
+               ("R4", "1"), ("#PWR01", "1"))
+    ir.connect("GND", ("C1", "2"), ("U1", "2"), ("D1", "1"), ("C2", "2"), ("#PWR02", "1"))
     ir.connect("SDA", ("U1", "1"), ("R1", "2"), ("D1", "2"))
     ir.connect("SCL", ("U1", "6"), ("R2", "2"), ("R3", "2"))
+    # sheet-local net: KiCad exports it path-prefixed ("/MCU_CAN_DEBUG/FILT");
+    # the round-trip must resolve that to the IR name
+    ir.connect("FILT", ("R4", "2"), ("C2", "1"))
     ir.nc_pins = [("U1", "3"), ("U1", "4")]
     return ir
 
