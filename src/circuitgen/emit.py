@@ -27,7 +27,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from .geometry import Placement, pin_outward_dir, pin_stub_end
+from .geometry import GRID, Placement, pin_absolute_position, pin_outward_dir, pin_stub_end
 from .ir import CircuitIR, SymbolDef
 from .uuids import uuid_for
 
@@ -214,6 +214,148 @@ def _try_l_wire(ir, symbols, placements, net, pin_pts, boxes):
     return None
 
 
+TREE_MAX_NODES = 8
+
+
+def _stub_corridors(ir, symbols, placements):
+    """(ref,pin) -> points a stub wire WOULD occupy if that net falls back.
+
+    Routed nets must avoid every foreign pin's potential stub corridor:
+    a route through it would collinearly overlap (= connect to) the stub
+    that appears when that other net is not routable."""
+    in_net = {(r, str(p)) for n in ir.nets for r, p in n.nodes}
+    corridors: dict[tuple[str, str], list[tuple[float, float]]] = {}
+    for ref, units_map in placements.items():
+        sym = symbols[ir.components[ref].lib_id]
+        for unit, place in units_map.items():
+            for pin in [p for p in sym.pins if p.unit in (0, unit)] or sym.pins:
+                if (ref, pin.number) not in in_net:
+                    continue
+                start, end = pin_stub_end(place, pin, STUB_LEN)
+                dx = (end[0] - start[0]) / max(1, round(abs(end[0] - start[0]) / GRID))
+                dy = (end[1] - start[1]) / max(1, round(abs(end[1] - start[1]) / GRID))
+                n = round((abs(end[0] - start[0]) + abs(end[1] - start[1])) / GRID)
+                corridors[(ref, pin.number)] = [
+                    (round(start[0] + dx * i, 4), round(start[1] + dy * i, 4))
+                    for i in range(n + 1)
+                ]
+    return corridors
+
+
+def _segment_cells(a, b):
+    """1.27-grid points covering an axis-aligned segment (over-inclusive:
+    off-grid endpoints round outward so blocking never under-covers)."""
+    import math
+
+    (x1, y1), (x2, y2) = a, b
+    if abs(x1 - x2) < 0.01:
+        lo, hi = sorted((y1, y2))
+        cells = range(math.floor(lo / GRID + 1e-6), math.ceil(hi / GRID - 1e-6) + 1)
+        return [(round(x1, 4), round(i * GRID, 4)) for i in cells]
+    lo, hi = sorted((x1, x2))
+    cells = range(math.floor(lo / GRID + 1e-6), math.ceil(hi / GRID - 1e-6) + 1)
+    return [(round(i * GRID, 4), round(y1, 4)) for i in cells]
+
+
+def _split_at_endpoints(segments):
+    """Split segments at any other segment's endpoint inside them.
+
+    KiCad connects a wire END to a wire INTERIOR only when the interior
+    wire is split at that point and a junction dot sits there — the router
+    attaches branches mid-segment, so without this pass a branch would
+    LOOK connected and be electrically dangling. Returns (segments,
+    junction points = degree>=3 endpoints after splitting)."""
+    endpoints = {p for seg in segments for p in seg}
+    out = []
+    for a, b in segments:
+        (x1, y1), (x2, y2) = a, b
+        vertical = abs(x1 - x2) < 0.01
+        inner = [
+            (px, py)
+            for px, py in endpoints
+            if (px, py) not in (a, b)
+            and (
+                (vertical and abs(px - x1) < 0.01 and min(y1, y2) + 0.01 < py < max(y1, y2) - 0.01)
+                or (not vertical and abs(py - y1) < 0.01 and min(x1, x2) + 0.01 < px < max(x1, x2) - 0.01)
+            )
+        ]
+        if not inner:
+            out.append((a, b))
+            continue
+        axis = 1 if vertical else 0
+        chain = [a] + sorted(inner, key=lambda p: p[axis], reverse=a[axis] > b[axis]) + [b]
+        out.extend((chain[i], chain[i + 1]) for i in range(len(chain) - 1))
+    degree: dict[tuple[float, float], int] = {}
+    for a, b in out:
+        degree[a] = degree.get(a, 0) + 1
+        degree[b] = degree.get(b, 0) + 1
+    return out, [p for p, d in degree.items() if d >= 3]
+
+
+def _try_tree_wire(ir, symbols, placements, net, pin_pts, boxes, corridors, routed_cells):
+    """Grid-router tree for a 2..TREE_MAX_NODES signal net.
+
+    Terminals enter the grid via a one-cell escape segment along each pin's
+    outward direction, so wires always leave pins cleanly. Obstacles: every
+    symbol body, every foreign pin POINT (touching one connects in KiCad),
+    every foreign potential-stub corridor, and every cell of previously
+    routed nets (v1 forbids even legal perpendicular crossings — a refused
+    route falls back to stubs, never a wrong wire). Returns (segments,
+    junctions, label_at) or None."""
+    from .router import route_multi_terminal
+
+    if not (2 <= len(net.nodes) <= TREE_MAX_NODES):
+        return None
+    if any(symbols[ir.components[r].lib_id].is_power for r, _p in net.nodes):
+        return None  # rails keep the power-symbol + stub convention
+    own_pins = {(r, str(p)) for r, p in net.nodes}
+    terms = []
+    for ref, pin_no in net.nodes:
+        sym = symbols[ir.components[ref].lib_id]
+        pin = sym.pin(pin_no)
+        units_map = placements[ref]
+        place = units_map[_instance_unit(pin, units_map, ref)]
+        pos = pin_absolute_position(place, pin)
+        # off-grid pins cannot be met exactly by grid cells; a near-miss
+        # wire is a silently unconnected pin — refuse instead
+        if any(abs(v / GRID - round(v / GRID)) > 0.005 for v in pos):
+            return None
+        dx, dy = pin_outward_dir(place, pin)
+        if abs(abs(dx) + abs(dy) - 1.0) > 0.01:
+            return None
+        esc = (round(pos[0] + dx * GRID, 4), round(pos[1] + dy * GRID, 4))
+        terms.append((pos, esc, (dx, dy)))
+    escapes = [esc for _pos, esc, _d in terms]
+    if len(set(escapes)) != len(escapes):
+        return None
+    blocked = [p for key, p in pin_pts.items() if key not in own_pins]
+    blocked += [p for key, pts in corridors.items() if key not in own_pins for p in pts]
+    blocked += list(routed_cells)
+    blocked_set = {(round(x, 2), round(y, 2)) for x, y in blocked}
+    if any((round(x, 2), round(y, 2)) in blocked_set for x, y in escapes):
+        return None  # an escape on foreign geometry would silently connect
+    tree = route_multi_terminal(
+        escapes,
+        [b for ref_boxes in boxes.values() for b in ref_boxes],
+        grid=GRID,
+        clearance=GRID,
+        blocked_points=blocked,
+    )
+    if tree is None:
+        return None
+    segments = [(pos, esc) for pos, esc, _d in terms] + list(tree.segments)
+    segments = [
+        (a, b) for a, b in segments if abs(a[0] - b[0]) + abs(a[1] - b[1]) > 0.005
+    ]
+    skip_refs = {r for r, _p in net.nodes}
+    for a, b in segments:
+        if not _seg_clear(a, b, pin_pts, boxes, skip_refs, own_pins):
+            return None  # grid approximation missed something — refuse
+    segments, junctions = _split_at_endpoints(segments)
+    pos0, _esc0, d0 = terms[0]
+    return segments, junctions, (pos0, d0)
+
+
 def _try_direct_wire(
     ir: CircuitIR,
     symbols: dict[str, SymbolDef],
@@ -260,6 +402,8 @@ def build_emit_plan(
     plan = EmitPlan()
     seen_labels: set[tuple[str, float, float]] = set()
     pin_pts, boxes = _collect_obstacles(ir, symbols, placements)
+    corridors = _stub_corridors(ir, symbols, placements)
+    routed_cells: set[tuple[float, float]] = set()
     for net in ir.nets:
         direct = _try_direct_wire(ir, symbols, placements, net)
         if direct is not None:
@@ -274,6 +418,7 @@ def build_emit_plan(
         if direct is not None:
             (x1, y1), (x2, y2) = direct
             plan.wires.append(((x1, y1), (x2, y2), f"net.{net.name}"))
+            routed_cells.update(_segment_cells((x1, y1), (x2, y2)))
             # name label on the wire itself — without it KiCad auto-names
             # the net (Net-(D1-A)) and the by-name round-trip loses the IR
             # name (caught by the oracle on first run)
@@ -287,6 +432,20 @@ def build_emit_plan(
             plan.wires.append((corner, b, f"net.{net.name}.b"))
             rot, justify = _label_orientation(corner[0] - a[0], corner[1] - a[1])
             plan.labels.append((net.name, a[0], a[1], rot, justify))
+            for w in plan.wires[-2:]:
+                routed_cells.update(_segment_cells(w[0], w[1]))
+            continue
+        tree = _try_tree_wire(
+            ir, symbols, placements, net, pin_pts, boxes, corridors, routed_cells
+        )
+        if tree is not None:
+            segments, junctions, (label_at, label_dir) = tree
+            for i, (a, b) in enumerate(segments):
+                plan.wires.append((a, b, f"net.{net.name}.t{i}"))
+                routed_cells.update(_segment_cells(a, b))
+            plan.junctions.extend(junctions)
+            rot, justify = _label_orientation(*label_dir)
+            plan.labels.append((net.name, label_at[0], label_at[1], rot, justify))
             continue
         for ref, pin_no in net.nodes:
             comp = ir.components[ref]
