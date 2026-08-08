@@ -605,3 +605,38 @@ def test_pattern_synthesis_builds_can_interface(agent_env):
     r_term = next(r for r, c in res.ir.components.items() if c.value == "120R")
     term_nets = [n.name for n in res.ir.nets if any(r == r_term for r, _p in n.nodes)]
     assert len(term_nets) == 2
+
+
+def test_pattern_synthesis_builds_mcu_uart_debug(agent_env):
+    parts, knowledge, tmp = agent_env
+    spec = {
+        "summary": "generic MCU minimal circuit with UART debug header and reset",
+        "power": {"rails": [
+            {"name": "+3V3", "voltage": "3.3V"},
+            {"name": "GND", "voltage": "0V"},
+        ]},
+        "parts_needed": [
+            {"role": "MCU", "search_query": "microcontroller"},
+            {"role": "UART_DEBUG_HEADER", "search_query": "UART header"},
+            {"role": "RESET_BUTTON", "search_query": "push button switch"},
+            {"role": "DECOUPLING", "search_query": "capacitor", "value": "100nF", "quantity": 2},
+        ],
+        "connections_intent": ["UART debug header, reset button, decoupling"],
+    }
+    llm = MockLLM(spec=spec)
+    agent = Agent(llm, parts, knowledge, tmp / "out-uart-pattern")
+    res = agent.run(
+        "범용 MCU 최소 회로와 UART 디버그 헤더, 리셋, 디커플링을 포함해줘",
+        name="agent_uart",
+    )
+    assert any("pattern synthesis: mcu_uart_debug" in n for n in res.log), res.log[-10:]
+    assert llm.calls == ["spec"], llm.calls
+    assert res.ok, (res.stage, res.log[-8:], res.pipeline.errors if res.pipeline else None)
+    assert res.pipeline.kicad_erc.ok
+    assert res.pipeline.connectivity_ok
+    # USART1 pins wired to the header; reset button on NRST
+    nets = {n.name: [(r, p) for r, p in n.nodes] for n in res.ir.nets}
+    tx = next(nodes for nodes in nets.values() if ("U1", "43") in nodes)
+    assert any(r.startswith("J") for r, _p in tx)
+    nrst = next(nodes for nodes in nets.values() if ("U1", "7") in nodes)
+    assert any(r.startswith("SW") for r, _p in nrst)

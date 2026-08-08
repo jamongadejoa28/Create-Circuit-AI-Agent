@@ -1,0 +1,50 @@
+{
+  "id": "mcu_uart_debug",
+  "function": "MCU minimal bring-up: USART1 debug header (TX/RX/VCC/GND) and a reset button to NRST; power, decoupling, reset conditioning, BOOT0 and SWD are completed by the verified STM32 support rules",
+  "apply_when": [
+    "uart 디버그", "uart debug", "debug header", "디버그 헤더",
+    "mcu 최소", "mcu minimal", "최소 회로"
+  ],
+  "apply_unless": ["bldc", "foc", "모터", "motor"],
+  "roles": {
+    "MCU": {
+      "kind": "microcontroller",
+      "lib_id": "MCU_ST_STM32G4:STM32G474RETx",
+      "allow_unbound_pins": true,
+      "pins": {
+        "UART_TX": {"names": ["PA9"]},
+        "UART_RX": {"names": ["PA10"]},
+        "NRST": {"names": ["PG10"]}
+      }
+    },
+    "J_UART": {
+      "kind": "connector",
+      "lib_id": "Connector_Generic:Conn_01x04",
+      "pins": {"1": {}, "2": {}, "3": {}, "4": {}}
+    },
+    "SW_RST": {
+      "kind": "switch",
+      "query": "push button switch",
+      "pins": {"1": {}, "2": {}}
+    }
+  },
+  "ports": ["VCC", "GND"],
+  "rail_ports": {"VCC": "lowest_supply"},
+  "topology": [
+    ["MCU.UART_TX", "J_UART.1"],
+    ["MCU.UART_RX", "J_UART.2"],
+    ["J_UART.3", "VCC"],
+    ["J_UART.4", "GND"],
+    ["MCU.NRST", "SW_RST.1"],
+    ["SW_RST.2", "GND"]
+  ],
+  "params": {},
+  "required_wired": [["MCU.NRST", "SW_RST.1"]],
+  "placement": {"inputs": ["SW_RST"], "outputs": ["J_UART"]},
+  "source": {
+    "book": "circuitgen golden fixtures (kicad-cli ERC-verified) + Practical Electronics for Inventors, 4th Ed.",
+    "section": "goldens.py golden5_mcu_uart_ir (USART1 PA9/PA10, 4-pin UART header) + knowledge id pattern_stm32_minimal_power_reset_boot_swd; reset button per PEFI 13.5.1 Switches",
+    "tier": "A"
+  },
+  "status": "verified"
+}

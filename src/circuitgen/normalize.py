@@ -1164,6 +1164,23 @@ def ensure_stm32g4_system_support(
         ir.connect(target, (ref, pin))
         ir.nc_pins = [node for node in ir.nc_pins if node != (ref, pin)]
 
+    def move_with_companions(ref: str, pin: str, target: str) -> None:
+        """Rename the pin's whole net onto the canonical name.
+
+        A reset button (or debug attachment) already wired to the MCU's
+        NRST/SWD pin must FOLLOW the pin onto the conditioned net — moving
+        the pin alone orphans the companion on a single-pin net (measured:
+        the UART pattern's reset button stranded on MCU_NRST)."""
+        old = next((n for n in ir.nets if (ref, pin) in n.nodes), None)
+        if old is None or old.name == target:
+            move(ref, pin, target)
+            return
+        nodes = list(old.nodes)
+        old.nodes = []
+        ir.nets = [n for n in ir.nets if n.nodes]
+        ir.connect(target, *nodes)
+        ir.nc_pins = [node for node in ir.nc_pins if node not in nodes]
+
     def touches(ref: str) -> set[str]:
         return {n.name for n in ir.nets if any(r == ref for r, _ in n.nodes)}
 
@@ -1179,12 +1196,12 @@ def ensure_stm32g4_system_support(
             notes.append(f"{mcu_ref}: STM32G4 system aliases missing {sorted(required - pins.keys())}")
             continue
         group = comp.group or "MCU"
-        move(mcu_ref, pins["PG10"], "NRST")
-        move(mcu_ref, pins["PB8"], "BOOT0")
-        move(mcu_ref, pins["PA13"], "SWDIO")
-        move(mcu_ref, pins["PA14"], "SWCLK")
+        move_with_companions(mcu_ref, pins["PG10"], "NRST")
+        move_with_companions(mcu_ref, pins["PB8"], "BOOT0")
+        move_with_companions(mcu_ref, pins["PA13"], "SWDIO")
+        move_with_companions(mcu_ref, pins["PA14"], "SWCLK")
         if "PB3" in pins:
-            move(mcu_ref, pins["PB3"], "SWO")
+            move_with_companions(mcu_ref, pins["PB3"], "SWO")
 
         # DS12288 Figure 27: 100 nF close to NRST; internal pull-up exists.
         reset_cap = next(

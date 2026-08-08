@@ -1825,7 +1825,9 @@ class Agent:
 
         binding = PatternBinding()
         prefix_of = {"resistor": "R", "capacitor": "C", "inductor": "L",
-                     "ferrite_bead": "FB", "diode": "D"}
+                     "ferrite_bead": "FB", "diode": "D", "led": "D",
+                     "connector": "J", "switch": "SW", "relay": "K",
+                     "transistor": "Q"}
         for role, rspec in pattern["roles"].items():
             fixed = rspec.get("lib_id")
             if fixed:
@@ -1965,6 +1967,9 @@ class Agent:
                 continue
             jn += 1
             ref = f"J{jn}"
+            while ref in ir.components:
+                jn += 1
+                ref = f"J{jn}"
             ir.add(Component(
                 ref, "Connector_Generic:Conn_01x02", net,
                 "Connector_PinHeader_2.54mm:PinHeader_1x02_P2.54mm_Vertical",
