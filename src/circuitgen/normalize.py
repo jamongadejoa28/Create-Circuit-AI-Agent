@@ -186,15 +186,31 @@ def sanitize_known_device_nets(
                 net.nodes = [node for node in net.nodes if node != (ref, pin)]
                 notes.append(f"removed impossible {ref}.{pin} from {net_name}: {why}")
 
-    # Power-entry blocks must not consume digital interface nets.
+    # Block synthesis sometimes copies the whole interface catalog into a
+    # power block, so a converter's SUPPLY pin acquires an SPI/CAN/PWM label.
+    # Only that is impossible. A logic-level pin on a power part legitimately
+    # carries EN / RESET / PG — deleting those (as this rule used to, keyed on
+    # the group name alone) silently disables the regulator an MCU was
+    # sequencing, while logging the false claim "impossible".
+    power_etypes = {PinType.PWRIN, PinType.PWROUT}
     for ref, comp in list(ir.components.items()):
         if not comp.group.upper().startswith("POWER"):
             continue
+        sym = symbols.get(comp.lib_id)
+        if sym is None:
+            continue
         for net in list(ir.nets):
-            if signal_words.search(net.name) and any(r == ref for r, _ in net.nodes):
-                for r, pin in list(net.nodes):
-                    if r == ref:
-                        remove(ref, str(pin), net.name, "digital net leaked into power block")
+            if not signal_words.search(net.name):
+                continue
+            for r, pin in list(net.nodes):
+                if r != ref:
+                    continue
+                try:
+                    etype = sym.pin(str(pin)).etype
+                except KeyError:
+                    continue
+                if etype in power_etypes:
+                    remove(ref, str(pin), net.name, "digital net on a supply pin")
 
     # TJA1051 pin function is fixed and its names provide a safe whitelist.
     for ref, comp in list(ir.components.items()):
@@ -221,8 +237,15 @@ def sanitize_known_device_nets(
             tokens = allowed.get(pname)
             if tokens:
                 for net_name in attached:
-                    upper = net_name.upper()
-                    if not any(token in upper for token in tokens):
+                    # Compare on separator-free names: the whitelist exists to
+                    # catch a bus pin wired to an unrelated signal, but literal
+                    # matching also deleted CORRECT wiring whenever the net was
+                    # spelled CAN_H / CAN_LOW instead of CANH, leaving the
+                    # transceiver's bus pins floating.
+                    upper = re.sub(r"[^A-Z0-9]", "", net_name.upper())
+                    if not any(
+                        re.sub(r"[^A-Z0-9]", "", token) in upper for token in tokens
+                    ):
                         remove(ref, pin.number, net_name, f"TJA1051 {pname} whitelist")
 
     # Final invariant: a physical pin cannot belong to several named nets.

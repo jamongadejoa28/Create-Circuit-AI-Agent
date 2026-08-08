@@ -1,3 +1,5 @@
+import pytest
+
 from circuitgen.ir import CircuitIR, Component, PinDef, SymbolDef
 from circuitgen.normalize import (
     add_shared_spi_miso_series_resistors,
@@ -367,3 +369,52 @@ def test_duplicate_pin_membership_moves_to_free_pin_of_two_pin_passive():
     all_r1 = sorted(node for n in ir.nets for node in n.nodes if node[0] == "R1")
     assert all_r1 == [("R1", "1"), ("R1", "2")]
     assert ("D1", "2") in nets["R_LED"]
+
+
+def test_power_block_keeps_logic_level_enable_and_reset():
+    """An MCU sequencing a regulator's EN pin is standard design; only a
+    digital net landing on a SUPPLY pin is a catalog leak."""
+    from circuitgen.normalize import sanitize_known_device_nets
+
+    reg = _sym("Regulator_Linear:X", [
+        (1, "VIN", PinType.PWRIN), (2, "GND", PinType.PWRIN),
+        (3, "VOUT", PinType.PWROUT), (4, "EN", PinType.INPUT),
+    ])
+    mcu = _sym("MCU:X", [(1, "PA0", PinType.BIDIR)])
+    symbols = {"Regulator_Linear:X": reg, "MCU:X": mcu}
+
+    ir = CircuitIR("en")
+    ir.add(Component("U1", "Regulator_Linear:X", "REG", "", "POWER"))
+    ir.add(Component("U2", "MCU:X", "MCU", "", "MCU"))
+    ir.connect("EN", ("U1", "4"), ("U2", "1"))
+    sanitize_known_device_nets(ir, symbols)
+    assert [(n.name, sorted(n.nodes)) for n in ir.nets] == [
+        ("EN", [("U1", "4"), ("U2", "1")])
+    ]
+
+    leak = CircuitIR("leak")
+    leak.add(Component("U1", "Regulator_Linear:X", "REG", "", "POWER"))
+    leak.add(Component("U2", "MCU:X", "MCU", "", "MCU"))
+    leak.connect("SPI_MOSI", ("U1", "1"), ("U2", "1"))  # SPI on VIN: impossible
+    sanitize_known_device_nets(leak, symbols)
+    assert [n for n in leak.nets if ("U1", "1") in n.nodes] == []
+
+
+@pytest.mark.parametrize("high,low", [
+    ("CANH", "CANL"), ("CAN_H", "CAN_L"), ("CAN_HIGH", "CAN_LOW"),
+])
+def test_tja1051_whitelist_accepts_standard_bus_net_spellings(high, low):
+    """The whitelist guards against a bus pin wired to an unrelated signal;
+    it must not delete correct wiring over a naming convention."""
+    from circuitgen.normalize import sanitize_known_device_nets
+    from circuitgen.symbols import load_symbols
+
+    lib = "Interface_CAN_LIN:TJA1051T"
+    symbols = load_symbols([lib])
+    ir = CircuitIR("can")
+    ir.add(Component("U1", lib, "TJA1051T"))
+    ir.add(Component("J1", "Connector_Generic:Conn_01x02", "BUS"))
+    ir.connect(high, ("U1", "7"), ("J1", "1"))
+    ir.connect(low, ("U1", "6"), ("J1", "2"))
+    sanitize_known_device_nets(ir, symbols)
+    assert sorted(n.name for n in ir.nets) == sorted([high, low])
