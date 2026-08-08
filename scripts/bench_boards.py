@@ -39,10 +39,12 @@ def main() -> int:
     ap.add_argument("--label", required=True)
     ap.add_argument("--only", default=None, help="comma-separated prompt numbers")
     ap.add_argument("--thinking-off", action="store_true")
+    ap.add_argument("--repeats", type=int, default=1, help="runs per board")
+    ap.add_argument("--seed", type=int, default=None, help="base seed; board/repeat offsets are deterministic")
     args = ap.parse_args()
 
-    extra = {"chat_template_kwargs": {"enable_thinking": False}} if args.thinking_off else None
-    llm = LlamaClient(extra_payload=extra)
+    base_extra = {"chat_template_kwargs": {"enable_thinking": False}} if args.thinking_off else {}
+    llm = LlamaClient(extra_payload=base_extra)
     if not llm.health():
         print("llama-server unreachable")
         return 1
@@ -59,7 +61,15 @@ def main() -> int:
 
     rows = []
     for num, prompt in prompts:
-        agent = Agent(llm, parts, knowledge, OUT / args.label / f"board{num:02d}")
+      for repeat in range(1, args.repeats + 1):
+        seed = args.seed + num * 100 + repeat if args.seed is not None else None
+        extra = dict(base_extra)
+        if seed is not None:
+            extra["seed"] = seed
+        run_llm = LlamaClient(model=llm.model, extra_payload=extra)
+        suffix = "" if args.repeats == 1 else f"-r{repeat}"
+        run_dir = OUT / args.label / f"board{num:02d}{suffix}"
+        agent = Agent(run_llm, parts, knowledge, run_dir)
         t0 = time.monotonic()
         try:
             res = agent.run(prompt, name=f"board{num:02d}")
@@ -82,6 +92,8 @@ def main() -> int:
         row = {
             "label": args.label,
             "board": num,
+            "repeat": repeat,
+            "seed": seed,
             "ok": res.ok,
             "stage": res.stage,
             "refused": bool(res.refusal),
@@ -99,6 +111,18 @@ def main() -> int:
             "repair_ops": len(res.repairs),
             "seconds": round(dt, 1),
         }
+        requested_roles = {p.get("role") for p in (res.spec or {}).get("parts_needed", [])}
+        planned_roles = {role for block in (res.block_plan or []) for role in block.get("roles", [])}
+        row["required_roles"] = len(requested_roles)
+        row["unplanned_roles"] = sorted(requested_roles - planned_roles) if res.block_plan else []
+        run_record = run_dir / "run.json"
+        if run_record.exists():
+            env = json.loads(run_record.read_text(encoding="utf-8")).get("environment", {})
+            row["model"] = env.get("model")
+            row["knowledge_count"] = env.get("knowledge_count")
+            row["knowledge_sha256"] = env.get("knowledge_sha256")
+            row["source_sha256"] = env.get("source_sha256")
+            row["prompt_sha256"] = env.get("prompt_sha256")
         rows.append(row)
         with results_path.open("a") as f:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")

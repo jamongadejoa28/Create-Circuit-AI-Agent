@@ -149,3 +149,88 @@ def generate(
 
     res.ok = not res.errors
     return res
+
+
+def generate_hierarchical(
+    ir: CircuitIR,
+    out_dir: str | Path,
+    name: str,
+    symbols: dict[str, SymbolDef] | None = None,
+    parts_index=None,
+) -> PipelineResult:
+    """Board-scale variant: partition by functional group into child sheets
+    (dvk-mx8m-bsb style — each part complete within its own frame), emit
+    root + children, then run the same oracle ladder on the ROOT (KiCad
+    resolves the whole hierarchy from there)."""
+    from .conceptual import resolve_conceptual
+    from .hier_emit import emit_hierarchical
+    from .hierarchy import partition_by_function
+
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    res = PipelineResult(ok=False)
+
+    if symbols is None:
+        symbols = load_symbols(
+            sorted({c.lib_id for c in ir.components.values()} | {"power:PWR_FLAG"}),
+            strict=False,
+        )
+    resolve_conceptual(ir, symbols)
+
+    res.self_erc = check_circuit(ir, symbols)
+    if parts_index is not None:
+        from .fp_checks import check_footprints
+
+        res.self_erc += check_footprints(ir, symbols, parts_index)
+    hard = [i for i in res.self_erc if i.severity == "error"]
+    if hard:
+        res.errors.append("self ERC errors: " + "; ".join(i.message[:160] for i in hard[:20]))
+        res.draft = True
+        # draft-filter unknown symbols/pins exactly like the flat path
+        known = {r for r, c in ir.components.items() if c.lib_id in symbols}
+        if not known:
+            return res
+
+        def pin_ok(r, p):
+            try:
+                symbols[ir.components[r].lib_id].pin(str(p))
+                return True
+            except KeyError:
+                return False
+
+        draft = CircuitIR(name=ir.name)
+        for r in known:
+            c = ir.components[r]
+            draft.add(type(c)(r, c.lib_id, c.value, c.footprint, c.group))
+        for net in ir.nets:
+            nodes = [(r, p) for r, p in net.nodes if r in known and pin_ok(r, p)]
+            if nodes:
+                draft.connect(net.name, *nodes)
+        draft.nc_pins = [(r, p) for r, p in ir.nc_pins if r in known and pin_ok(r, p)]
+        ir = draft
+
+    partition = partition_by_function(ir)
+    hier = emit_hierarchical(ir, symbols, partition, out_dir, name, parts_index)
+    res.sch_path = hier["root"]
+    write_project(res.sch_path)
+
+    res.kicad_erc = run_erc(res.sch_path)
+    if not res.kicad_erc.ok:
+        res.errors.append(f"KiCad ERC: exit {res.kicad_erc.exit_code}, {len(res.kicad_erc.violations)} violations")
+
+    svg = export_svg(res.sch_path, out_dir / "svg")
+    res.svg_ok = svg.returncode == 0
+    if not res.svg_ok:
+        res.errors.append(f"SVG export failed: {svg.stderr.strip()}")
+
+    exported = out_dir / f"{name}.kicad-export.net"
+    netl = export_netlist(res.sch_path, exported)
+    if netl.returncode == 0 and exported.exists():
+        res.connectivity_ok, res.connectivity_msg = compare_connectivity(ir, exported)
+        if not res.connectivity_ok:
+            res.errors.append(f"connectivity mismatch: {res.connectivity_msg[:300]}")
+    else:
+        res.errors.append(f"netlist export failed: {netl.stderr.strip()}")
+
+    res.ok = not res.errors
+    return res

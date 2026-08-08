@@ -90,6 +90,16 @@ def test_knowledge_search(tmp_path):
     assert any(h["id"] == "led-series-resistor" for h in led)
     # trimmed payload: no raw book prose fields beyond statement
     assert all(set(h) <= {"id", "type", "statement", "source", "formula", "values", "erc_rule"} for h in led)
+    scored = idx.search_knowledge("LED current limit resistor", 1, include_score=True)
+    assert scored[0]["_retrieval"]["rank"] == 1
+    assert isinstance(scored[0]["_retrieval"]["bm25"], float)
+    # A long OR query must not force unrelated snippets when the corpus has
+    # no knowledge for that interface.
+    assert idx.search_knowledge("CAN FD transceiver termination TVS ESD") == []
+    # A device-specific OOV token may still retrieve genuinely applicable
+    # generic knowledge when two meaningful terms match.
+    generic = idx.search_knowledge("AS5048A SPI encoder power decoupling")
+    assert any(h["id"] == "decoupling-cap-per-ic" for h in generic)
 
 
 # ---- footprints (plan §8.2 completion) ----
@@ -149,6 +159,19 @@ def test_check_and_assign_footprints(fp_part_index):
     assert ir.components["D1"].footprint.startswith("LED_SMD:")
     assert check_footprints(ir, symbols, idx) == []
     assert len(notes) == 2
+
+
+def test_generic_push_switch_gets_deterministic_fallback_footprint(fp_part_index):
+    from circuitgen.fp_checks import assign_footprints
+    from circuitgen.ir import CircuitIR, Component
+    from circuitgen.symbols import load_symbols
+
+    ir = CircuitIR("switch_fp")
+    ir.add(Component("SW1", "Switch:SW_Push", "RESET", "Bogus:Footprint"))
+    symbols = load_symbols(["Switch:SW_Push"])
+    notes = assign_footprints(ir, symbols, fp_part_index)
+    assert ir.components["SW1"].footprint.startswith("Button_Switch_SMD:SW_SPST_")
+    assert notes
 
 
 def test_footprint_pin_mismatch(fp_part_index):

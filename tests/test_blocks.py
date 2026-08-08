@@ -70,8 +70,8 @@ def test_validate_plan_orphans_and_dup_ids():
     ]
     fixed, notes = validate_plan(plan, spec)
     assert fixed[1]["id"] == "XX"
-    assert "c" not in fixed[0]["roles"]      # orphan dropped, not stuffed
-    assert any("dropped" in n and "'c'" in n for n in notes)
+    assert any(b["roles"] == ["c"] for b in fixed)  # orphan restored independently
+    assert any("restored omitted role c" in n for n in notes)
     assert "ghost" not in fixed[1]["roles"]  # unknown role dropped
     assert notes
 
@@ -122,6 +122,88 @@ def test_validate_plan_removes_passive_only_decoupling_block():
     fixed, notes = validate_plan(plan, spec)
     assert [b["id"] for b in fixed] == ["MOTOR"]
     assert any("passive-only" in n for n in notes)
+
+
+def test_validate_plan_assigns_repeated_peripheral_role_to_one_owner():
+    spec = {"parts_needed": [
+        {"role": "controller", "search_query": "STM32G474", "quantity": 1},
+        {"role": "encoder", "search_query": "SPI encoder", "quantity": 4},
+        {"role": "can_interface", "search_query": "CAN transceiver", "quantity": 1},
+    ]}
+    plan = [
+        {"id": "MCU", "description": "main controller with encoders and CAN", "roles": ["controller", "encoder", "can_interface"], "count": 1, "interface_nets": []},
+        {"id": "ENCODER", "description": "SPI encoder interface", "roles": ["encoder"], "count": 4, "interface_nets": []},
+        {"id": "CAN", "description": "CAN communication", "roles": ["can_interface"], "count": 1, "interface_nets": []},
+    ]
+    fixed, notes = validate_plan(plan, spec)
+    by_id = {b["id"]: b for b in fixed}
+    assert by_id["MCU"]["roles"] == ["controller"]
+    assert by_id["MCU"]["count"] == 1
+    assert by_id["ENCODER"]["roles"] == ["encoder"]
+    assert by_id["CAN"]["roles"] == ["can_interface"]
+    assert sum("encoder" in b["roles"] for b in fixed) == 1
+    assert any("duplicate ownership" in note for note in notes)
+
+
+def test_validate_plan_splits_repeated_encoder_out_of_singleton_mcu_block():
+    spec = {"parts_needed": [
+        {"role": "controller", "search_query": "STM32G474", "quantity": 1},
+        {"role": "encoder", "search_query": "SPI encoder", "quantity": 4},
+        {"role": "can_interface", "search_query": "CAN transceiver", "quantity": 1},
+    ]}
+    plan = [{
+        "id": "MCU", "description": "controller with encoders and CAN",
+        "roles": ["controller", "encoder", "can_interface"], "count": 4,
+        "interface_nets": [
+            {"name": "SPI_SCK", "purpose": "SPI encoder clock"},
+            {"name": "SPI_CS{n}", "purpose": "encoder select"},
+            {"name": "CAN_TX", "purpose": "CAN transmit"},
+        ],
+    }]
+    fixed, notes = validate_plan(plan, spec)
+    mcu = next(b for b in fixed if b["id"] == "MCU")
+    enc = next(b for b in fixed if b["roles"] == ["encoder"])
+    assert mcu["roles"] == ["controller", "can_interface"] and mcu["count"] == 1
+    assert enc["count"] == 4
+    assert {n["name"] for n in enc["interface_nets"]} == {"SPI_SCK", "SPI_CS{n}"}
+    assert any("split from mixed block" in note for note in notes)
+
+
+def test_validate_plan_removes_redundant_empty_motor_blocks():
+    spec = {"parts_needed": [{"role": "driver", "search_query": "BLDC motor driver", "quantity": 4}]}
+    plan = [
+        {"id": "MOTOR1", "roles": ["driver"], "count": 4, "interface_nets": []},
+        {"id": "MOTOR2", "roles": [], "count": 1, "interface_nets": []},
+        {"id": "MOTOR3", "roles": [], "count": 1, "interface_nets": []},
+    ]
+    fixed, notes = validate_plan(plan, spec)
+    assert [b["id"] for b in fixed] == ["MOTOR1"]
+    assert any("empty-role" in note for note in notes)
+
+
+def test_validate_plan_restores_power_requirements_and_reset_without_repeating_mcu():
+    spec = {"parts_needed": [
+        {"role": "controller", "search_query": "STM32G474", "quantity": 1},
+        {"role": "reset_button", "search_query": "push button", "quantity": 1},
+        {"role": "power_supply", "search_query": "power supply", "quantity": 1},
+        {"role": "bulk_capacitor", "search_query": "bulk capacitor", "quantity": 1},
+        {"role": "fuse", "search_query": "fuse", "quantity": 1},
+        {"role": "tvss_diode", "search_query": "TVS diode", "quantity": 1},
+    ]}
+    plan = [{
+        "id": "MCU", "description": "controller", "roles": ["controller"],
+        "count": 1, "interface_nets": [],
+    }]
+    fixed, notes = validate_plan(plan, spec)
+    mcu = next(b for b in fixed if b["id"] == "MCU")
+    power = next(b for b in fixed if b["id"] == "POWER_REQUIREMENTS")
+    assert mcu["roles"] == ["controller", "reset_button"]
+    assert mcu["count"] == 1
+    assert set(power["roles"]) == {
+        "power_supply", "bulk_capacitor", "fuse", "tvss_diode"
+    }
+    assert power["count"] == 1
+    assert any("restored omitted power roles" in note for note in notes)
 
 
 def test_missing_block_ir_skipped():

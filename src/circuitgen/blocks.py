@@ -108,7 +108,7 @@ def instantiate_blocks(
 
 def validate_plan(plan: list[dict], spec: dict) -> tuple[list[dict], list[str]]:
     """Deterministic plan sanity: every spec role must belong to a block;
-    orphans are appended to the first block rather than silently dropped."""
+    repeated roles are isolated and omitted roles are restored."""
     notes = []
     support_words = ("decoupl", "capacitor", "pullup", "pull-up", "filter resistor")
     kept = []
@@ -122,6 +122,87 @@ def validate_plan(plan: list[dict], spec: dict) -> tuple[list[dict], list[str]]:
             kept.append(b)
     plan[:] = kept
     roles = {p["role"] for p in spec.get("parts_needed", [])}
+    needs = {p["role"]: p for p in spec.get("parts_needed", [])}
+    for block in plan:
+        block["roles"] = [role for role in block.get("roles", []) if role in roles]
+
+    # Each requirement role belongs to exactly one block.  The model often
+    # puts encoder/CAN roles in both MCU and their dedicated blocks; the
+    # repeated encoder quantity then incorrectly stamps four MCUs.  Choose
+    # the block whose id/description best matches the role and search query.
+    for role in roles:
+        owners = [b for b in plan if role in b.get("roles", [])]
+        if len(owners) <= 1:
+            continue
+        intent = f"{role} {needs[role].get('search_query', '')}".lower()
+        intent_tokens = set(re.findall(r"[a-z0-9]+", intent))
+
+        def ownership_score(block: dict) -> tuple[int, int]:
+            bid = str(block.get("id", "")).lower()
+            desc = str(block.get("description", "")).lower()
+            bid_tokens = set(re.findall(r"[a-z0-9]+", bid))
+            desc_tokens = set(re.findall(r"[a-z0-9]+", desc))
+            exact = 10 if bid in intent_tokens or bool(bid_tokens & intent_tokens) else 0
+            return exact + len(desc_tokens & intent_tokens), -plan.index(block)
+
+        owner = max(owners, key=ownership_score)
+        for block in owners:
+            if block is owner:
+                continue
+            block["roles"] = [r for r in block["roles"] if r != role]
+        notes.append(
+            f"role {role}: duplicate ownership resolved to block {owner['id']}"
+        )
+
+    # A block cannot simultaneously be a singleton hub and a repeated
+    # peripheral template.  Split quantity>1 roles out of mixed blocks;
+    # otherwise encoder quantity=4 stamps four MCU+CAN copies.
+    generated: list[dict] = []
+    used_ids = {str(b.get("id", "")) for b in plan}
+    for block in plan:
+        quantities = {role: int(needs[role].get("quantity", 1)) for role in block.get("roles", [])}
+        if len(set(quantities.values())) <= 1:
+            continue
+        singleton_exists = any(q == 1 for q in quantities.values())
+        if not singleton_exists:
+            continue
+        for role, quantity in list(quantities.items()):
+            if quantity <= 1:
+                continue
+            block["roles"] = [r for r in block["roles"] if r != role]
+            base = re.sub(r"[^A-Za-z0-9]", "", role).upper() or "REPEATED"
+            bid = base
+            suffix = 2
+            while bid in used_ids:
+                bid = f"{base}{suffix}"
+                suffix += 1
+            used_ids.add(bid)
+            intent_tokens = set(re.findall(
+                r"[a-z0-9]+", f"{role} {needs[role].get('search_query', '')}".lower()
+            ))
+            matching_ifaces = [
+                dict(net)
+                for net in block.get("interface_nets", [])
+                if intent_tokens & set(re.findall(
+                    r"[a-z0-9]+", f"{net.get('name', '')} {net.get('purpose', '')}".lower()
+                ))
+            ]
+            generated.append({
+                "id": bid,
+                "description": f"Repeated {needs[role].get('search_query', role)} interface",
+                "roles": [role],
+                "count": quantity,
+                "interface_nets": matching_ifaces,
+            })
+            notes.append(
+                f"role {role}: split from mixed block {block['id']} into {bid} count={quantity}"
+            )
+    plan.extend(generated)
+
+    before_empty = len(plan)
+    plan[:] = [b for b in plan if b.get("roles")]
+    if len(plan) != before_empty:
+        notes.append(f"removed {before_empty - len(plan)} empty-role blocks")
     covered: set[str] = set()
     for b in plan:
         b["roles"] = [r for r in b.get("roles", []) if r in roles]
@@ -134,7 +215,7 @@ def validate_plan(plan: list[dict], spec: dict) -> tuple[list[dict], list[str]]:
             if p["role"] in b["roles"]
         ]
         expected = max(requested, default=1)
-        if expected > 1 and int(b.get("count", 1)) != expected:
+        if int(b.get("count", 1)) != expected:
             notes.append(
                 f"block {b['id']}: count {b.get('count', 1)} corrected to requirement quantity {expected}"
             )
@@ -151,11 +232,61 @@ def validate_plan(plan: list[dict], spec: dict) -> tuple[list[dict], list[str]]:
         covered.update(b["roles"])
     orphans = roles - covered
     if orphans:
-        # Dropped, not stuffed into one block: orphan roles are almost
-        # always support passives (fuses, caps, LEDs) whose parts emerge
-        # from the IC blocks' knowledge rules; concentrating six of them
-        # in one block once blew that block's output budget.
-        notes.append(f"roles {sorted(orphans)} not planned — dropped (support parts come from IC blocks)")
+        passive_orphans = {
+            role for role in orphans
+            if any(word in role.lower() for word in support_words)
+            and role not in {"bulk_capacitor"}
+        }
+        if passive_orphans:
+            orphans.difference_update(passive_orphans)
+            notes.append(
+                f"passive support roles {sorted(passive_orphans)} remain owned by their IC normalization"
+            )
+        # Restore omitted requirements without inflating a repeated IC block.
+        # Power-entry parts form one coherent circuit and reset belongs with
+        # the singleton controller.  Remaining roles get a small independent
+        # block so an LLM omission cannot game ERC by deleting functionality.
+        power_roles = {
+            "power_supply", "bulk_capacitor", "fuse", "tvss_diode",
+            "tvs_diode", "reverse_polarity_protection", "power_led",
+        }
+        power_missing = sorted(orphans & power_roles)
+        if power_missing:
+            plan.append({
+                "id": "POWER_REQUIREMENTS",
+                "description": "Input power, filtering, and protection requirements",
+                "roles": power_missing,
+                "count": 1,
+                "interface_nets": [],
+            })
+            orphans.difference_update(power_missing)
+            notes.append(f"restored omitted power roles in POWER_REQUIREMENTS: {power_missing}")
+
+        controller = next(
+            (b for b in plan if "controller" in b.get("roles", []) and int(b.get("count", 1)) == 1),
+            None,
+        )
+        if "reset_button" in orphans and controller is not None:
+            controller["roles"].append("reset_button")
+            orphans.remove("reset_button")
+            notes.append(f"restored omitted reset_button in singleton block {controller['id']}")
+
+        for role in sorted(orphans):
+            base = re.sub(r"[^A-Za-z0-9]", "", role).upper() or "REQUIREMENT"
+            bid = f"{base}_REQUIREMENT"
+            suffix = 2
+            while bid in {str(b.get('id', '')) for b in plan}:
+                bid = f"{base}_REQUIREMENT{suffix}"
+                suffix += 1
+            quantity = int(needs[role].get("quantity", 1))
+            plan.append({
+                "id": bid,
+                "description": f"Required {needs[role].get('search_query', role)} circuit",
+                "roles": [role],
+                "count": quantity,
+                "interface_nets": [],
+            })
+            notes.append(f"restored omitted role {role} in block {bid} count={quantity}")
     seen_ids = set()
     for b in plan:
         if b["id"] in seen_ids:

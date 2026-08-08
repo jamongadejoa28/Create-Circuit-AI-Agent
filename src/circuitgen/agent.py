@@ -16,6 +16,7 @@ layer, and knowledge arrives as at most a few compact entries.
 from __future__ import annotations
 
 import json
+import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
@@ -138,6 +139,7 @@ class Agent:
         # callback(spec) -> (approved: bool, approver: str, note: str);
         # None = auto-approve, recorded as such in the audit log (§12)
         self.approve_requirements = approve_requirements
+        self._knowledge_trace: list[dict] = []
 
     # ---- stage 1: requirements ----
 
@@ -171,7 +173,57 @@ class Agent:
         spec = _normalize_rails(spec)
         self._normalize_part_roles(spec)
         self._ensure_named_parts(prompt, spec)
+        self._ensure_domain_roles(prompt, spec)
+        self._ensure_logic_rail(spec)
         return spec
+
+    @staticmethod
+    def _ensure_domain_roles(prompt: str, spec: dict) -> None:
+        """Restore safety-critical functional roles omitted by extraction.
+
+        A board03 run reached 11 ERC violations only because the 4-axis BLDC
+        request contained no motor-driver role at all.  Low ERC is not useful
+        when a required power stage is absent.
+        """
+        import re as _re
+
+        text = prompt.lower()
+        parts = spec.setdefault("parts_needed", [])
+        if "bldc" in text or "foc" in text:
+            has_driver = any(
+                any(k in f"{p.get('role', '')} {p.get('search_query', '')}".lower()
+                    for k in ("bldc motor driver", "brushless motor driver", "three phase motor driver"))
+                for p in parts
+            )
+            if not has_driver:
+                counts = [
+                    int(m.group(1))
+                    for pattern in (
+                        r"(\d+)\s*축", r"(\d+)\s*[- ]?axis", r"(\d+)\s*(?:개(?:의)?\s*)?bldc",
+                        r"(\d+)\s+bldc\s+motors?",
+                    )
+                    for m in _re.finditer(pattern, text)
+                ]
+                quantity = max(counts, default=1)
+                parts.append(
+                    {"role": "bldc_motor_driver", "search_query": "BLDC motor driver", "quantity": quantity}
+                )
+                spec.setdefault("connections_intent", []).append(
+                    f"Use {quantity} independent three-phase BLDC motor-driver channels"
+                )
+
+    @staticmethod
+    def _ensure_logic_rail(spec: dict) -> None:
+        """MCU boards require a logic supply even when the 7B extractor
+        lists only input/load rails (observed on board03: +5V/+12V only)."""
+        needs_3v3 = any(
+            any(key in f"{part.get('role', '')} {part.get('search_query', '')}".lower()
+                for key in ("stm32", "microcontroller", " mcu", "esp32"))
+            for part in spec.get("parts_needed", [])
+        )
+        rails = spec.setdefault("power", {}).setdefault("rails", [])
+        if needs_3v3 and not any(r.get("name") == "+3V3" for r in rails):
+            rails.append({"name": "+3V3", "voltage": "3.3V"})
 
     @staticmethod
     def _normalize_part_roles(spec: dict) -> None:
@@ -239,12 +291,32 @@ class Agent:
         topics = [n["search_query"] for n in spec.get("parts_needed", [])]
         topics += spec.get("connections_intent", [])[:4]
         seen, snippets = set(), []
+        trace_hits: list[dict] = []
         for t in topics:
-            for hit in self.knowledge.search_knowledge(t, KNOWLEDGE_PER_TOPIC):
+            for hit in self.knowledge.search_knowledge(
+                t, KNOWLEDGE_PER_TOPIC, include_score=True
+            ):
+                retrieval = hit.pop("_retrieval", {})
+                trace_hits.append(
+                    {
+                        "query": t,
+                        "id": hit["id"],
+                        "rank": retrieval.get("rank"),
+                        "bm25": retrieval.get("bm25"),
+                    }
+                )
                 if hit["id"] not in seen:
                     seen.add(hit["id"])
                     snippets.append(hit)
         snippets = snippets[:6]
+        injected = {hit["id"] for hit in snippets}
+        self._knowledge_trace.append(
+            {
+                "topics": topics,
+                "hits": [dict(hit, injected=hit["id"] in injected) for hit in trace_hits],
+                "injected_ids": [hit["id"] for hit in snippets],
+            }
+        )
 
         pin_tables: dict[str, list] = {}
         for hits in candidates.values():
@@ -629,6 +701,22 @@ class Agent:
             notes.append(f"cleared {before - len(ir.nc_pins)} stale NC markers from connected pins")
         return notes
 
+    def _generate(self, ir: CircuitIR, name: str):
+        """Flat sheet for small circuits; functional child sheets for boards
+        (dvk-mx8m-bsb style — each part complete within its own frame)."""
+        from .pipeline import generate, generate_hierarchical
+
+        groups = {c.group for c in ir.components.values() if c.group}
+        if len(groups) >= 2 and len(ir.components) >= 12:
+            return generate_hierarchical(
+                ir, self.out_dir, name,
+                symbols=self._resolve_symbols(ir), parts_index=self.parts,
+            )
+        return generate(
+            ir, self.out_dir,
+            symbols=self._resolve_symbols(ir), parts_index=self.parts,
+        )
+
     def _fix_footprints(self, ir: CircuitIR) -> list[str]:
         from .fp_checks import assign_footprints
 
@@ -827,7 +915,13 @@ class Agent:
     # ---- full run ----
 
     def run(self, prompt: str, name: str = "agent_circuit") -> AgentResult:
-        from .audit import RevisionLockedError, RunRecord, is_finally_approved
+        from .audit import (
+            RevisionLockedError,
+            RunRecord,
+            is_finally_approved,
+            sha256_file,
+            sha256_tree,
+        )
 
         if is_finally_approved(self.out_dir):
             # §8.4: a finally-approved revision is immutable
@@ -835,8 +929,27 @@ class Agent:
                 f"{self.out_dir} holds a finally-approved revision — use a new out_dir"
             )
         rec = RunRecord(self.out_dir)
+        self._knowledge_trace = []
         rec.set("prompt", prompt)
         rec.set("name", name)
+        project = Path(__file__).resolve().parents[2]
+        resolve_model = getattr(self.llm, "_resolve_model", None)
+        model = resolve_model() if callable(resolve_model) else type(self.llm).__name__
+        knowledge_count = self.knowledge.con.execute("SELECT count(*) FROM entries").fetchone()[0]
+        rec.set(
+            "environment",
+            {
+                "model": model,
+                "llm_extra_payload": getattr(self.llm, "extra_payload", {}),
+                "knowledge_count": knowledge_count,
+                "knowledge_db": str(self.knowledge.db_path),
+                "knowledge_sha256": sha256_file(self.knowledge.db_path),
+                "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+                "source_sha256": sha256_tree(project / "src"),
+                "testprompt_sha256": sha256_file(project / "testprompt.md"),
+                "generation_defaults": {"temperature": 0.2, "seed": getattr(self.llm, "extra_payload", {}).get("seed")},
+            },
+        )
 
         res = AgentResult(ok=False, stage="requirements")
         try:
@@ -918,6 +1031,18 @@ class Agent:
                 return res
         res.ir = ir
         rec.set("block_plan", res.block_plan)
+        from .normalize import (
+            ensure_dc_power_entry,
+            enforce_requested_stm32_variant,
+            normalize_common_symbol_aliases,
+            sanitize_known_device_nets,
+        )
+
+        res.log.extend(normalize_common_symbol_aliases(ir))
+        res.log.extend(enforce_requested_stm32_variant(ir, prompt, self._resolve_symbols(ir)))
+        res.log.extend(sanitize_known_device_nets(ir, self._resolve_symbols(ir)))
+        dc_rail = "+12V" if any(r.get("name") == "+12V" for r in spec.get("power", {}).get("rails", [])) else "+5V"
+        res.log.extend(ensure_dc_power_entry(ir, dc_rail))
         res.log.extend(self.resolve_pin_names(ir))
         res.log.extend(self.attach_power_symbols(ir, spec))
         res.log.extend(self._ensure_pullups(ir, spec))
@@ -932,21 +1057,34 @@ class Agent:
         res.log.extend(self.attach_power_symbols(ir, spec))
         from .normalize import (
             add_shared_spi_miso_series_resistors,
+            apply_stm32g474ret6_foc_pinmap,
             complete_known_device_pins,
             ensure_drv8311_vm_decoupling,
+            ensure_drv8311h_operating_network,
+            ensure_canfd_bus_protection,
+            ensure_stm32g4_power_network,
+            ensure_stm32g4_system_support,
         )
 
         symbols = self._resolve_symbols(ir)
         rails = [r["name"] for r in spec.get("power", {}).get("rails", [])]
         res.log.extend(complete_known_device_pins(ir, symbols, rails))
+        if "+3V3" in rails:
+            res.log.extend(ensure_stm32g4_power_network(ir, symbols, "+3V3"))
+            res.log.extend(ensure_stm32g4_system_support(ir, symbols, "+3V3"))
         res.log.extend(add_shared_spi_miso_series_resistors(ir, symbols))
         res.log.extend(ensure_drv8311_vm_decoupling(ir, symbols))
+        res.log.extend(ensure_drv8311h_operating_network(ir, symbols, "+3V3"))
+        # Re-resolve because the operating pass introduced R/C/connectors;
+        # the FOC map itself only needs the MCU/driver/encoder definitions.
+        res.log.extend(apply_stm32g474ret6_foc_pinmap(ir, self._resolve_symbols(ir)))
+        res.log.extend(ensure_canfd_bus_protection(ir))
         res.log.extend(self.resolve_pin_names(ir))
         res.log.extend(self._ensure_pullups(ir, spec))
         res.log.extend(self._fix_footprints(ir))
 
         res.stage = "pipeline"
-        pr = generate(ir, self.out_dir, symbols=self._resolve_symbols(ir), parts_index=self.parts)
+        pr = self._generate(ir, name)
         res.pipeline = pr
         rounds = 0
         last_problems: list[str] | None = None
@@ -978,11 +1116,15 @@ class Agent:
             res.repairs.extend(notes)
             # patches may use pin names, introduce new lib_ids, invalid
             # footprints, or rail nets that still need their supply symbol
+            res.log.extend(normalize_common_symbol_aliases(ir))
+            res.log.extend(enforce_requested_stm32_variant(ir, prompt, self._resolve_symbols(ir)))
+            res.log.extend(sanitize_known_device_nets(ir, self._resolve_symbols(ir)))
+            res.log.extend(ensure_dc_power_entry(ir, dc_rail))
             res.log.extend(self.resolve_pin_names(ir))
             res.log.extend(self.attach_power_symbols(ir, spec))
             res.log.extend(self._ensure_pullups(ir, spec))
             res.log.extend(self._fix_footprints(ir))
-            pr = generate(ir, self.out_dir, symbols=self._resolve_symbols(ir), parts_index=self.parts)
+            pr = self._generate(ir, name)
             res.pipeline = pr
 
         res.ok = pr.ok
@@ -991,6 +1133,7 @@ class Agent:
         from .ir_json import ir_to_json
 
         rec.set("ir", ir_to_json(ir))
+        rec.set("knowledge_trace", self._knowledge_trace)
         rec.set("repairs", res.repairs)
         rec.set("log", res.log)
         rec.set(

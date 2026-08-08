@@ -46,6 +46,32 @@ class MockLLM:
         raise AssertionError(f"unexpected schema: {sorted(req)}")
 
 
+def test_mcu_requirement_gets_missing_3v3_logic_rail():
+    spec = {
+        "power": {"rails": [{"name": "+12V", "voltage": "12V"}, {"name": "GND", "voltage": "0V"}]},
+        "parts_needed": [{"role": "controller", "search_query": "STM32G474"}],
+    }
+    Agent._ensure_logic_rail(spec)
+    assert [r["name"] for r in spec["power"]["rails"]] == ["+12V", "GND", "+3V3"]
+    Agent._ensure_logic_rail(spec)
+    assert [r["name"] for r in spec["power"]["rails"]].count("+3V3") == 1
+
+
+def test_bldc_requirement_restores_missing_driver_count_from_axes():
+    spec = {
+        "parts_needed": [
+            {"role": "controller", "search_query": "STM32G474", "quantity": 1},
+            {"role": "encoder", "search_query": "SPI encoder", "quantity": 4},
+        ],
+        "connections_intent": [],
+    }
+    Agent._ensure_domain_roles("STM32G474 기반 4축 BLDC FOC 보드", spec)
+    drivers = [p for p in spec["parts_needed"] if p["role"] == "bldc_motor_driver"]
+    assert drivers == [{"role": "bldc_motor_driver", "search_query": "BLDC motor driver", "quantity": 4}]
+    Agent._ensure_domain_roles("STM32G474 기반 4축 BLDC FOC 보드", spec)
+    assert sum(p["role"] == "bldc_motor_driver" for p in spec["parts_needed"]) == 1
+
+
 SPEC = {
     "summary": "5V push button lights an LED through a resistor",
     "power": {"rails": [{"name": "+5V", "voltage": "5V"}, {"name": "GND", "voltage": "0V"}]},

@@ -164,7 +164,8 @@ def _check_extended(
             issues.append(
                 _issue("switch_across_rails", "error", ref, f"{ref} connects a power rail directly to ground — closing it shorts the supply; put it in series with the load instead")
             )
-        if sym.reference_prefix == "D" and sorted(k for k in kinds if k) == ["gnd", "power"]:
+        is_tvs = "TVS" in comp.lib_id.upper() or "TVS" in comp.value.upper()
+        if sym.reference_prefix == "D" and not is_tvs and sorted(k for k in kinds if k) == ["gnd", "power"]:
             # knowledge: led-series-resistor — a diode/LED straight across
             # the rails has no current limiting and will be destroyed
             issues.append(

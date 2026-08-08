@@ -17,7 +17,7 @@ model; the pin envelope plus a stub/label margin is a reliable proxy).
 
 from __future__ import annotations
 
-from .geometry import GRID, Placement
+from .geometry import GRID, Placement, pin_stub_end
 from .ir import CircuitIR, SymbolDef
 from .pins import PinType
 
@@ -55,7 +55,7 @@ def grid_place(
 # ---------------------------------------------------------------------------
 
 
-_LABEL_MARGIN = 15.24  # stub (2.54) + label text allowance beyond the pin envelope
+_LABEL_MARGIN = 10.16  # stub (2.54) + ~6-character local label allowance
 
 
 def _unit_extent(sym: SymbolDef, unit: int) -> tuple[float, float]:
@@ -64,7 +64,7 @@ def _unit_extent(sym: SymbolDef, unit: int) -> tuple[float, float]:
     if not pins:
         return (7.62, 7.62)
     ex = max(abs(p.x) for p in pins) + _LABEL_MARGIN
-    ey = max(abs(p.y) for p in pins) + 7.62
+    ey = max(abs(p.y) for p in pins) + 5.08
     return ex, ey
 
 
@@ -141,7 +141,7 @@ def _classify(ir: CircuitIR, symbols: dict[str, SymbolDef]):
 def heuristic_place(
     ir: CircuitIR,
     symbols: dict[str, SymbolDef],
-    origin: tuple[float, float] = (40.64, 55.88),
+    origin: tuple[float, float] = (25.4, 25.4),
 ) -> dict[str, dict[int, Placement]]:
     roles, _ = _classify(ir, symbols)
     placements: dict[str, dict[int, Placement]] = {}
@@ -166,9 +166,12 @@ def heuristic_place(
     for items in grouped.values():
         items.sort(key=lambda ru: (role_order.get(roles.get(ru[0], "mid"), 3), ru[0], ru[1]))
 
-    TILE_CONTENT_W = 145.0
-    SHEET_RIGHT = 555.0
-    H_GAP, V_GAP = 15.24, 15.24
+    # A2 has ample horizontal space but limited usable height.  Wider tiles
+    # keep repeated motor/encoder sections on fewer rows.  Earlier 145 mm
+    # tiles plus 15.24 mm gaps pushed a 69-part board below the A2 border.
+    TILE_CONTENT_W = 140.0
+    SHEET_RIGHT = 570.0
+    H_GAP, V_GAP = 7.62, 7.62
 
     def local_tile(items: list[tuple[str, int]]):
         local: list[tuple[str, int, float, float]] = []
@@ -177,13 +180,13 @@ def heuristic_place(
         max_x = 0.0
         for ref, unit in items:
             ex, ey = _unit_extent(symbols[ir.components[ref].lib_id], unit)
-            width, height = max(2 * ex, 25.4), max(2 * ey, 17.78)
+            width, height = max(2 * ex, 20.32), max(2 * ey, 15.24)
             if x and x + width > TILE_CONTENT_W:
                 x = 0.0
-                y += row_h + 7.62
+                y += row_h + 5.08
                 row_h = 0.0
             local.append((ref, unit, x + width / 2, y + height / 2))
-            x += width + 7.62
+            x += width + 5.08
             row_h = max(row_h, height)
             max_x = max(max_x, x - 7.62)
         return local, max(max_x, 30.48), y + row_h
@@ -201,16 +204,16 @@ def heuristic_place(
         # Reserve a heading band even before textual section headings are
         # emitted; this creates the visual whitespace engineers use between
         # repeated channels.
-        tile_w = width + 10.16
-        tile_h = height + 15.24
+        tile_w = width + 5.08
+        tile_h = height + 7.62
         if tile_x > origin[0] and tile_x + tile_w > SHEET_RIGHT:
             tile_x = origin[0]
             tile_y += row_height + V_GAP
             row_height = 0.0
         for ref, unit, lx, ly in local:
             placements.setdefault(ref, {})[unit] = Placement(
-                x=_snap(tile_x + 5.08 + lx),
-                y=_snap(tile_y + 10.16 + ly),
+                x=_snap(tile_x + 2.54 + lx),
+                y=_snap(tile_y + 5.08 + ly),
                 rotation=0,
             )
         tile_x += tile_w + H_GAP
@@ -222,7 +225,7 @@ def heuristic_place(
     # title-block clearance.
     rail_x = gnd_x = origin[0]
     top_y = max(20.32, origin[1] - 15.24)
-    bottom_y = max_bottom + 12.7
+    bottom_y = max_bottom + 7.62
     for ref in sorted(power_refs):
         role = roles.get(ref)
         if role == "gnd_sym":
@@ -231,5 +234,37 @@ def heuristic_place(
         else:
             placements.setdefault(ref, {})[1] = Placement(_snap(rail_x), _snap(top_y), 0)
             rail_x += 20.32
+
+    # Labels are electrical objects in KiCad: two different labels at the
+    # exact same stub endpoint silently merge their nets. Body-overlap QA
+    # cannot see this. Nudge one whole symbol by one grid until every label
+    # endpoint coordinate belongs to only one net.
+    for _ in range(96):
+        endpoints: dict[tuple[float, float], list[tuple[str, str]]] = {}
+        for net in ir.nets:
+            for ref, pin_no in net.nodes:
+                if ref not in placements:
+                    continue
+                sym = symbols[ir.components[ref].lib_id]
+                try:
+                    pin = sym.pin(str(pin_no))
+                except KeyError:
+                    continue
+                units = placements[ref]
+                unit = pin.unit if pin.unit in units else next(iter(units))
+                end = pin_stub_end(units[unit], pin, 7.62)[1]
+                endpoints.setdefault(end, []).append((net.name, ref))
+        collision = next(
+            (items for items in endpoints.values() if len({n for n, _ in items}) > 1),
+            None,
+        )
+        if collision is None:
+            break
+        refs = [r for _, r in collision if not symbols[ir.components[r].lib_id].is_power]
+        target = sorted(set(refs or [r for _, r in collision]))[-1]
+        placements[target] = {
+            unit: Placement(_snap(p.x + 2 * GRID), p.y, p.rotation, p.mirror)
+            for unit, p in placements[target].items()
+        }
 
     return placements

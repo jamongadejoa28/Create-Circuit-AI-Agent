@@ -10,12 +10,38 @@ revision must never be regenerated in place.
 from __future__ import annotations
 
 import json
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def sha256_file(path: str | Path) -> str | None:
+    """Return a stable content hash, or None when the artifact is absent."""
+    path = Path(path)
+    if not path.is_file():
+        return None
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def sha256_tree(root: str | Path, patterns: tuple[str, ...] = ("*.py",)) -> str:
+    """Hash source paths and contents so benchmark code changes are auditable."""
+    root = Path(root)
+    digest = hashlib.sha256()
+    files = sorted({p for pattern in patterns for p in root.rglob(pattern) if p.is_file()})
+    for path in files:
+        digest.update(path.relative_to(root).as_posix().encode())
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
 
 
 class RunRecord:

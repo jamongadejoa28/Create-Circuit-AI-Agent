@@ -86,6 +86,15 @@ def assign_footprints(
                 continue
 
         filters = (sym.properties.get("ki_fp_filters", "") or "").split()
+        # A few generic KiCad symbols intentionally carry no filters.  Give
+        # them conservative, deterministic package families rather than
+        # preserving a model-invented footprint forever.
+        if not filters:
+            filters = {
+                "Switch:SW_Push": ["SW_SPST*"],
+                "Device:Fuse": ["*Fuse*"],
+                "Device:D_TVS": ["D_*"],
+            }.get(comp.lib_id, [])
         if filters:
             matches = parts.match_footprints(filters, required, limit=1)
             if matches:

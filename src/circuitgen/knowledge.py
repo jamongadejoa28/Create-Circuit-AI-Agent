@@ -16,6 +16,7 @@ a component-selection rule, or a condition an §8.2 ERC rule can consume —
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from pathlib import Path
 
@@ -33,6 +34,32 @@ VALID_TYPES = {
     "device_rule", "circuit_pattern", "selection_guidance",
     "failure_mode", "worked_design", "source_evidence",
 }
+
+_QUERY_STOPWORDS = {
+    "a", "an", "and", "or", "the", "for", "to", "of", "with", "on", "in", "from",
+    # These are either grammatical or dangerously ambiguous in electronics
+    # queries ("CAN" otherwise matches the ordinary English verb in prose).
+    "type", "can", "fd",
+}
+
+
+def _search_tokens(text: str) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[a-z0-9]+", text.lower())
+        if len(token) > 1 and token not in _QUERY_STOPWORDS
+    }
+
+
+def _hit_tokens(entry: dict) -> set[str]:
+    return _search_tokens(
+        " ".join(
+            [
+                entry.get("statement", ""), entry.get("condition", ""),
+                " ".join(entry.get("tags", [])), entry.get("type", ""),
+            ]
+        )
+    )
 
 
 def load_entries(knowledge_dir: Path = KNOWLEDGE_DIR) -> list[dict]:
@@ -103,21 +130,33 @@ class KnowledgeIndex:
             )
         self.con = sqlite3.connect(self.db_path)
 
-    def search_knowledge(self, query: str, limit: int = 3) -> list[dict]:
+    def search_knowledge(
+        self, query: str, limit: int = 3, *, include_score: bool = False,
+        relevance_gate: bool = True,
+    ) -> list[dict]:
         """Trimmed grounding payload for the LLM (context budget, §7.3)."""
         q = _fts_query(query)
         if not q:
             return []
+        # Fetch beyond top-k because the lexical relevance gate may reject
+        # one-token coincidences before the final limit is applied.
+        fetch_limit = max(limit * 4, limit)
         rows = self.con.execute(
             """
-            SELECT e.json FROM entries_fts f JOIN entries e ON e.id = f.id
+            SELECT e.json, bm25(entries_fts) AS score
+            FROM entries_fts f JOIN entries e ON e.id = f.id
             WHERE entries_fts MATCH ? ORDER BY bm25(entries_fts) LIMIT ?
             """,
-            (q, limit),
+            (q, fetch_limit),
         ).fetchall()
         out = []
-        for (raw,) in rows:
+        query_tokens = _search_tokens(query)
+        min_matches = 1 if len(query_tokens) <= 1 else 2
+        for raw_rank, (raw, score) in enumerate(rows, start=1):
             e = json.loads(raw)
+            matched = sorted(query_tokens & _hit_tokens(e))
+            if relevance_gate and len(matched) < min_matches:
+                continue
             item = {
                 "id": e["id"],
                 "type": e["type"],
@@ -130,5 +169,13 @@ class KnowledgeIndex:
                 item["values"] = e["values"]
             if "erc_rule" in e:
                 item["erc_rule"] = e["erc_rule"]
+            if include_score:
+                item["_retrieval"] = {
+                    "rank": len(out) + 1, "raw_rank": raw_rank,
+                    "bm25": score, "matched_tokens": matched,
+                    "query_token_count": len(query_tokens),
+                }
             out.append(item)
+            if len(out) >= limit:
+                break
         return out

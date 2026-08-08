@@ -2,7 +2,7 @@
 	(version 20260306)
 	(generator "circuitgen")
 	(generator_version "0.1.0")
-	(uuid "06384197-fff9-53a4-b581-805a37fa6aa2")
+	(uuid "f8a2cb26-4a5b-578d-b29e-94a763c81a22")
 	(paper "A4")
 	(lib_symbols
 		(symbol "Device:LED"
@@ -888,7 +888,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "a631abfd-0dcb-5c62-813f-22e79f4d3c40")
+		(uuid "da02d29e-1067-59a7-902c-e7d0e96d2185")
 	)
 	(wire
 		(pts
@@ -898,7 +898,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "2a32d0b3-513d-56ff-bbc2-dcc0b2a9ffd9")
+		(uuid "43af50ac-c9d0-5aeb-b388-04dd2cae05ac")
 	)
 	(wire
 		(pts
@@ -908,7 +908,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "665b3c39-6600-5112-b311-dc2462b2076c")
+		(uuid "de87a95e-cc62-5059-b0a7-91794ed2c50f")
 	)
 	(wire
 		(pts
@@ -918,7 +918,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "c12a6def-9f20-5138-a3ba-c56cc03efdc4")
+		(uuid "194fb737-ba63-5d77-85ce-54b252c99b5c")
 	)
 	(wire
 		(pts
@@ -928,7 +928,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "0950c6e2-0a5c-53b8-a9fd-2b99c6604b81")
+		(uuid "d91156c8-999a-5822-8d9f-7d4db0a415e7")
 	)
 	(wire
 		(pts
@@ -938,7 +938,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "b1ba99fd-82c7-52f9-8861-b72885ff2c4d")
+		(uuid "a7ba69eb-1566-5ee6-b3ff-eedc4cdbcf4e")
 	)
 	(wire
 		(pts
@@ -948,7 +948,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "999d8911-5a8e-59b5-afb0-d8d407736f68")
+		(uuid "7a90e019-027c-558e-90b5-9d0afcdb398e")
 	)
 	(wire
 		(pts
@@ -958,7 +958,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "43f06ff6-44bd-5587-81cb-078a3304a0e1")
+		(uuid "393d6183-badb-5092-bfef-e4a944a2da22")
 	)
 	(label "+5V"
 		(at 50.8 63.5 180)
@@ -968,7 +968,7 @@
 			)
 			(justify right bottom)
 		)
-		(uuid "2d54aa9f-0b75-543b-9c55-df206b3841f6")
+		(uuid "a3af4802-2bf5-57ec-9b7e-8dc84e7f9360")
 	)
 	(label "+5V"
 		(at 53.34 68.58 270)
@@ -978,7 +978,7 @@
 			)
 			(justify right bottom)
 		)
-		(uuid "9aed41df-246e-594d-a025-d4c834e54930")
+		(uuid "f4f79993-7bb5-55ba-8a41-55a05c848c28")
 	)
 	(label "+5V"
 		(at 48.26 68.58 270)
@@ -988,7 +988,7 @@
 			)
 			(justify right bottom)
 		)
-		(uuid "2346e026-d51b-579a-98cf-e67c850d397e")
+		(uuid "d091fe1d-8f10-5fd8-97af-f5a3df85bc8d")
 	)
 	(label "SW_R"
 		(at 68.58 63.5 0)
@@ -998,7 +998,7 @@
 			)
 			(justify left bottom)
 		)
-		(uuid "cf748d88-b8c8-5baa-a838-c04459a83899")
+		(uuid "3c429565-fba7-57a2-bf63-bc203b318b10")
 	)
 	(label "R_LED"
 		(at 86.36 63.5 0)
@@ -1008,7 +1008,7 @@
 			)
 			(justify left bottom)
 		)
-		(uuid "dc385357-e2f4-52f1-9835-2e8a5d7cce8a")
+		(uuid "ead32c4a-19d6-54a4-97ee-e0c8d97ccce2")
 	)
 	(label "GND"
 		(at 106.68 63.5 0)
@@ -1018,7 +1018,7 @@
 			)
 			(justify left bottom)
 		)
-		(uuid "380fd825-f64d-5006-8eef-3b1689810485")
+		(uuid "63c68db7-7481-57f7-a744-459f64aa52a6")
 	)
 	(label "GND"
 		(at 105.41 58.42 90)
@@ -1028,7 +1028,7 @@
 			)
 			(justify left bottom)
 		)
-		(uuid "f6da15e8-02fc-59f1-a9b4-7bc15e04b07c")
+		(uuid "0df57a8c-f294-578a-b5e4-eea03695719c")
 	)
 	(label "GND"
 		(at 110.49 73.66 270)
@@ -1038,7 +1038,7 @@
 			)
 			(justify right bottom)
 		)
-		(uuid "d9220db0-0a5a-5276-8b97-f3d122bb9298")
+		(uuid "a1bc09d5-354a-5d88-a7e7-fa87b11cbf0e")
 	)
 	(symbol
 		(lib_id "power:PWR_FLAG")
@@ -1050,7 +1050,7 @@
 		(on_board yes)
 		(in_pos_files yes)
 		(dnp no)
-		(uuid "4a39dddd-175d-55fc-ae35-1d369f611083")
+		(uuid "0d278cc6-9175-5394-b5ee-27ab753e8dc9")
 		(property "Reference" "#FLG01"
 			(at 50.8 58.42 0)
 			(show_name no)
@@ -1106,11 +1106,11 @@
 			)
 		)
 		(pin "1"
-			(uuid "1705630e-60ae-5746-a4a6-1edf13cde863")
+			(uuid "92d95eb3-a16e-5022-8968-b3058bc25235")
 		)
 		(instances
 			(project "golden_led_button"
-				(path "/06384197-fff9-53a4-b581-805a37fa6aa2"
+				(path "/f8a2cb26-4a5b-578d-b29e-94a763c81a22"
 					(reference "#FLG01")
 					(unit 1)
 				)
@@ -1127,7 +1127,7 @@
 		(on_board yes)
 		(in_pos_files yes)
 		(dnp no)
-		(uuid "6ad8a87f-5c17-57fb-8803-36a1de409082")
+		(uuid "9e9eb8a6-9a6d-502a-a55f-7a63ae0d2f43")
 		(property "Reference" "#FLG02"
 			(at 113.03 63.5 0)
 			(show_name no)
@@ -1183,11 +1183,11 @@
 			)
 		)
 		(pin "1"
-			(uuid "b22b9afe-1a47-550d-a544-130c9f90b243")
+			(uuid "2e045a15-54a0-5d8c-b05f-023f5dca306e")
 		)
 		(instances
 			(project "golden_led_button"
-				(path "/06384197-fff9-53a4-b581-805a37fa6aa2"
+				(path "/f8a2cb26-4a5b-578d-b29e-94a763c81a22"
 					(reference "#FLG02")
 					(unit 1)
 				)
@@ -1204,7 +1204,7 @@
 		(on_board yes)
 		(in_pos_files yes)
 		(dnp no)
-		(uuid "ae96207b-194e-56aa-b7a0-6cd95ffc605e")
+		(uuid "f91d30ff-774e-54ae-8ef6-1f475d7bc7a4")
 		(property "Reference" "#PWR01"
 			(at 55.88 58.42 0)
 			(show_name no)
@@ -1260,11 +1260,11 @@
 			)
 		)
 		(pin "1"
-			(uuid "412fb9fa-549c-5d2b-8d5b-6a0624e63391")
+			(uuid "0b520b61-ad30-58bb-b443-4c3aa3eaee5a")
 		)
 		(instances
 			(project "golden_led_button"
-				(path "/06384197-fff9-53a4-b581-805a37fa6aa2"
+				(path "/f8a2cb26-4a5b-578d-b29e-94a763c81a22"
 					(reference "#PWR01")
 					(unit 1)
 				)
@@ -1281,7 +1281,7 @@
 		(on_board yes)
 		(in_pos_files yes)
 		(dnp no)
-		(uuid "020e2e7a-2678-568e-80d8-0b0d7a5089de")
+		(uuid "14ab0f79-d872-5002-ad22-716350537171")
 		(property "Reference" "#PWR02"
 			(at 107.95 63.5 0)
 			(show_name no)
@@ -1337,11 +1337,11 @@
 			)
 		)
 		(pin "1"
-			(uuid "87e2e53f-992b-58b1-8392-d6bfbc65a1ef")
+			(uuid "5824b28d-ac1d-58d8-a745-cc5c76dc3475")
 		)
 		(instances
 			(project "golden_led_button"
-				(path "/06384197-fff9-53a4-b581-805a37fa6aa2"
+				(path "/f8a2cb26-4a5b-578d-b29e-94a763c81a22"
 					(reference "#PWR02")
 					(unit 1)
 				)
@@ -1358,7 +1358,7 @@
 		(on_board yes)
 		(in_pos_files yes)
 		(dnp no)
-		(uuid "697e7e05-86df-5f98-b59b-a36e8672d72c")
+		(uuid "b1eb3bbf-d26d-5a89-9ff8-a27e6ba46fb5")
 		(property "Reference" "D1"
 			(at 97.79 60.96 0)
 			(show_name no)
@@ -1413,14 +1413,14 @@
 			)
 		)
 		(pin "1"
-			(uuid "eb26b579-0a8e-5518-98f0-a1246b41686e")
+			(uuid "999ed395-a5e2-50d6-a1c7-4c358a402524")
 		)
 		(pin "2"
-			(uuid "601d4216-df78-542a-b94b-7ad0fb4d62d8")
+			(uuid "a85cfe80-8bb5-5923-8d0a-82d472240349")
 		)
 		(instances
 			(project "golden_led_button"
-				(path "/06384197-fff9-53a4-b581-805a37fa6aa2"
+				(path "/f8a2cb26-4a5b-578d-b29e-94a763c81a22"
 					(reference "D1")
 					(unit 1)
 				)
@@ -1437,7 +1437,7 @@
 		(on_board yes)
 		(in_pos_files yes)
 		(dnp no)
-		(uuid "a6e146fa-c530-5c4a-9067-ecc3eb20e7e9")
+		(uuid "4e293409-5c85-5843-af1d-c33f531745cf")
 		(property "Reference" "R1"
 			(at 85.09 60.96 0)
 			(show_name no)
@@ -1492,14 +1492,14 @@
 			)
 		)
 		(pin "1"
-			(uuid "ea67a4db-3525-5a95-b76d-30099dfdc064")
+			(uuid "57ddedb7-844c-5e23-8793-bbd90d01e243")
 		)
 		(pin "2"
-			(uuid "694155b3-ebf6-5312-9f73-81b99144a818")
+			(uuid "a40a5670-21ae-5e83-9c42-5c6733ef1236")
 		)
 		(instances
 			(project "golden_led_button"
-				(path "/06384197-fff9-53a4-b581-805a37fa6aa2"
+				(path "/f8a2cb26-4a5b-578d-b29e-94a763c81a22"
 					(reference "R1")
 					(unit 1)
 				)
@@ -1516,7 +1516,7 @@
 		(on_board yes)
 		(in_pos_files yes)
 		(dnp no)
-		(uuid "322d877d-f909-545c-8717-7c9bd980712b")
+		(uuid "c0e32b30-5ac4-5bbb-8cfd-aa0e2bcdd446")
 		(property "Reference" "SW1"
 			(at 66.04 60.96 0)
 			(show_name no)
@@ -1571,14 +1571,14 @@
 			)
 		)
 		(pin "1"
-			(uuid "f0c535db-01dc-5dd5-b14d-a00e26c5e505")
+			(uuid "60225352-880f-566c-9cc3-bb6d96e9907d")
 		)
 		(pin "2"
-			(uuid "c9ae93be-0945-513c-ac9f-ce66e5d70797")
+			(uuid "0b840dfd-82c2-5015-b5c3-2e27533066aa")
 		)
 		(instances
 			(project "golden_led_button"
-				(path "/06384197-fff9-53a4-b581-805a37fa6aa2"
+				(path "/f8a2cb26-4a5b-578d-b29e-94a763c81a22"
 					(reference "SW1")
 					(unit 1)
 				)

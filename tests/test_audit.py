@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from circuitgen.audit import approve_final, is_finally_approved, load_record
+from circuitgen.audit import approve_final, is_finally_approved, load_record, sha256_file, sha256_tree
 from circuitgen.emit import emit_schematic
 from circuitgen.examples import GOLDEN_PLACEMENTS, golden_led_button_ir
 from circuitgen.kicad_cli import KICAD_CLI
@@ -85,3 +85,15 @@ def test_emission_is_deterministic():
     a = emit_schematic(ir1, symbols, GOLDEN_PLACEMENTS)
     b = emit_schematic(ir2, symbols, GOLDEN_PLACEMENTS)
     assert a == b  # byte-identical: uuid5 scheme + stable ordering (§11)
+
+
+def test_audit_hashes_are_content_stable(tmp_path):
+    one = tmp_path / "one.py"
+    one.write_text("x = 1\n")
+    first_file = sha256_file(one)
+    first_tree = sha256_tree(tmp_path)
+    assert first_file and first_tree
+    assert sha256_file(one) == first_file
+    one.write_text("x = 2\n")
+    assert sha256_file(one) != first_file
+    assert sha256_tree(tmp_path) != first_tree

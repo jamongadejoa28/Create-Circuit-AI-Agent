@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .geometry import Placement
+from .geometry import Placement, pin_stub_end
 from .ir import CircuitIR, SymbolDef
 
 
@@ -53,11 +53,30 @@ def check_layout(
         for unit, place in units.items():
             box = _bounds(sym, unit, place)
             boxes.append((ref, unit, box))
-            if box[0] < 8 or box[1] < 8 or box[2] > 586 or box[3] > 385:
-                issues.append(VisualIssue("outside_sheet", f"{ref} unit {unit} exceeds A2 drawing area: {box}"))
+            if box[0] < 8 or box[1] < 8 or box[2] > 833 or box[3] > 559:
+                issues.append(VisualIssue("outside_sheet", f"{ref} unit {unit} exceeds maximum A1 drawing area: {box}"))
     for i, (ra, ua, a) in enumerate(boxes):
         for rb, ub, b in boxes[i + 1 :]:
             # Envelope intersections with positive area are unreadable.
             if min(a[2], b[2]) - max(a[0], b[0]) > 0.2 and min(a[3], b[3]) - max(a[1], b[1]) > 0.2:
                 issues.append(VisualIssue("symbol_overlap", f"{ra}.{ua} overlaps {rb}.{ub}"))
+    endpoints: dict[tuple[float, float], list[tuple[str, str, str]]] = {}
+    for net in ir.nets:
+        for ref, pin_no in net.nodes:
+            if ref not in placements:
+                continue
+            sym = symbols[ir.components[ref].lib_id]
+            try:
+                pin = sym.pin(str(pin_no))
+            except KeyError:
+                continue
+            units = placements[ref]
+            unit = pin.unit if pin.unit in units else next(iter(units))
+            end = pin_stub_end(units[unit], pin, 7.62)[1]
+            endpoints.setdefault(end, []).append((net.name, ref, str(pin_no)))
+    for point, members in endpoints.items():
+        names = {name for name, _, _ in members}
+        if len(names) > 1:
+            detail = ", ".join(f"{name}:{ref}.{pin}" for name, ref, pin in members)
+            issues.append(VisualIssue("label_collision", f"different net labels share {point}: {detail}"))
     return issues
