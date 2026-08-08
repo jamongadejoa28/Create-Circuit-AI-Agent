@@ -1,0 +1,240 @@
+{
+  "id": "can_transceiver_interface",
+  "function": "MCU FDCAN to a TJA1051 transceiver: TXD/RXD cross-wired, jumper-selectable 120R split termination, per-line TVS clamps, bus connector, transceiver decoupling; S tied low for normal mode",
+  "apply_when": [
+    "can 인터페이스",
+    "can interface",
+    "can transceiver",
+    "can 트랜시버",
+    "can-fd",
+    "canfd",
+    "can bus",
+    "can 버스",
+    "can 통신"
+  ],
+  "apply_unless": [
+    "bldc",
+    "foc",
+    "모터",
+    "motor"
+  ],
+  "roles": {
+    "MCU": {
+      "kind": "microcontroller",
+      "lib_id": "MCU_ST_STM32G4:STM32G474RETx",
+      "allow_unbound_pins": true,
+      "pins": {
+        "CAN_TX": {
+          "names": [
+            "PB6"
+          ]
+        },
+        "CAN_RX": {
+          "names": [
+            "PB5"
+          ]
+        }
+      }
+    },
+    "XCVR": {
+      "kind": "transceiver",
+      "lib_id": "Interface_CAN_LIN:TJA1051T",
+      "pins": {
+        "TXD": {
+          "names": [
+            "TXD"
+          ]
+        },
+        "RXD": {
+          "names": [
+            "RXD"
+          ]
+        },
+        "VCC": {
+          "names": [
+            "VCC"
+          ]
+        },
+        "GND": {
+          "names": [
+            "GND"
+          ]
+        },
+        "CANH": {
+          "names": [
+            "CANH"
+          ]
+        },
+        "CANL": {
+          "names": [
+            "CANL"
+          ]
+        },
+        "S": {
+          "names": [
+            "S"
+          ]
+        }
+      }
+    },
+    "C_XCVR": {
+      "kind": "capacitor",
+      "lib_id": "Device:C",
+      "param": "Cxcvr",
+      "default_value": "100nF"
+    },
+    "R_TERM": {
+      "kind": "resistor",
+      "lib_id": "Device:R",
+      "param": "Rterm",
+      "default_value": "120R"
+    },
+    "JP_TERM": {
+      "kind": "connector",
+      "lib_id": "Connector_Generic:Conn_01x02",
+      "pins": {
+        "1": {},
+        "2": {}
+      }
+    },
+    "TVS_H": {
+      "kind": "diode",
+      "lib_id": "Device:D_TVS",
+      "pins": {
+        "1": {},
+        "2": {}
+      }
+    },
+    "TVS_L": {
+      "kind": "diode",
+      "lib_id": "Device:D_TVS",
+      "pins": {
+        "1": {},
+        "2": {}
+      }
+    },
+    "J_CAN": {
+      "kind": "connector",
+      "lib_id": "Connector_Generic:Conn_01x02",
+      "pins": {
+        "1": {},
+        "2": {}
+      }
+    }
+  },
+  "ports": [
+    "VCC",
+    "GND",
+    "CANH",
+    "CANL"
+  ],
+  "rail_ports": {
+    "VCC": "highest_supply"
+  },
+  "topology": [
+    [
+      "MCU.CAN_TX",
+      "XCVR.TXD"
+    ],
+    [
+      "XCVR.RXD",
+      "MCU.CAN_RX"
+    ],
+    [
+      "XCVR.VCC",
+      "VCC"
+    ],
+    [
+      "C_XCVR.1",
+      "VCC"
+    ],
+    [
+      "C_XCVR.2",
+      "GND"
+    ],
+    [
+      "XCVR.GND",
+      "GND"
+    ],
+    [
+      "XCVR.S",
+      "GND"
+    ],
+    [
+      "XCVR.CANH",
+      "CANH"
+    ],
+    [
+      "CANH",
+      "J_CAN.1"
+    ],
+    [
+      "CANH",
+      "TVS_H.1"
+    ],
+    [
+      "TVS_H.2",
+      "GND"
+    ],
+    [
+      "CANH",
+      "R_TERM.1"
+    ],
+    [
+      "R_TERM.2",
+      "JP_TERM.1"
+    ],
+    [
+      "JP_TERM.2",
+      "CANL"
+    ],
+    [
+      "XCVR.CANL",
+      "CANL"
+    ],
+    [
+      "CANL",
+      "J_CAN.2"
+    ],
+    [
+      "CANL",
+      "TVS_L.1"
+    ],
+    [
+      "TVS_L.2",
+      "GND"
+    ]
+  ],
+  "params": {
+    "Rterm": "120R node termination, engaged by the JP_TERM jumper only at bus ends",
+    "Cxcvr": "100nF local bypass at the transceiver supply"
+  },
+  "required_wired": [
+    [
+      "MCU.CAN_TX",
+      "XCVR.TXD"
+    ],
+    [
+      "XCVR.RXD",
+      "MCU.CAN_RX"
+    ],
+    [
+      "R_TERM.2",
+      "JP_TERM.1"
+    ]
+  ],
+  "placement": {
+    "inputs": [
+      "MCU"
+    ],
+    "outputs": [
+      "J_CAN"
+    ]
+  },
+  "source": {
+    "book": "circuitgen pattern fixtures (kicad-cli ERC-verified)",
+    "section": "tests/test_agent.py CAN pattern E2E; FDCAN2 PB5/PB6 assignment per apply_stm32g474ret6_foc_pinmap rationale (normalize.py: AF9, avoids HRTIM bank); TJA1051 pin functions per sanitize_known_device_nets whitelist",
+    "tier": "A"
+  },
+  "status": "verified"
+}

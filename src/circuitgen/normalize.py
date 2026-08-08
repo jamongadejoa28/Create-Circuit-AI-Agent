@@ -870,10 +870,22 @@ def ensure_drv8311h_operating_network(
 
 def ensure_canfd_bus_protection(ir: CircuitIR) -> list[str]:
     """Add CANH/CANL connector, selectable 120R termination and TVS parts."""
-    if not any("TJA1051" in c.lib_id.upper() for c in ir.components.values()):
+    xcvr = next(
+        (r for r, c in ir.components.items() if "TJA1051" in c.lib_id.upper()), None
+    )
+    if xcvr is None:
         return []
     if any(c.value == "CAN_FD" for c in ir.components.values()):
         return []
+    # the CAN pattern (or a previous round) may already protect the bus —
+    # a second termination/TVS set on fresh 'CANH'/'CANL' nets would be
+    # disconnected duplicates (measured: pattern + this rule collided)
+    xcvr_nets = {n.name for n in ir.nets if any(r == xcvr for r, _p in n.nodes)}
+    for r, c in ir.components.items():
+        if c.lib_id == "Device:D_TVS" or c.value == "120R":
+            comp_nets = {n.name for n in ir.nets if any(rr == r for rr, _p in n.nodes)}
+            if comp_nets & xcvr_nets:
+                return []
     notes: list[str] = []
 
     def next_ref(prefix: str) -> str:

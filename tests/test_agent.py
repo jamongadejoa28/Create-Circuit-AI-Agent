@@ -121,7 +121,7 @@ def agent_env(tmp_path_factory):
     for name in (
         "Device", "Switch", "power", "Amplifier_Operational",
         "Connector_Generic", "Regulator_Linear", "MCU_ST_STM32G4",
-        "Sensor_Temperature",
+        "Sensor_Temperature", "Interface_CAN_LIN",
     ):
         src = library_path(KICAD_SYMBOL_DIR, name)
         if src.is_dir():
@@ -565,3 +565,43 @@ def test_dropped_power_capacitor_is_restored_not_fatal(agent_env):
     assert ("C1", "1") in nets["+3V3"] and ("C1", "2") in nets["GND"]
     assert exempt == {"series_resistor"}
     assert any("restored dropped passive role" in n for n in log)
+
+
+def test_pattern_synthesis_builds_can_interface(agent_env):
+    parts, knowledge, tmp = agent_env
+    spec = {
+        "summary": "MCU CAN interface with transceiver, selectable termination, TVS and connector",
+        "power": {"rails": [
+            {"name": "+3V3", "voltage": "3.3V"},
+            {"name": "GND", "voltage": "0V"},
+            {"name": "+5V", "voltage": "5V"},
+        ]},
+        "parts_needed": [
+            {"role": "microcontroller", "search_query": "STM32 microcontroller"},
+            {"role": "CAN transceiver", "search_query": "CAN transceiver"},
+            {"role": "termination resistor", "search_query": "resistor", "value": "120R"},
+            {"role": "bus connector", "search_query": "connector"},
+        ],
+        "connections_intent": ["CAN bus with selectable 120R termination and TVS protection"],
+    }
+    llm = MockLLM(spec=spec)
+    agent = Agent(llm, parts, knowledge, tmp / "out-can-pattern")
+    res = agent.run(
+        "MCU용 CAN 인터페이스를 만들어줘. 트랜시버, 종단 선택, TVS와 커넥터 포함",
+        name="agent_can",
+    )
+    assert any("pattern synthesis: can_transceiver_interface" in n for n in res.log), res.log[-10:]
+    assert llm.calls == ["spec"], llm.calls
+    assert res.ok, (res.stage, res.log[-8:], res.pipeline.errors if res.pipeline else None)
+    assert res.pipeline.kicad_erc.ok
+    assert res.pipeline.connectivity_ok
+    # transceiver VCC landed on the HIGHEST rail (TJA1051 is a 5V part)
+    vcc_net = next(n for n in res.ir.nets if any(
+        r == "U2" and p == "3" for r, p in n.nodes) or any(
+        res.ir.components.get(r, None) and res.ir.components[r].lib_id.startswith("Interface_CAN_LIN")
+        and p == "3" for r, p in n.nodes))
+    assert vcc_net.name == "+5V", vcc_net.name
+    # termination is jumper-selectable: R120 in series with the jumper header
+    r_term = next(r for r, c in res.ir.components.items() if c.value == "120R")
+    term_nets = [n.name for n in res.ir.nets if any(r == r_term for r, _p in n.nodes)]
+    assert len(term_nets) == 2

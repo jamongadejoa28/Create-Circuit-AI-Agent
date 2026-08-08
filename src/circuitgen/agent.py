@@ -1945,12 +1945,23 @@ class Agent:
             log.append(f"pattern verify failed: {'; '.join(issues)} — LLM fallback")
             return None
 
-        # signal ports need a physical anchor; rails get power symbols later
+        # signal ports need a physical anchor; rails get power symbols later.
+        # A port whose net already reaches a connector inside the pattern
+        # (CAN bus lines on J_CAN) is anchored by design — a second header
+        # paired with GND would be a duplicate.
         rail_names = {"GND", "0V", "VSS", supply.upper()}
         jn = 0
         for port in pattern.get("ports", []):
             net = ports.get(port, port)
             if net.upper() in rail_names or net.startswith("+"):
+                continue
+            if any(
+                ir.components[r].lib_id.startswith("Connector")
+                for n in ir.nets
+                if n.name == net
+                for r, _p in n.nodes
+                if r in ir.components
+            ):
                 continue
             jn += 1
             ref = f"J{jn}"
