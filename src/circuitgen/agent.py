@@ -1594,6 +1594,19 @@ class Agent:
             # and the spec's role names are an LLM paraphrase of the same
             # parts — the name-presence gate would only false-abort
             if not ctx.get("pattern"):
+                # ctx candidates can go stale when the spec's role keys are
+                # renamed mid-flow; a catalogued role judged 'uncatalogued'
+                # would be answered with a junk Conceptual box (measured:
+                # two 100nF decoupling roles). Re-gather from the index —
+                # the index is ground truth, the ctx dict is a cache.
+                cands = ctx.setdefault("candidates", {})
+                for p in spec.get("parts_needed", []):
+                    role = str(p.get("role", ""))
+                    if role and not cands.get(role) and p.get("search_query"):
+                        fresh = self.parts.search_parts(str(p["search_query"]), 5)
+                        if fresh:
+                            cands[role] = fresh
+                            res.log.append(f"re-gathered candidates for role {role!r}")
                 self._ensure_conceptual_devices(
                     [p["role"] for p in spec.get("parts_needed", [])],
                     spec,
