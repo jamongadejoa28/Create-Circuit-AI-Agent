@@ -373,3 +373,29 @@ def test_limit_main_device_copies_respects_role_quantity(agent_env):
         ir2, {"mystery": [{"lib_id": "Driver_Motor:DRV8311H"}]}, spec
     )
     assert sorted(ir2.components) == ["U1", "U2"] and notes2 == []
+
+
+def test_repair_gate_rejects_error_level_pin_conflicts(agent_env):
+    from circuitgen.ir import PinDef, SymbolDef
+    from circuitgen.pins import PinType
+
+    parts, knowledge, tmp = agent_env
+    agent = Agent(MockLLM(), parts, knowledge, tmp / "conflict-gate")
+    ir = CircuitIR("c")
+    ir.add(Component("U1", "X:ENC", "ENC1"))
+    ir.add(Component("U2", "X:ENC", "ENC2"))
+    ir.connect("SPI_MISO", ("U1", "3"))
+
+    enc = SymbolDef("X:ENC", "", [
+        PinDef("3", "MISO", PinType.OUTPUT, 0, 0, 0, 2.54),
+        PinDef("4", "CS", PinType.INPUT, 0, 2.54, 0, 2.54),
+    ])
+    agent._resolve_symbols = lambda _ir: {"X:ENC": enc}
+
+    ops = [
+        {"op": "connect", "ref": "U2", "pin": "3", "net": "SPI_MISO"},  # OUTPUT x OUTPUT
+        {"op": "connect", "ref": "U2", "pin": "4", "net": "SPI_MISO"},  # INPUT: fine
+    ]
+    kept, notes = agent._filter_ops(ir, ops, ["unconnected pin U2.3", "unconnected pin U2.4"])
+    assert [(o["pin"], o["net"]) for o in kept] == [("4", "SPI_MISO")]
+    assert any("conflicts with U1.3" in n for n in notes)

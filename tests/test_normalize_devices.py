@@ -303,3 +303,29 @@ def test_merge_dangling_interface_nets():
     assert ("U2", "4") in [(r, p) for r, p in spi.nodes]
     # untouched: already-connected net
     assert len(next(n for n in ir.nets if n.name == "ENC1_CS").nodes) == 2
+
+
+def test_stacked_pins_join_their_wired_sibling_net():
+    from circuitgen.normalize import unify_stacked_pins
+
+    sym = SymbolDef("Filter:Stacky", "", [
+        PinDef("1", "IN", PinType.INPUT, -10.16, 0, 0, 2.54),
+        PinDef("4", "V-", PinType.PWRIN, 0, -17.78, 90, 2.54),
+        PinDef("7", "V-", PinType.PWRIN, 0, -17.78, 90, 2.54),
+        PinDef("14", "V-", PinType.PWRIN, 0, -17.78, 90, 2.54),
+    ])
+    ir = CircuitIR("stack")
+    ir.add(Component("U1", "Filter:Stacky", "F"))
+    ir.connect("GND", ("U1", "4"))
+    ir.nc_pins = [("U1", "14")]
+    notes = unify_stacked_pins(ir, {"Filter:Stacky": sym})
+    gnd = next(n for n in ir.nets if n.name == "GND")
+    assert {p for _r, p in gnd.nodes} == {"4", "7", "14"}
+    assert ("U1", "14") not in ir.nc_pins
+    assert len(notes) == 2
+    # members on different nets = real short: left alone for self-ERC
+    ir2 = CircuitIR("short")
+    ir2.add(Component("U1", "Filter:Stacky", "F"))
+    ir2.connect("GND", ("U1", "4"))
+    ir2.connect("+3V3", ("U1", "7"))
+    assert unify_stacked_pins(ir2, {"Filter:Stacky": sym}) == []

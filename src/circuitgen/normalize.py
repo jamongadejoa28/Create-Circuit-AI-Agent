@@ -77,6 +77,47 @@ def merge_dangling_interface_nets(ir: CircuitIR) -> list[str]:
     return notes
 
 
+def unify_stacked_pins(ir: CircuitIR, symbols: dict[str, SymbolDef]) -> list[str]:
+    """Pins stacked at one coordinate are one physical node — wire them as one.
+
+    Library symbols stack duplicate supply pins (STM32 VSS 31/47/63,
+    LTC1562 V- 4/7/14/16/17) at the exact same (x, y). Coordinate-matching
+    connectivity means any wire or stub reaching one of them reaches ALL of
+    them, so an IR that wires only a subset round-trips with extra pins
+    (measured: ENC_Z1 gained U11.14/16/17). If exactly one net touches a
+    stack, the remaining members join it; members on different nets are a
+    genuine short and are left for self-ERC to report."""
+    notes: list[str] = []
+    net_of: dict[tuple[str, str], str] = {}
+    for net in ir.nets:
+        for r, p in net.nodes:
+            net_of[(r, str(p))] = net.name
+    for ref, comp in ir.components.items():
+        sym = symbols.get(comp.lib_id)
+        if sym is None or sym.is_power:
+            continue
+        stacks: dict[tuple[int, float, float], list] = {}
+        for pin in sym.pins:
+            stacks.setdefault((pin.unit, pin.x, pin.y), []).append(pin)
+        for group in stacks.values():
+            if len(group) < 2:
+                continue
+            nets = {net_of[(ref, p.number)] for p in group if (ref, p.number) in net_of}
+            if len(nets) != 1:
+                continue  # 0: all dangling; >1: real short, self-ERC reports it
+            target = next(iter(nets))
+            for pin in group:
+                if (ref, pin.number) in net_of:
+                    continue
+                ir.connect(target, (ref, pin.number))
+                net_of[(ref, pin.number)] = target
+                ir.nc_pins = [n for n in ir.nc_pins if n != (ref, pin.number)]
+                notes.append(
+                    f"{ref}.{pin.number}: stacked with wired pin — joined net {target}"
+                )
+    return notes
+
+
 def enforce_requested_stm32_variant(
     ir: CircuitIR, prompt: str, symbols: dict[str, SymbolDef]
 ) -> list[str]:

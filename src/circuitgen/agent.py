@@ -1137,6 +1137,36 @@ class Agent:
                             f"to supply net {op.get('net')!r}"
                         )
                         continue
+                    # ported SKIDL conflict matrix: refuse a connect that
+                    # creates an ERROR-level pin conflict with any existing
+                    # member (measured: a repair round bused four encoder
+                    # MISO OUTPUT pins onto one shared SPI_MISO net).
+                    # PWR_FLAG members are bookkeeping, not real drivers.
+                    from .pins import ERROR as _ERR, pin_conflict
+
+                    new_pin = sym.pin(str(op.get("pin", "")))
+                    conflict = None
+                    for net in ir.nets:
+                        if net.name != str(op.get("net", "")):
+                            continue
+                        for mr, mp in net.nodes:
+                            mc = ir.components.get(mr)
+                            msym = symbols.get(mc.lib_id) if mc else None
+                            if msym is None or mc.lib_id == "power:PWR_FLAG":
+                                continue
+                            try:
+                                metype = msym.pin(str(mp)).etype
+                            except KeyError:
+                                continue
+                            if pin_conflict(new_pin.etype, metype)[0] == _ERR:
+                                conflict = f"{mr}.{mp} ({metype.name})"
+                                break
+                    if conflict:
+                        notes.append(
+                            f"rejected op: connect {ref}.{op.get('pin')} ({etype}) "
+                            f"conflicts with {conflict} on net {op.get('net')!r}"
+                        )
+                        continue
             if kind == "add_component":
                 lid = op.get("lib_id", "")
                 generic = lid.startswith(("Device:", "power:", "Conceptual:"))
@@ -1467,6 +1497,7 @@ class Agent:
             ensure_stm32g4_system_support,
             mark_documented_no_connects,
             ensure_relay_flyback,
+            unify_stacked_pins,
         )
 
         symbols = self._resolve_symbols(ir)
@@ -1485,6 +1516,7 @@ class Agent:
         res.log.extend(mark_documented_no_connects(ir, self._resolve_symbols(ir)))
         res.log.extend(ensure_relay_flyback(ir, self._resolve_symbols(ir)))
         res.log.extend(self.resolve_pin_names(ir))
+        res.log.extend(unify_stacked_pins(ir, self._resolve_symbols(ir)))
         res.log.extend(self._ensure_pullups(ir, spec))
         res.log.extend(self._fix_footprints(ir))
 
@@ -1545,6 +1577,7 @@ class Agent:
             res.log.extend(self._ensure_pullups(ir, spec))
             res.log.extend(mark_documented_no_connects(ir, self._resolve_symbols(ir)))
             res.log.extend(ensure_relay_flyback(ir, self._resolve_symbols(ir)))
+            res.log.extend(unify_stacked_pins(ir, self._resolve_symbols(ir)))
             res.log.extend(self._fix_footprints(ir))
             pr = self._generate(ir, name)
             res.pipeline = pr
