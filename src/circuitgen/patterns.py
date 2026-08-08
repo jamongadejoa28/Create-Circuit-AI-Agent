@@ -127,15 +127,40 @@ def match_patterns(text: str, patterns: dict[str, dict]) -> list[dict]:
     ]
 
 
+def bind_role_pins(pattern: dict, role: str, sym: SymbolDef) -> dict[str, str] | None:
+    """Resolve one role's pin keys onto real pin NUMBERS of a symbol.
+
+    Pin matching mirrors topology.py: cleaned-name match first, then a unique
+    electrical type. Returns None if ANY pin stays unresolved — a partial
+    pattern is worse than no pattern.
+    """
+    pin_map: dict[str, str] = {}
+    used: set[str] = set()
+    for key, spec in _role_pins(pattern, role).items():
+        names = {n.upper() for n in spec.get("names", [])} or {key.upper()}
+        hit = next(
+            (p for p in sym.pins if _clean(p.name) in names and p.number not in used),
+            None,
+        )
+        if hit is None and spec.get("etype"):
+            typed = [
+                p for p in sym.pins
+                if p.etype.name == spec["etype"] and p.number not in used
+            ]
+            hit = typed[0] if len(typed) == 1 else None
+        if hit is None and key in ("1", "2"):
+            hit = next((p for p in sym.pins if p.number == key), None)
+        if hit is None:
+            return None
+        pin_map[key] = hit.number
+        used.add(hit.number)
+    return pin_map
+
+
 def bind_pattern(
     pattern: dict, role_symbols: dict[str, tuple[str, SymbolDef]]
 ) -> tuple[PatternBinding | None, list[str]]:
-    """Resolve every role's pin keys onto real pin NUMBERS of the given symbols.
-
-    Pin matching mirrors topology.py: cleaned-name match first, then a unique
-    electrical type. Any unresolved pin fails the whole binding — a partial
-    pattern is worse than no pattern.
-    """
+    """Resolve every role onto the given symbols; all-or-nothing."""
     binding = PatternBinding()
     errors: list[str] = []
     for role in pattern["roles"]:
@@ -143,28 +168,11 @@ def bind_pattern(
             errors.append(f"role {role}: no symbol supplied")
             continue
         lib_id, sym = role_symbols[role]
+        pin_map = bind_role_pins(pattern, role, sym)
+        if pin_map is None:
+            errors.append(f"role {role}: pins unresolved on {lib_id}")
+            continue
         binding.lib_ids[role] = lib_id
-        pin_map: dict[str, str] = {}
-        used: set[str] = set()
-        for key, spec in _role_pins(pattern, role).items():
-            names = {n.upper() for n in spec.get("names", [])} or {key.upper()}
-            hit = next(
-                (p for p in sym.pins if _clean(p.name) in names and p.number not in used),
-                None,
-            )
-            if hit is None and spec.get("etype"):
-                typed = [
-                    p for p in sym.pins
-                    if p.etype.name == spec["etype"] and p.number not in used
-                ]
-                hit = typed[0] if len(typed) == 1 else None
-            if hit is None and key in ("1", "2"):
-                hit = next((p for p in sym.pins if p.number == key), None)
-            if hit is None:
-                errors.append(f"role {role}: pin {key!r} unresolved on {lib_id}")
-                continue
-            pin_map[key] = hit.number
-            used.add(hit.number)
         binding.pins[role] = pin_map
     return (None, errors) if errors else (binding, [])
 

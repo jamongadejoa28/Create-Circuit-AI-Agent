@@ -1297,8 +1297,16 @@ class Agent:
         else:
             rec.approve("requirements", "auto", "no approver configured — auto-approved")
 
+        # Cited-pattern fast path: a textbook topology instantiated
+        # deterministically beats a free-form 7B netlist whenever exactly
+        # one pattern matches; any failure falls back to LLM synthesis.
+        pattern_result = self._pattern_synthesis(prompt, spec, name, res.log)
+
         use_blocks = len(spec.get("parts_needed", [])) >= BLOCK_THRESHOLD
-        if use_blocks:
+        if pattern_result is not None:
+            res.stage = "pattern-synthesis"
+            ir, ctx = pattern_result
+        elif use_blocks:
             from .blocks import instantiate_blocks, validate_block_template
 
             res.stage = "block-plan"
@@ -1607,6 +1615,137 @@ class Agent:
         rec.event("finished", ok=res.ok, stage=res.stage)
         rec.save()
         return res
+
+    def _pattern_synthesis(
+        self, prompt: str, spec: dict, name: str, log: list[str]
+    ) -> tuple[CircuitIR, dict] | None:
+        """Deterministic synthesis from a cited CircuitPattern.
+
+        Fires only when EXACTLY one pattern matches the request text. Roles
+        bind to catalog symbols by pin capability (first candidate that
+        resolves every pin wins); the textbook topology is instantiated and
+        verified, signal ports get I/O connectors, and the contract gate
+        must confirm the result. ANY failure returns None — the normal LLM
+        path takes over, never an abort.
+        """
+        from .contracts import infer_contracts, validate_contracts
+        from .patterns import (
+            PatternBinding,
+            bind_role_pins,
+            instantiate_pattern,
+            load_patterns,
+            match_patterns,
+            verify_pattern_instance,
+        )
+
+        if getattr(self, "_patterns", None) is None:
+            try:
+                self._patterns = load_patterns()
+            except Exception as e:
+                log.append(f"pattern library unavailable: {e}")
+                self._patterns = {}
+        if not self._patterns:
+            return None
+        text = prompt + " " + json.dumps(spec, ensure_ascii=False)
+        hits = match_patterns(text, self._patterns)
+        if len(hits) != 1:
+            return None
+        pattern = hits[0]
+        log.append(
+            f"pattern match: {pattern['id']} ({pattern['source']['book']}, "
+            f"{pattern['source']['section']})"
+        )
+
+        binding = PatternBinding()
+        prefix_of = {"resistor": "R", "capacitor": "C", "inductor": "L",
+                     "ferrite_bead": "FB", "diode": "D"}
+        for role, rspec in pattern["roles"].items():
+            fixed = rspec.get("lib_id")
+            cands = [fixed] if fixed else [
+                h["lib_id"]
+                for h in self.parts.search_parts(
+                    rspec.get("query", rspec.get("kind", "")), limit=6
+                )
+                if not h.get("is_power")
+            ]
+            bound = None
+            for lid in cands:
+                try:
+                    sym = self.parts.load_symbols([lid])[lid]
+                except Exception:
+                    continue
+                pins = bind_role_pins(pattern, role, sym)
+                if pins is not None:
+                    bound = (lid, pins)
+                    break
+            if bound is None:
+                log.append(f"pattern {pattern['id']}: role {role} unbindable — LLM fallback")
+                return None
+            binding.lib_ids[role], binding.pins[role] = bound
+            log.append(f"pattern bind: {role} -> {bound[0]}")
+
+        rails = [r.get("name") for r in spec.get("power", {}).get("rails", [])]
+        supply = next(
+            (r for r in rails if r and r.upper() not in ("GND", "0V", "VSS")), "+3V3"
+        )
+        ports = {"VCC": supply} if "VCC" in pattern.get("ports", []) else {}
+
+        ir = CircuitIR(name)
+        counters: dict[str, int] = {}
+        refs: dict[str, str] = {}
+        for role, rspec in pattern["roles"].items():
+            pfx = prefix_of.get(rspec.get("kind", ""), "U")
+            counters[pfx] = counters.get(pfx, 0) + 1
+            refs[role] = f"{pfx}{counters[pfx]}"
+
+        def requested_value(param: str) -> str | None:
+            pl = param.lower()
+            for p in spec.get("parts_needed", []):
+                blob = f"{p.get('role', '')} {p.get('search_query', '')}".lower()
+                if p.get("value") and pl and pl in blob:
+                    return str(p["value"])
+            return None
+
+        values = {
+            rspec["param"]: requested_value(rspec["param"])
+            for rspec in pattern["roles"].values()
+            if rspec.get("param") and requested_value(rspec["param"])
+        }
+        try:
+            log.extend(instantiate_pattern(ir, pattern, binding, refs, ports, values=values))
+        except Exception as e:
+            log.append(f"pattern instantiation failed: {e} — LLM fallback")
+            return None
+        issues = verify_pattern_instance(ir, pattern, binding, refs, ports)
+        if issues:
+            log.append(f"pattern verify failed: {'; '.join(issues)} — LLM fallback")
+            return None
+
+        # signal ports need a physical anchor; rails get power symbols later
+        rail_names = {"GND", "0V", "VSS", supply.upper()}
+        jn = 0
+        for port in pattern.get("ports", []):
+            net = ports.get(port, port)
+            if net.upper() in rail_names or net.startswith("+"):
+                continue
+            jn += 1
+            ref = f"J{jn}"
+            ir.add(Component(
+                ref, "Connector_Generic:Conn_01x02", net,
+                "Connector_PinHeader_2.54mm:PinHeader_1x02_P2.54mm_Vertical",
+                pattern["id"].upper(),
+            ))
+            ir.connect(net, (ref, "1"))
+            ir.connect("GND", (ref, "2"))
+            log.append(f"pattern port {port}: anchored by connector {ref}")
+
+        contracts = infer_contracts(spec)
+        issues = validate_contracts(ir, self._resolve_symbols(ir), contracts)
+        if issues:
+            log.append(f"pattern contract check failed: {'; '.join(issues)} — LLM fallback")
+            return None
+        log.append(f"pattern synthesis: {pattern['id']} instantiated deterministically")
+        return ir, {"candidates": {}, "contracts": contracts}
 
     def _limit_main_device_copies(
         self, ir: CircuitIR, candidates: dict[str, list[dict]], spec: dict | None = None

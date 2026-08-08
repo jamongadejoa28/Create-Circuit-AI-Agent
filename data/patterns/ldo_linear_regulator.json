@@ -40,12 +40,14 @@
     "CIN": {
       "kind": "capacitor",
       "lib_id": "Device:C",
-      "param": "Cin"
+      "param": "Cin",
+      "default_value": "10uF"
     },
     "COUT": {
       "kind": "capacitor",
       "lib_id": "Device:C",
-      "param": "Cout"
+      "param": "Cout",
+      "default_value": "22uF"
     }
   },
   "ports": [

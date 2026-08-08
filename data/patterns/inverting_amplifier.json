@@ -51,12 +51,14 @@
     "RIN": {
       "kind": "resistor",
       "lib_id": "Device:R",
-      "param": "Ri"
+      "param": "Ri",
+      "default_value": "10k"
     },
     "RF": {
       "kind": "resistor",
       "lib_id": "Device:R",
-      "param": "Rf"
+      "param": "Rf",
+      "default_value": "100k"
     }
   },
   "ports": [

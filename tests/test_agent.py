@@ -118,7 +118,7 @@ def agent_env(tmp_path_factory):
     tmp = tmp_path_factory.mktemp("agent")
     subset = tmp / "libs"
     subset.mkdir()
-    for name in ("Device", "Switch", "power"):
+    for name in ("Device", "Switch", "power", "Amplifier_Operational", "Connector_Generic"):
         src = library_path(KICAD_SYMBOL_DIR, name)
         if src.is_dir():
             shutil.copytree(src, subset / src.name)
@@ -399,3 +399,28 @@ def test_repair_gate_rejects_error_level_pin_conflicts(agent_env):
     kept, notes = agent._filter_ops(ir, ops, ["unconnected pin U2.3", "unconnected pin U2.4"])
     assert [(o["pin"], o["net"]) for o in kept] == [("4", "SPI_MISO")]
     assert any("conflicts with U1.3" in n for n in notes)
+
+
+def test_pattern_synthesis_replaces_llm_for_matched_textbook_circuit(agent_env):
+    parts, knowledge, tmp = agent_env
+    spec = {
+        "summary": "3.3V 비반전 증폭기",
+        "power": {"rails": [{"name": "+3V3", "voltage": "3.3V"}, {"name": "GND", "voltage": "0V"}]},
+        "parts_needed": [
+            {"role": "opamp", "search_query": "operational amplifier"},
+            {"role": "feedback_resistor Rf", "search_query": "resistor", "value": "100k"},
+            {"role": "ground_resistor Rg", "search_query": "resistor", "value": "10k"},
+        ],
+        "connections_intent": ["non-inverting amplifier, gain 11"],
+    }
+    llm = MockLLM(spec=spec)  # NO canned IR: pattern path must not need one
+    agent = Agent(llm, parts, knowledge, tmp / "out-pattern")
+    res = agent.run("3.3V 비반전 증폭 회로를 만들어줘", name="agent_noninv")
+    assert any("pattern synthesis: noninverting_amplifier" in n for n in res.log), res.log
+    assert llm.calls == ["spec"]  # no IR synthesis, no repairs
+    assert res.ok, (res.stage, res.log[-8:], res.pipeline.errors if res.pipeline else None)
+    assert res.pipeline.kicad_erc.ok
+    assert res.pipeline.connectivity_ok
+    # requested values flowed from the spec into the pattern params
+    assert res.ir.components["R1"].value == "100k"
+    assert res.ir.components["R2"].value == "10k"
