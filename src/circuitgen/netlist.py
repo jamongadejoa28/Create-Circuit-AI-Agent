@@ -18,11 +18,8 @@ from simp_sexp import Sexp
 
 from .ir import CircuitIR, SymbolDef
 from .pins import PIN_TYPE_TO_KICAD
+from .sexpr import esc as _esc
 from .uuids import uuid_for
-
-
-def _esc(s: str) -> str:
-    return s.replace("\\", "\\\\").replace('"', '\\"')
 
 
 def generate_netlist(ir: CircuitIR, symbols: dict[str, SymbolDef]) -> str:

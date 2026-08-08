@@ -9,6 +9,7 @@ no KiCad serialization assumptions.
 from __future__ import annotations
 
 import heapq
+from functools import lru_cache
 from dataclasses import dataclass, field
 
 Point = tuple[float, float]
@@ -28,6 +29,11 @@ def _snap(point: Point, grid: float) -> tuple[int, int]:
 
 def _world(point: tuple[int, int], grid: float) -> Point:
     return round(point[0] * grid, 4), round(point[1] * grid, 4)
+
+
+@lru_cache(maxsize=32)
+def _blocked_cells_cached(obstacles: tuple[Box, ...], grid: float, clearance: float) -> frozenset[tuple[int, int]]:
+    return frozenset(_blocked_cells(list(obstacles), grid, clearance))
 
 
 def _blocked_cells(obstacles: list[Box], grid: float, clearance: float) -> set[tuple[int, int]]:
@@ -52,31 +58,43 @@ def _astar(
     bounds: tuple[int, int, int, int],
     bend_cost: float,
 ) -> list[tuple[int, int]] | None:
-    """Route start to the nearest goal; state includes arrival direction."""
+    """Route start to the nearest goal; state includes arrival direction.
+
+    The search runs BACKWARDS — every goal cell seeds the frontier and the
+    single `start` is the target — purely so the heuristic is a Manhattan
+    distance to one point instead of a min() over the goal set. The goal set
+    is the growing route tree, so the forward form recomputed that min on
+    every node expansion (measured: 1.35M generator calls, 44% of A* time).
+    A path's bend count is orientation-independent, so both directions cost
+    the same; the result is re-reversed to keep the start->goal orientation.
+    """
     min_x, min_y, max_x, max_y = bounds
+    gx, gy = start  # the single target of the backward search
     queue: list[tuple[float, float, int, int, int, int]] = []
-    heapq.heappush(queue, (0.0, 0.0, start[0], start[1], 0, 0))
-    parent: dict[tuple[int, int, int, int], tuple[int, int, int, int] | None] = {
-        (start[0], start[1], 0, 0): None
-    }
-    best: dict[tuple[int, int, int, int], float] = {(start[0], start[1], 0, 0): 0.0}
+    parent: dict[tuple[int, int, int, int], tuple[int, int, int, int] | None] = {}
+    best: dict[tuple[int, int, int, int], float] = {}
+    for sx, sy in goals:
+        seed = (sx, sy, 0, 0)
+        parent[seed] = None
+        best[seed] = 0.0
+        heapq.heappush(queue, (float(abs(sx - gx) + abs(sy - gy)), 0.0, sx, sy, 0, 0))
     while queue:
         _f, cost, x, y, pdx, pdy = heapq.heappop(queue)
         state = (x, y, pdx, pdy)
         if cost != best.get(state):
             continue
-        if (x, y) in goals:
+        if (x, y) == start:
             path = []
             cur = state
             while cur is not None:
                 path.append((cur[0], cur[1]))
                 cur = parent[cur]
-            return list(reversed(path))
+            return path  # already target->source == start->goal
         for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
             nxt = (x + dx, y + dy)
             if not (min_x <= nxt[0] <= max_x and min_y <= nxt[1] <= max_y):
                 continue
-            if nxt in blocked and nxt not in goals:
+            if nxt in blocked and nxt != start:
                 continue
             step = 1.0 + (bend_cost if (pdx or pdy) and (dx, dy) != (pdx, pdy) else 0.0)
             ns = (nxt[0], nxt[1], dx, dy)
@@ -85,7 +103,7 @@ def _astar(
                 continue
             best[ns] = nc
             parent[ns] = state
-            heuristic = min(abs(nxt[0] - gx) + abs(nxt[1] - gy) for gx, gy in goals)
+            heuristic = abs(nxt[0] - gx) + abs(nxt[1] - gy)
             heapq.heappush(queue, (nc + heuristic, nc, nxt[0], nxt[1], dx, dy))
     return None
 
@@ -126,7 +144,9 @@ def route_multi_terminal(
     if len(terminals) < 2:
         return RouteTree()
     grid_terms = [_snap(p, grid) for p in terminals]
-    blocked = _blocked_cells(obstacles, grid, clearance)
+    # every net on a sheet rasterizes the SAME obstacle list; without the
+    # cache this sheet-wide raster was rebuilt once per net
+    blocked = set(_blocked_cells_cached(tuple(obstacles), grid, clearance))
     for p in blocked_points or ():
         blocked.add(_snap(p, grid))
     blocked -= set(grid_terms)

@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 
 from .geometry import GRID, Placement, pin_absolute_position, pin_outward_dir, pin_stub_end
 from .ir import CircuitIR, SymbolDef
+from .sexpr import esc as _esc
 from .uuids import uuid_for
 
 SCH_VERSION = 20260306
@@ -44,17 +45,6 @@ def _fmt(v: float) -> str:
     """KiCad-style number: no trailing zeros, ints without decimal point."""
     s = f"{v:.4f}".rstrip("0").rstrip(".")
     return s if s != "-0" else "0"
-
-
-def _esc(s: str) -> str:
-    """Match KiCad's OUTPUTFORMATTER::Quotes (common/richio.cpp): a raw
-    newline inside a quoted token makes DSNLEXER reject the entire file."""
-    return (
-        s.replace("\\", "\\\\")
-        .replace('"', '\\"')
-        .replace("\n", "\\n")
-        .replace("\r", "\\r")
-    )
 
 
 @dataclass

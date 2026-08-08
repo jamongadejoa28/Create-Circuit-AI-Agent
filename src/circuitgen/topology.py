@@ -98,11 +98,6 @@ def _named_pin(sym: SymbolDef, names: set[str]):
     return next((p for p in sym.pins if _clean(p.name) in names), None)
 
 
-def _unique_pin_type(sym: SymbolDef, etype_name: str):
-    pins = [p for p in sym.pins if p.etype.name == etype_name]
-    return pins[0] if len(pins) == 1 else None
-
-
 def analyze_topology(ir: CircuitIR, symbols: dict[str, SymbolDef]) -> TopologyReport:
     """Return functional observations without changing or rejecting the IR."""
     report = TopologyReport()
