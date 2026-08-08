@@ -1794,11 +1794,25 @@ class Agent:
         ports = {"VCC": supply} if "VCC" in pattern.get("ports", []) else {}
         # power patterns name their rails through ports (regulator VIN/VOUT
         # ARE the spec's input/output rails — measured: unmapped ports left
-        # +12V/+5V without nets and the rails never got supply symbols)
+        # +12V/+5V without nets and the rails never got supply symbols).
+        # Mapping is voltage-aware, not order-luck: highest_supply = the
+        # rail with the largest parsed voltage (regulator input, relay
+        # coil), lowest_supply = the smallest (regulator output).
+        def _volt(rail: str) -> float:
+            s = str(rail)
+            m = re.search(r"(\d+)V(\d+)", s)  # 3V3 / 1V8 notation
+            if m:
+                return float(f"{m.group(1)}.{m.group(2)}")
+            m = re.search(r"(\d+(?:\.\d+)?)", s)
+            return float(m.group(1)) if m else 0.0
+
+        ranked = sorted(supplies, key=_volt)
         for port, kind in pattern.get("rail_ports", {}).items():
-            if not supplies:
+            if not ranked:
                 continue
-            ports[port] = supplies[0] if kind == "supply_input" else supplies[-1]
+            ports[port] = (
+                ranked[-1] if kind in ("highest_supply", "supply_input") else ranked[0]
+            )
 
         ir = CircuitIR(name)
         counters: dict[str, int] = {}

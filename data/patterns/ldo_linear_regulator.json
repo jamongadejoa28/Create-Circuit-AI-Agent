@@ -106,7 +106,7 @@
   },
   "status": "verified",
   "rail_ports": {
-    "VIN": "supply_input",
-    "VOUT": "supply_output"
+    "VIN": "highest_supply",
+    "VOUT": "lowest_supply"
   }
 }

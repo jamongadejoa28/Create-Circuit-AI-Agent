@@ -148,8 +148,13 @@ def bind_role_pins(pattern: dict, role: str, sym: SymbolDef) -> dict[str, str] |
                 if p.etype.name == spec["etype"] and p.number not in used
             ]
             hit = typed[0] if len(typed) == 1 else None
-        if hit is None and key in ("1", "2"):
-            hit = next((p for p in sym.pins if p.number == key), None)
+        if hit is None:
+            # key-as-number: passives ("1"/"2") and IEC-numbered pins with
+            # blank names (relay coils A1/A2, contacts 13/14)
+            hit = next(
+                (p for p in sym.pins if p.number == key and p.number not in used),
+                None,
+            )
         if hit is None:
             return None
         pin_map[key] = hit.number

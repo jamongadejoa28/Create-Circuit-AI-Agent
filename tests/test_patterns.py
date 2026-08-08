@@ -151,3 +151,31 @@ def test_ldo_pattern_binds_ams1117():
     assert verify_pattern_instance(ir, pattern, binding, refs, ports) == []
     plus12 = next(n for n in ir.nets if n.name == "+12V")
     assert ("U1", "3") in plus12.nodes and ("C1", "1") in plus12.nodes
+
+
+@oracle
+def test_relay_driver_binds_and_verifies():
+    patterns = load_patterns(PATTERN_DIR)
+    pattern = patterns["relay_driver"]
+    lib_ids = {
+        "Q": "Transistor_BJT:BC337",
+        "RB": "Device:R",
+        "D": "Device:D",
+        "K1": "Relay:Relay_SPST-NO",
+        "LOAD": "Connector_Generic:Conn_01x02",
+    }
+    symbols = load_symbols(sorted(set(lib_ids.values())))
+    binding, errors = bind_pattern(
+        pattern, {role: (lid, symbols[lid]) for role, lid in lib_ids.items()}
+    )
+    assert errors == [], errors
+    assert binding.pins["Q"] == {"B": "2", "C": "1", "E": "3"}
+    assert binding.pins["K1"] == {"A1": "A1", "A2": "A2", "13": "13", "14": "14"}
+
+    ir = CircuitIR("relay_t")
+    refs = {"Q": "Q1", "RB": "R1", "D": "D1", "K1": "K1", "LOAD": "J1"}
+    ports = {"VCOIL": "+12V"}
+    instantiate_pattern(ir, pattern, binding, refs, ports)
+    assert verify_pattern_instance(ir, pattern, binding, refs, ports) == []
+    coil_low = next(n for n in ir.nets if ("Q1", "1") in n.nodes)  # collector
+    assert ("D1", "2") in coil_low.nodes and ("K1", "A2") in coil_low.nodes
