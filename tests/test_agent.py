@@ -466,3 +466,29 @@ def test_header_roles_fall_back_to_generic_connectors(agent_env):
     hits = candidates["UART_DEBUG_HEADER"]
     assert hits, "header role must never come back empty"
     assert all(h["lib_id"].startswith("Connector_Generic:") for h in hits)
+
+
+def test_conceptual_device_injected_for_uncatalogued_role(agent_env):
+    parts, knowledge, tmp = agent_env
+    agent = Agent(MockLLM(), parts, knowledge, tmp / "concept")
+    spec = {
+        "parts_needed": [
+            {"role": "my_custom_radio", "search_query": "__conceptual__MY_CUSTOM_RADIO", "quantity": 1},
+            {"role": "cap", "search_query": "capacitor", "value": "100nF"},
+        ],
+    }
+    ir = CircuitIR("c")
+    ir.add(Component("C1", "Device:C", "100nF"))
+    log: list = []
+    agent._ensure_conceptual_devices(
+        ["my_custom_radio", "cap"], spec, ir,
+        {"my_custom_radio": [], "cap": [{"lib_id": "Device:C"}]}, log,
+    )
+    boxes = [c for c in ir.components.values() if c.lib_id.startswith("Conceptual:")]
+    assert len(boxes) == 1 and boxes[0].lib_id == "Conceptual:MY_CUSTOM_RADIO"
+    assert any("conceptual device injected" in n for n in log)
+    # idempotent
+    agent._ensure_conceptual_devices(
+        ["my_custom_radio"], spec, ir, {"my_custom_radio": []}, log,
+    )
+    assert sum(c.lib_id.startswith("Conceptual:") for c in ir.components.values()) == 1

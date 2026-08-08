@@ -1349,6 +1349,13 @@ class Agent:
                             spec, block, catalog, f"{name}_{block['id']}",
                             contract_feedback=contract_feedback,
                         )
+                        self._ensure_conceptual_devices(
+                            block.get("roles", []),
+                            bctx.get("sub_spec", spec),
+                            bir,
+                            bctx.get("candidates", {}),
+                            res.log,
+                        )
                         issues = validate_block_template(
                             block, bir, bctx.get("candidates", {})
                         )
@@ -1430,6 +1437,13 @@ class Agent:
                     from .blocks import validate_block_template
                     from .contracts import repair_contracts, validate_contracts
 
+                    self._ensure_conceptual_devices(
+                        [p["role"] for p in spec.get("parts_needed", [])],
+                        spec,
+                        ir,
+                        ctx.get("candidates", {}),
+                        res.log,
+                    )
                     symbols = self._resolve_symbols(ir)
                     issues = validate_block_template(
                         {"id": "CIRCUIT", "roles": [p["role"] for p in spec.get("parts_needed", [])]},
@@ -1632,6 +1646,42 @@ class Agent:
         rec.event("finished", ok=res.ok, stage=res.stage)
         rec.save()
         return res
+
+    def _ensure_conceptual_devices(
+        self,
+        roles: list[str],
+        spec: dict,
+        ir: CircuitIR,
+        candidates: dict[str, list[dict]],
+        log: list[str],
+    ) -> None:
+        """Inject a Conceptual box for every uncatalogued role the model
+        failed to instantiate.
+
+        The completeness gate demands one conceptual device per role
+        without catalog candidates; 7B reliably DROPS the unfamiliar part
+        instead (measured: MY_CUSTOM_RADIO block synthesized only R/C twice
+        and hard-aborted). The explicit-box policy says such parts must
+        appear as dashed conceptual symbols — so place them
+        deterministically and let interface wiring/repair connect them."""
+        by_role = {str(p.get("role", "")): p for p in spec.get("parts_needed", [])}
+        for role in roles:
+            if candidates.get(role):
+                continue
+            need = by_role.get(role, {})
+            sq = str(need.get("search_query", "") or role)
+            base = sq[len("__conceptual__"):] if sq.startswith("__conceptual__") else sq
+            token = re.sub(r"[^A-Za-z0-9_]", "_", base).strip("_") or "MODULE"
+            lib = f"Conceptual:{token}"
+            if any(c.lib_id == lib for c in ir.components.values()):
+                continue
+            ref = token[:12].upper()
+            n = 1
+            while ref in ir.components:
+                n += 1
+                ref = f"{token[:10].upper()}{n}"
+            ir.add(Component(ref, lib, token, "", (need.get("role") or "CONCEPTUAL").upper()[:16]))
+            log.append(f"conceptual device injected for uncatalogued role {role!r}: {ref} ({lib})")
 
     def _pattern_synthesis(
         self, prompt: str, spec: dict, name: str, log: list[str]
