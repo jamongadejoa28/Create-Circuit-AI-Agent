@@ -605,20 +605,33 @@ def complete_known_device_pins(
 def mark_documented_no_connects(
     ir: CircuitIR, symbols: dict[str, SymbolDef]
 ) -> list[str]:
-    """Mark library-declared NOCONNECT pins without device-specific rules."""
+    """Library-declared NOCONNECT pins are marked NC — and forcibly
+    DISCONNECTED if a model wired them anyway. A wired documented-NC pin
+    is never right, and half-fixing it (NC marker + live net) renders as
+    KiCad no_connect_connected (measured: Si7050 hidden pins 3/4)."""
     notes: list[str] = []
-    connected = {(r, str(p)) for net in ir.nets for r, p in net.nodes}
     existing = {(r, str(p)) for r, p in ir.nc_pins}
     for ref, comp in ir.components.items():
         sym = symbols.get(comp.lib_id)
         if sym is None:
             continue
         for pin in sym.pins:
+            if pin.etype != PinType.NOCONNECT:
+                continue
             node = (ref, pin.number)
-            if pin.etype == PinType.NOCONNECT and node not in connected and node not in existing:
+            was_wired = False
+            for net in ir.nets:
+                if node in net.nodes:
+                    net.nodes = [n for n in net.nodes if n != node]
+                    was_wired = True
+            if was_wired:
+                ir.nets = [n for n in ir.nets if n.nodes]
+                notes.append(f"disconnected documented NC {ref}.{pin.number}")
+            if node not in existing:
                 ir.nc_pins.append(node)
                 existing.add(node)
-                notes.append(f"marked documented NC {ref}.{pin.number}")
+                if not was_wired:
+                    notes.append(f"marked documented NC {ref}.{pin.number}")
     return notes
 
 

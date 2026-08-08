@@ -451,3 +451,18 @@ def test_pattern_synthesis_maps_regulator_ports_to_spec_rails(agent_env):
     # regulator ports landed on the SPEC rails, not literal VIN/VOUT
     names = {n.name for n in res.ir.nets}
     assert "+12V" in names and "+5V" in names and "VIN" not in names
+
+
+def test_header_roles_fall_back_to_generic_connectors(agent_env):
+    parts, knowledge, tmp = agent_env
+    agent = Agent(MockLLM(), parts, knowledge, tmp / "hdr")
+    spec = {
+        "summary": "uart debug",
+        "power": {"rails": [{"name": "+3V3", "voltage": "3.3V"}, {"name": "GND", "voltage": "0V"}]},
+        "parts_needed": [{"role": "UART_DEBUG_HEADER", "search_query": "UART header", "quantity": 1}],
+        "connections_intent": [],
+    }
+    candidates, _snippets, _pins = agent._gather(spec)
+    hits = candidates["UART_DEBUG_HEADER"]
+    assert hits, "header role must never come back empty"
+    assert all(h["lib_id"].startswith("Connector_Generic:") for h in hits)

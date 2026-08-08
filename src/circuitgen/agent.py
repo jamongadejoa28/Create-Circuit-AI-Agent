@@ -399,6 +399,19 @@ class Agent:
                     self.parts.search_parts(query, 12),
                 )
                 hits = self._rank_simple_regulators(hits)[:CANDIDATES_PER_QUERY]
+            # Debug/interface headers are plain pin headers; domain-worded
+            # queries ("UART header") find nothing and the empty role then
+            # hard-aborts the run at the completeness gate (measured:
+            # debug_uart case). Fall back to generic connectors.
+            if not hits and any(w in intent for w in ("header", "connector", "커넥터", "헤더")):
+                hits = [
+                    h for h in self.parts.search_parts("pin header connector", 20)
+                    if h.get("lib_id", "").startswith("Connector_Generic:")
+                ][:CANDIDATES_PER_QUERY] or [{
+                    "lib_id": "Connector_Generic:Conn_01x04",
+                    "description": "generic 4-pin header (deterministic fallback)",
+                    "reference_prefix": "J",
+                }]
             candidates[need["role"]] = hits
 
         topics = [n["search_query"] for n in spec.get("parts_needed", [])]

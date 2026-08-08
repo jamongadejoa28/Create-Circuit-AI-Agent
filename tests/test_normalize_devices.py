@@ -329,3 +329,21 @@ def test_stacked_pins_join_their_wired_sibling_net():
     ir2.connect("GND", ("U1", "4"))
     ir2.connect("+3V3", ("U1", "7"))
     assert unify_stacked_pins(ir2, {"Filter:Stacky": sym}) == []
+
+
+def test_documented_nc_pins_are_forcibly_disconnected():
+    from circuitgen.normalize import mark_documented_no_connects
+
+    sym = _sym("Sensor:X", [
+        (1, "SDA", PinType.BIDIR),
+        (3, "NC", PinType.NOCONNECT),
+    ])
+    ir = CircuitIR("nc")
+    ir.add(Component("U1", "Sensor:X", "X"))
+    ir.connect("SDA", ("U1", "1"))
+    ir.connect("STRAY", ("U1", "3"))  # model wired a documented-NC pin
+    notes = mark_documented_no_connects(ir, {"Sensor:X": sym})
+    assert any("disconnected documented NC U1.3" in n for n in notes)
+    assert not any((r, p) == ("U1", "3") for n in ir.nets for r, p in n.nodes)
+    assert ("U1", "3") in ir.nc_pins
+    assert any(n.name == "SDA" for n in ir.nets)  # untouched
