@@ -251,8 +251,28 @@ def sanitize_known_device_nets(
             return exact + rail + ground + len(pin_tokens & net_tokens), -unique.index(name)
 
         keep = max(unique, key=score)
+        # A 2-pin passive with BOTH nets piled on one pin and the other pin
+        # dangling: the model meant the series connection — reassign the
+        # loser net to the free pin instead of dropping it (measured:
+        # passive_led lost its R->LED link this way, 1 ERC from perfect).
+        free_pin = None
+        if sym is not None and len(sym.pins) == 2 and len(unique) == 2:
+            other = next((p.number for p in sym.pins if p.number != str(pin)), None)
+            if other is not None and (ref, other) not in owners:
+                free_pin = other
         for name in unique:
-            if name != keep:
+            if name == keep:
+                continue
+            if free_pin is not None:
+                for net in ir.nets:
+                    if net.name == name:
+                        net.nodes = [n for n in net.nodes if n != (ref, str(pin))]
+                        net.nodes.append((ref, free_pin))
+                notes.append(
+                    f"moved {ref}.{pin} duplicate membership {name} to free pin {ref}.{free_pin}"
+                )
+                free_pin = None
+            else:
                 remove(ref, pin, name, f"one-net-per-pin; kept {keep}")
     # A catalog leak can leave a PWR_FLAG as the sole node of its net.
     orphan_flags = set()

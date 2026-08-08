@@ -1593,6 +1593,14 @@ class Agent:
             # topology + contract validation already proved completeness,
             # and the spec's role names are an LLM paraphrase of the same
             # parts — the name-presence gate would only false-abort
+            if not ctx.get("pattern"):
+                self._ensure_conceptual_devices(
+                    [p["role"] for p in spec.get("parts_needed", [])],
+                    spec,
+                    ir,
+                    ctx.get("candidates", {}),
+                    res.log,
+                )
             completeness = [] if ctx.get("pattern") else validate_block_template(
                 {"id": "CIRCUIT", "roles": [p["role"] for p in spec.get("parts_needed", [])]},
                 ir,

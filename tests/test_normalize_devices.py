@@ -347,3 +347,23 @@ def test_documented_nc_pins_are_forcibly_disconnected():
     assert not any((r, p) == ("U1", "3") for n in ir.nets for r, p in n.nodes)
     assert ("U1", "3") in ir.nc_pins
     assert any(n.name == "SDA" for n in ir.nets)  # untouched
+
+
+def test_duplicate_pin_membership_moves_to_free_pin_of_two_pin_passive():
+    from circuitgen.normalize import sanitize_known_device_nets
+
+    r = _sym("Device:R", [(1, "~", PinType.PASSIVE), (2, "~", PinType.PASSIVE)])
+    led = _sym("Device:LED", [(1, "K", PinType.PASSIVE), (2, "A", PinType.PASSIVE)])
+    ir = CircuitIR("dup")
+    ir.add(Component("R1", "Device:R", "330R"))
+    ir.add(Component("D1", "Device:LED", "LED"))
+    # model piled both nets on R1.2; R1.1 dangles
+    ir.connect("SW_R", ("R1", "2"))
+    ir.connect("R_LED", ("R1", "2"), ("D1", "2"))
+    notes = sanitize_known_device_nets(ir, {"Device:R": r, "Device:LED": led})
+    assert any("moved R1.2 duplicate membership" in n for n in notes), notes
+    nets = {n.name: sorted(n.nodes) for n in ir.nets}
+    # one membership stays on pin 2, the other lands on the free pin 1
+    all_r1 = sorted(node for n in ir.nets for node in n.nodes if node[0] == "R1")
+    assert all_r1 == [("R1", "1"), ("R1", "2")]
+    assert ("D1", "2") in nets["R_LED"]
