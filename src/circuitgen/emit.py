@@ -65,6 +65,34 @@ class EmitPlan:
     labels: list[tuple[str, float, float, int, str]] = field(default_factory=list)  # text,x,y,rot,justify
     junctions: list[tuple[float, float]] = field(default_factory=list)
     no_connects: list[tuple[float, float]] = field(default_factory=list)
+    net_routes: dict[str, str] = field(default_factory=dict)  # net -> direct|l|tree|stubs
+
+
+def route_metrics(ir: CircuitIR, symbols: dict[str, SymbolDef], plan: EmitPlan) -> dict:
+    """Net-level wiring quality — wire-object counts overstate coverage
+    (one tree is many segments). Power nets are excluded: they follow the
+    power-symbol convention, not solid routing."""
+    signal = [
+        net.name for net in ir.nets
+        if len(net.nodes) >= 2
+        and not any(
+            symbols[ir.components[r].lib_id].is_power
+            for r, _p in net.nodes
+            if r in ir.components and ir.components[r].lib_id in symbols
+        )
+    ]
+    wired = [n for n in signal if plan.net_routes.get(n) in ("direct", "l", "tree")]
+    return {
+        "signal_nets": len(signal),
+        "wired_nets": len(wired),
+        "stub_nets": len(signal) - len(wired),
+        "wired_ratio": round(len(wired) / len(signal), 3) if signal else None,
+        "junctions": len(plan.junctions),
+        "by_kind": {
+            kind: sum(1 for n in signal if plan.net_routes.get(n) == kind)
+            for kind in ("direct", "l", "tree", "stubs")
+        },
+    }
 
 
 def _label_orientation(dx: float, dy: float) -> tuple[int, str]:
@@ -418,6 +446,7 @@ def build_emit_plan(
         if direct is not None:
             (x1, y1), (x2, y2) = direct
             plan.wires.append(((x1, y1), (x2, y2), f"net.{net.name}"))
+            plan.net_routes[net.name] = "direct"
             routed_cells.update(_segment_cells((x1, y1), (x2, y2)))
             # name label on the wire itself — without it KiCad auto-names
             # the net (Net-(D1-A)) and the by-name round-trip loses the IR
@@ -430,6 +459,7 @@ def build_emit_plan(
             a, corner, b = l_route
             plan.wires.append((a, corner, f"net.{net.name}.a"))
             plan.wires.append((corner, b, f"net.{net.name}.b"))
+            plan.net_routes[net.name] = "l"
             rot, justify = _label_orientation(corner[0] - a[0], corner[1] - a[1])
             plan.labels.append((net.name, a[0], a[1], rot, justify))
             for w in plan.wires[-2:]:
@@ -444,9 +474,11 @@ def build_emit_plan(
                 plan.wires.append((a, b, f"net.{net.name}.t{i}"))
                 routed_cells.update(_segment_cells(a, b))
             plan.junctions.extend(junctions)
+            plan.net_routes[net.name] = "tree"
             rot, justify = _label_orientation(*label_dir)
             plan.labels.append((net.name, label_at[0], label_at[1], rot, justify))
             continue
+        plan.net_routes[net.name] = "stubs"
         for ref, pin_no in net.nodes:
             comp = ir.components[ref]
             sym = symbols[comp.lib_id]

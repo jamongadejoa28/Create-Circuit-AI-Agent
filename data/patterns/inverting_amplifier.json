@@ -1,0 +1,139 @@
+{
+  "id": "inverting_amplifier",
+  "function": "Amplifies VIN by -Rf/Ri; noninverting input grounded, virtual-ground summing node at IN-",
+  "apply_when": [
+    "inverting amplifier",
+    "반전 증폭"
+  ],
+  "roles": {
+    "AMP": {
+      "kind": "amplifier",
+      "query": "operational amplifier",
+      "pins": {
+        "OUT": {
+          "names": [
+            "OUT",
+            "OUTPUT",
+            "VOUT"
+          ],
+          "etype": "OUTPUT"
+        },
+        "IN+": {
+          "names": [
+            "+",
+            "IN+",
+            "VIN+"
+          ]
+        },
+        "IN-": {
+          "names": [
+            "-",
+            "IN-",
+            "VIN-"
+          ]
+        },
+        "V+": {
+          "names": [
+            "V+",
+            "VDD",
+            "VCC"
+          ]
+        },
+        "V-": {
+          "names": [
+            "V-",
+            "VSS",
+            "VEE"
+          ]
+        }
+      }
+    },
+    "RIN": {
+      "kind": "resistor",
+      "lib_id": "Device:R",
+      "param": "Ri"
+    },
+    "RF": {
+      "kind": "resistor",
+      "lib_id": "Device:R",
+      "param": "Rf"
+    }
+  },
+  "ports": [
+    "VIN",
+    "VOUT",
+    "VCC",
+    "GND"
+  ],
+  "topology": [
+    [
+      "VIN",
+      "RIN.1"
+    ],
+    [
+      "RIN.2",
+      "AMP.IN-"
+    ],
+    [
+      "AMP.OUT",
+      "RF.1"
+    ],
+    [
+      "RF.2",
+      "AMP.IN-"
+    ],
+    [
+      "AMP.IN+",
+      "GND"
+    ],
+    [
+      "AMP.OUT",
+      "VOUT"
+    ],
+    [
+      "AMP.V+",
+      "VCC"
+    ],
+    [
+      "AMP.V-",
+      "GND"
+    ]
+  ],
+  "params": {
+    "gain": "-Rf/Ri"
+  },
+  "required_wired": [
+    [
+      "RIN.2",
+      "AMP.IN-"
+    ],
+    [
+      "AMP.OUT",
+      "RF.1"
+    ],
+    [
+      "RF.2",
+      "AMP.IN-"
+    ]
+  ],
+  "placement": {
+    "inputs": [
+      "VIN"
+    ],
+    "outputs": [
+      "VOUT"
+    ]
+  },
+  "source": {
+    "book": "Fundamentals of Electric Circuits, 7th International Student Edition (Alexander & Sadiku)",
+    "section": "5.4 Inverting Amplifier (Eq. 5.9, Example 5.3)",
+    "pdf_page_index": 205,
+    "tier": "A"
+  },
+  "status": "verified",
+  "apply_unless": [
+    "non-inverting",
+    "noninverting",
+    "비반전"
+  ]
+}

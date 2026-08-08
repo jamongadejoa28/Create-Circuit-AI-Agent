@@ -1,0 +1,41 @@
+{
+  "id": "noninverting_amplifier",
+  "function": "Amplifies VIN by 1 + Rf/Rg with high input impedance; Rf=0/Rg=open degenerates to a unity-gain follower",
+  "apply_when": ["non-inverting amplifier", "noninverting amplifier", "비반전 증폭"],
+  "roles": {
+    "AMP": {
+      "kind": "amplifier",
+      "query": "operational amplifier",
+      "pins": {
+        "OUT": {"names": ["OUT", "OUTPUT", "VOUT"], "etype": "OUTPUT"},
+        "IN+": {"names": ["+", "IN+", "VIN+"]},
+        "IN-": {"names": ["-", "IN-", "VIN-"]},
+        "V+": {"names": ["V+", "VDD", "VCC"]},
+        "V-": {"names": ["V-", "VSS", "VEE"]}
+      }
+    },
+    "RF": {"kind": "resistor", "lib_id": "Device:R", "param": "Rf"},
+    "RG": {"kind": "resistor", "lib_id": "Device:R", "param": "Rg"}
+  },
+  "ports": ["VIN", "VOUT", "VCC", "GND"],
+  "topology": [
+    ["VIN", "AMP.IN+"],
+    ["AMP.OUT", "RF.1"],
+    ["RF.2", "AMP.IN-"],
+    ["AMP.IN-", "RG.1"],
+    ["RG.2", "GND"],
+    ["AMP.OUT", "VOUT"],
+    ["AMP.V+", "VCC"],
+    ["AMP.V-", "GND"]
+  ],
+  "params": {"gain": "1 + Rf/Rg"},
+  "required_wired": [["AMP.OUT", "RF.1"], ["RF.2", "AMP.IN-"], ["AMP.IN-", "RG.1"]],
+  "placement": {"inputs": ["VIN"], "outputs": ["VOUT"]},
+  "source": {
+    "book": "Fundamentals of Electric Circuits, 7th International Student Edition (Alexander & Sadiku)",
+    "section": "5.5 Noninverting Amplifier (Eqs. 5.11-5.12)",
+    "pdf_page_index": 207,
+    "tier": "A"
+  },
+  "status": "verified"
+}

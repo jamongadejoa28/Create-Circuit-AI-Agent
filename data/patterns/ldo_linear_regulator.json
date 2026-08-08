@@ -1,0 +1,106 @@
+{
+  "id": "ldo_linear_regulator",
+  "function": "Series linear regulator with mandatory input/output capacitors (spike removal, stability)",
+  "apply_when": [
+    "ldo",
+    "linear regulator",
+    "voltage regulator",
+    "레귤레이터"
+  ],
+  "roles": {
+    "REG": {
+      "kind": "regulator",
+      "query": "linear voltage regulator",
+      "pins": {
+        "IN": {
+          "names": [
+            "IN",
+            "VIN",
+            "VI",
+            "INPUT"
+          ]
+        },
+        "OUT": {
+          "names": [
+            "OUT",
+            "VOUT",
+            "VO",
+            "OUTPUT"
+          ]
+        },
+        "GND": {
+          "names": [
+            "GND",
+            "VSS",
+            "0V"
+          ]
+        }
+      }
+    },
+    "CIN": {
+      "kind": "capacitor",
+      "lib_id": "Device:C",
+      "param": "Cin"
+    },
+    "COUT": {
+      "kind": "capacitor",
+      "lib_id": "Device:C",
+      "param": "Cout"
+    }
+  },
+  "ports": [
+    "VIN",
+    "VOUT",
+    "GND"
+  ],
+  "topology": [
+    [
+      "VIN",
+      "REG.IN"
+    ],
+    [
+      "REG.OUT",
+      "VOUT"
+    ],
+    [
+      "REG.GND",
+      "GND"
+    ],
+    [
+      "CIN.1",
+      "VIN"
+    ],
+    [
+      "CIN.2",
+      "GND"
+    ],
+    [
+      "COUT.1",
+      "VOUT"
+    ],
+    [
+      "COUT.2",
+      "GND"
+    ]
+  ],
+  "params": {
+    "Cin": "input bypass near the regulator",
+    "Cout": "output stability/transient capacitor"
+  },
+  "required_wired": [],
+  "placement": {
+    "inputs": [
+      "VIN"
+    ],
+    "outputs": [
+      "VOUT"
+    ]
+  },
+  "source": {
+    "book": "Practical Electronics for Inventors, 4th Ed. (Scherz & Monk)",
+    "section": "11.1.1-11.1.2 Regulator ICs; 11.5 (Fig 11.9); 11.6 Ripple Reduction",
+    "pdf_page_index": 1135,
+    "tier": "A"
+  },
+  "status": "verified"
+}
