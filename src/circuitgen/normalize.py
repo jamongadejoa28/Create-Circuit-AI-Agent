@@ -326,6 +326,7 @@ def ensure_bus_pullups(
         return out
 
     counter = 1
+    claimed: set[str] = set()
 
     def next_ref() -> str:
         nonlocal counter
@@ -344,6 +345,34 @@ def ensure_bus_pullups(
         if not (is_i2c or is_cs):
             continue
         if has_pullup(net):
+            continue
+        # Reuse an intended-but-miswired pull-up before adding another part.
+        # Small models often put both resistor pins on GND, or leave one pin
+        # open after one-net-per-pin sanitization. A resistor already touching
+        # this bus or GND is a safer candidate than duplicating it.
+        reuse = None
+        for rref, comp in ir.components.items():
+            sym = symbols.get(comp.lib_id)
+            if rref in claimed or sym is None or sym.reference_prefix != "R" or len(sym.pins) != 2:
+                continue
+            touched = {
+                n.name for n in ir.nets if any(r == rref for r, _ in n.nodes)
+            }
+            if touched and touched <= {net.name, "GND", plus_rail}:
+                reuse = rref
+                break
+        if reuse:
+            rsym = symbols[ir.components[reuse].lib_id]
+            for existing in ir.nets:
+                existing.nodes = [node for node in existing.nodes if node[0] != reuse]
+            net.nodes.append((reuse, rsym.pins[0].number))
+            ir.connect(plus_rail, (reuse, rsym.pins[1].number))
+            ir.nc_pins = [node for node in ir.nc_pins if node[0] != reuse]
+            claimed.add(reuse)
+            kind = "I2C" if is_i2c else "chip-select"
+            notes.append(
+                f"rewired {reuse} as {kind} pull-up on {net.name} to {plus_rail}"
+            )
             continue
         ref = next_ref()
         ir.add(Component(ref, "Device:R", "10k"))
@@ -529,6 +558,63 @@ def complete_known_device_pins(
             for pin in sym.pins:
                 if pin.etype in {PinType.BIDIR, PinType.INPUT, PinType.OUTPUT}:
                     nc(ref, pin.number)
+    return notes
+
+
+def mark_documented_no_connects(
+    ir: CircuitIR, symbols: dict[str, SymbolDef]
+) -> list[str]:
+    """Mark library-declared NOCONNECT pins without device-specific rules."""
+    notes: list[str] = []
+    connected = {(r, str(p)) for net in ir.nets for r, p in net.nodes}
+    existing = {(r, str(p)) for r, p in ir.nc_pins}
+    for ref, comp in ir.components.items():
+        sym = symbols.get(comp.lib_id)
+        if sym is None:
+            continue
+        for pin in sym.pins:
+            node = (ref, pin.number)
+            if pin.etype == PinType.NOCONNECT and node not in connected and node not in existing:
+                ir.nc_pins.append(node)
+                existing.add(node)
+                notes.append(f"marked documented NC {ref}.{pin.number}")
+    return notes
+
+
+def ensure_relay_flyback(
+    ir: CircuitIR, symbols: dict[str, SymbolDef]
+) -> list[str]:
+    """Place an existing diode across relay coil pins A1/A2."""
+    notes: list[str] = []
+
+    def pin_net(ref: str, pin: str) -> str | None:
+        return next((n.name for n in ir.nets if (ref, pin) in n.nodes), None)
+
+    used: set[str] = set()
+    for ref, comp in ir.components.items():
+        sym = symbols.get(comp.lib_id)
+        if sym is None or "RELAY" not in comp.lib_id.upper():
+            continue
+        by_no = {p.number.upper(): p.number for p in sym.pins}
+        if not {"A1", "A2"} <= set(by_no):
+            continue
+        a = pin_net(ref, by_no["A1"]); b = pin_net(ref, by_no["A2"])
+        if not a or not b:
+            continue
+        for dref, diode in ir.components.items():
+            dsym = symbols.get(diode.lib_id)
+            if dref in used or dsym is None or dsym.reference_prefix != "D" or len(dsym.pins) != 2:
+                continue
+            if "LED" in diode.lib_id.upper() or "LED" in diode.value.upper():
+                continue
+            for net in ir.nets:
+                net.nodes = [node for node in net.nodes if node[0] != dref]
+            ir.connect(a, (dref, dsym.pins[0].number))
+            ir.connect(b, (dref, dsym.pins[1].number))
+            used.add(dref)
+            notes.append(f"wired {dref} across {ref} coil A1/A2 for flyback")
+            break
+    ir.nets = [n for n in ir.nets if n.nodes]
     return notes
 
 

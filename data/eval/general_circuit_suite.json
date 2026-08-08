@@ -1,0 +1,10 @@
+[
+  {"id":"passive_led","domain":"passive","prompt":"5V 전원에서 스위치로 켜는 LED 회로를 만들어줘. 전류 제한 저항 포함"},
+  {"id":"analog_opamp","domain":"analog","prompt":"단일 전원 비반전 op-amp 증폭 회로를 만들어줘. 입력 바이어스와 피드백 저항 포함","topology":["amplifier_feedback"]},
+  {"id":"power_regulator","domain":"power","prompt":"12V 입력에서 5V를 만드는 레귤레이터 회로를 만들어줘. 입력과 출력 바이패스 포함","topology":["regulator_input_output_bypass"]},
+  {"id":"sensor_i2c","domain":"sensor_bus","prompt":"MCU에 I2C 온도센서를 연결해줘. 풀업과 디커플링 포함"},
+  {"id":"communication_can","domain":"communication","prompt":"MCU용 CAN 인터페이스를 만들어줘. 트랜시버, 종단 선택, TVS와 커넥터 포함"},
+  {"id":"driver_relay","domain":"driver","prompt":"3.3V GPIO로 12V 릴레이를 구동하는 회로를 만들어줘. 트랜지스터와 플라이백 다이오드 포함"},
+  {"id":"debug_uart","domain":"digital_control","prompt":"범용 MCU 최소 회로와 UART 디버그 헤더, 리셋, 디커플링을 포함해줘"},
+  {"id":"unknown_module","domain":"catalog_fallback","prompt":"카탈로그에 없는 MY_CUSTOM_RADIO 모듈을 MCU에 연결해줘. 전원, GND, TX, RX 핀을 개념 심볼로 표시"}
+]

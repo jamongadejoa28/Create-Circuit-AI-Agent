@@ -294,3 +294,44 @@ def validate_plan(plan: list[dict], spec: dict) -> tuple[list[dict], list[str]]:
             notes.append(f"duplicate block id renamed to {b['id']}")
         seen_ids.add(b["id"])
     return plan, notes
+
+
+def validate_block_template(
+    block: dict,
+    ir: CircuitIR,
+    candidates: dict[str, list[dict]],
+) -> list[str]:
+    """Check that a synthesized template still represents its requirements.
+
+    ERC cannot detect a deleted function: an empty MCU block (or a motor block
+    containing only capacitors) can be electrically clean.  This gate is
+    deliberately domain-neutral.  It compares the block's declared roles with
+    the catalog choices supplied to the model and requires one matching main
+    device per role.  A conceptual component is accepted only for roles with no
+    catalog candidate, which preserves the project's explicit-box fallback.
+    """
+    issues: list[str] = []
+    if not ir.components:
+        return [f"block {block.get('id')}: synthesized no components"]
+
+    present_ids = {c.lib_id for c in ir.components.values()}
+    conceptual_count = sum(
+        c.lib_id.startswith("Conceptual:") for c in ir.components.values()
+    )
+    conceptual_needed = 0
+    for role in block.get("roles", []):
+        hits = candidates.get(role, [])
+        allowed = {h.get("lib_id") for h in hits if h.get("lib_id")}
+        if allowed:
+            if not (allowed & present_ids):
+                issues.append(
+                    f"block {block.get('id')}: required role {role!r} has no catalog device"
+                )
+        else:
+            conceptual_needed += 1
+    if conceptual_count < conceptual_needed:
+        issues.append(
+            f"block {block.get('id')}: {conceptual_needed} uncatalogued role(s) but "
+            f"only {conceptual_count} conceptual device(s)"
+        )
+    return issues

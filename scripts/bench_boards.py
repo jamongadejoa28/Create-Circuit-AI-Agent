@@ -21,6 +21,7 @@ from circuitgen.agent import Agent
 from circuitgen.knowledge import KnowledgeIndex
 from circuitgen.llm_client import LlamaClient
 from circuitgen.partindex import PartIndex
+from circuitgen.topology import analyze_topology
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "out" / "bench_boards"
@@ -111,6 +112,9 @@ def main() -> int:
             "repair_ops": len(res.repairs),
             "seconds": round(dt, 1),
         }
+        if ir:
+            topology = analyze_topology(ir, agent._resolve_symbols(ir))
+            row["topology"] = topology.as_dict()
         requested_roles = {p.get("role") for p in (res.spec or {}).get("parts_needed", [])}
         planned_roles = {role for block in (res.block_plan or []) for role in block.get("roles", [])}
         row["required_roles"] = len(requested_roles)

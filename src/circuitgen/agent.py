@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
@@ -171,11 +172,79 @@ class Agent:
             schema=REQUIREMENT_SPEC,
         ))
         spec = _normalize_rails(spec)
+        self._ensure_explicit_voltage_rails(prompt, spec)
         self._normalize_part_roles(spec)
+        self._remove_connection_pseudo_parts(spec)
+        self._preserve_explicit_conceptual_parts(prompt, spec)
         self._ensure_named_parts(prompt, spec)
         self._ensure_domain_roles(prompt, spec)
         self._ensure_logic_rail(spec)
         return spec
+
+    @staticmethod
+    def _remove_connection_pseudo_parts(spec: dict) -> None:
+        """Connections are nets, not physical BOM roles."""
+        removed = []
+        kept = []
+        for part in spec.get("parts_needed", []):
+            text = f"{part.get('role', '')} {part.get('search_query', '')}".lower()
+            pseudo = (
+                any(phrase in text for phrase in ("concept symbol", "conceptual symbol"))
+                and any(word in text for word in ("connection", "power", "gnd", "tx", "rx"))
+            ) or str(part.get("role", "")).strip().lower() in {"gpio", "gpio_input", "gpio_signal"}
+            (removed if pseudo else kept).append(part)
+        spec["parts_needed"] = kept
+        if removed:
+            spec.setdefault("connections_intent", []).append(
+                "Treat TX/RX/power/GND connection roles as nets, not separate components"
+            )
+
+    @staticmethod
+    def _preserve_explicit_conceptual_parts(prompt: str, spec: dict) -> None:
+        import re as _re
+
+        text = prompt.lower()
+        if not any(k in text for k in ("conceptual", "concept symbol", "개념 심볼", "개념심볼")):
+            return
+        tokens = _re.findall(
+            r"(?<![A-Za-z0-9_])[A-Z][A-Z0-9_]{3,}(?![A-Za-z0-9_])",
+            prompt,
+        )
+        for token in tokens:
+            match = next(
+                (p for p in spec.get("parts_needed", []) if token in f"{p.get('role', '')} {p.get('value', '')}".upper()),
+                None,
+            )
+            if match is None:
+                match = {"role": token.lower(), "quantity": 1}
+                spec.setdefault("parts_needed", []).append(match)
+            match["search_query"] = f"__conceptual__{token}"
+            match["value"] = token
+
+    @staticmethod
+    def _ensure_explicit_voltage_rails(prompt: str, spec: dict) -> None:
+        """Preserve voltage rails explicitly written by the user.
+
+        A measured 7B extraction kept +12V but dropped the requested +5V
+        regulator output.  This is lexical ground truth and needs no LLM.
+        """
+        import re as _re
+
+        rails = spec.setdefault("power", {}).setdefault("rails", [])
+        existing = {str(r.get("name", "")).upper() for r in rails}
+        # ASCII boundary on purpose: Korean case particles are Unicode word
+        # characters, so ``5V를`` does not have a Python ``\b`` after V.
+        for raw in _re.findall(
+            r"(?<![A-Za-z0-9])\+?(\d+(?:\.\d+)?)\s*V(?![A-Za-z0-9])",
+            prompt,
+            _re.I,
+        ):
+            voltage = float(raw)
+            token = str(int(voltage)) if voltage.is_integer() else str(voltage).replace(".", "V")
+            name = f"+{token}V" if "V" not in token else f"+{token}"
+            if name.upper() not in existing:
+                rails.append({"name": name, "voltage": f"{raw}V"})
+                existing.add(name.upper())
 
     @staticmethod
     def _ensure_domain_roles(prompt: str, spec: dict) -> None:
@@ -286,6 +355,50 @@ class Agent:
         for need in spec.get("parts_needed", []):
             hits = self.parts.search_parts(need["search_query"], CANDIDATES_PER_QUERY)
             hits = self._filter_incompatible_candidates(need, hits)
+            global_intent = " ".join(
+                [str(spec.get("summary", "")), *map(str, spec.get("connections_intent", []))]
+            ).lower()
+            need_text = f"{need.get('role', '')} {need.get('search_query', '')}".lower()
+            if "i2c" in global_intent and "sensor" in need_text:
+                hits = self._parts_with_pins(hits, {"SDA", "SCL"})
+                if not hits:
+                    hits = self._parts_with_pins(
+                        self.parts.search_parts(f"I2C {need.get('search_query', 'sensor')}", 12),
+                        {"SDA", "SCL"},
+                    )[:CANDIDATES_PER_QUERY]
+            if "flyback" in need_text and "diode" in need_text:
+                hits = [h for h in hits if "TRANSFORMER" not in h.get("lib_id", "").upper()]
+                if not hits:
+                    hits = [
+                        h for h in self.parts.search_parts("diode", 12)
+                        if h.get("lib_id", "").startswith("Device:D")
+                    ][:CANDIDATES_PER_QUERY]
+            if "relay" in need_text and "flyback" not in need_text:
+                hits = self._parts_with_pins(hits, {"A1", "A2"})
+                if not hits:
+                    hits = self._parts_with_pins(
+                        self.parts.search_parts("relay SPST", 20), {"A1", "A2"}
+                    )[:CANDIDATES_PER_QUERY]
+            # A bare "regulator" query is dominated by TL431-style shunt
+            # references in the catalog. If that category was rejected,
+            # retry with the ordinary series-regulator category. This is a
+            # functional-class expansion, not a device-number special case.
+            intent = f"{need.get('role', '')} {need.get('search_query', '')}".lower()
+            if not hits and "regulator" in intent and not any(
+                word in intent for word in ("shunt", "reference", "buck", "switching")
+            ):
+                supply_names = [
+                    str(r.get("name", ""))
+                    for r in spec.get("power", {}).get("rails", [])
+                    if str(r.get("name", "")).upper() not in _GND_NAMES
+                ]
+                output_hint = supply_names[-1].lstrip("+") if len(supply_names) > 1 else ""
+                query = f"{output_hint} linear voltage regulator".strip()
+                hits = self._filter_incompatible_candidates(
+                    need,
+                    self.parts.search_parts(query, 12),
+                )
+                hits = self._rank_simple_regulators(hits)[:CANDIDATES_PER_QUERY]
             candidates[need["role"]] = hits
 
         topics = [n["search_query"] for n in spec.get("parts_needed", [])]
@@ -337,6 +450,22 @@ class Agent:
                     h["pin_numbers"] = [p["number"] for p in pins]
         return candidates, snippets, pin_tables
 
+    def _parts_with_pins(self, hits: list[dict], required: set[str]) -> list[dict]:
+        accepted = []
+        for hit in hits:
+            try:
+                pins = self.parts.get_part_pins(hit.get("lib_id", ""))
+            except KeyError:
+                continue
+            names = {
+                str(p.get("name", "")).upper().replace("~", "").replace("{", "").replace("}", "")
+                for p in pins
+            }
+            numbers = {str(p.get("number", "")).upper() for p in pins}
+            if required <= (names | numbers):
+                accepted.append(hit)
+        return accepted
+
     @staticmethod
     def _filter_incompatible_candidates(need: dict, hits: list[dict]) -> list[dict]:
         """Reject confidently wrong functional substitutes.
@@ -350,6 +479,12 @@ class Agent:
         intent = " ".join(
             str(need.get(k, "")) for k in ("role", "search_query", "value")
         ).lower()
+        if "regulator" in intent and not any(k in intent for k in ("shunt", "reference")):
+            hits = [
+                hit for hit in hits
+                if not str(hit.get("lib_id", "")).startswith("Reference_Voltage:")
+                and "shunt regulator" not in str(hit.get("description", "")).lower()
+            ]
         if not any(k in intent for k in ("bldc", "brushless", "3-phase", "three phase")):
             return hits
         accepted = []
@@ -366,6 +501,32 @@ class Agent:
             if any(k in text for k in ("bldc", "brushless", "3-phase", "three phase")):
                 accepted.append(hit)
         return accepted
+
+    def _rank_simple_regulators(self, hits: list[dict]) -> list[dict]:
+        """Prefer a complete IN/OUT/GND regulator with fewer control pins.
+
+        A basic fixed-output request should not select a configurable device
+        merely because its description has a higher text score. More complex
+        devices remain available as alternates when requirements call for them.
+        """
+        def score(hit: dict) -> tuple[int, int, str]:
+            pins = self.parts.get_part_pins(hit.get("lib_id", ""))
+            names = {
+                str(p.get("name", "")).upper().replace("~", "").replace("{", "").replace("}", "")
+                for p in pins
+            }
+            complete = all(
+                any(name in names for name in family)
+                for family in (("IN", "VIN", "INPUT"), ("OUT", "VOUT", "OUTPUT"), ("GND", "VSS"))
+            )
+            control = sum(
+                1 for p in pins
+                if str(p.get("type", "")).upper() == "INPUT"
+                and str(p.get("name", "")).upper() not in {"IN", "VIN", "INPUT"}
+            )
+            return (0 if complete else 1, control * 10 + len(pins), hit.get("lib_id", ""))
+
+        return sorted(hits, key=score)
 
     @staticmethod
     def _limit_template_copies(ir: CircuitIR, candidates: dict[str, list[dict]]) -> list[str]:
@@ -408,8 +569,14 @@ class Agent:
                 )
         return notes
 
-    def synthesize_ir(self, spec: dict, name: str) -> tuple[CircuitIR, dict]:
+    def synthesize_ir(
+        self, spec: dict, name: str, contract_feedback: list[str] | None = None
+    ) -> tuple[CircuitIR, dict]:
+        from .contracts import contract_instructions, infer_contracts
+
         candidates, snippets, pin_tables = self._gather(spec)
+        contracts = infer_contracts(spec)
+        functional_rules = contract_instructions(contracts)
         content = (
             "Design the circuit as CircuitIR JSON.\n"
             "Rules:\n"
@@ -432,6 +599,8 @@ class Agent:
             "- Every non-power pin of every used component must be in a net or in nc_pins.\n"
             "- Apply the KNOWLEDGE rules (decoupling caps beside ICs, pull-ups, "
             "current-limit resistor values).\n"
+            f"- FUNCTIONAL CONTRACTS (mandatory): {json.dumps(functional_rules, ensure_ascii=False)}\n"
+            f"- PREVIOUS CONTRACT FAILURES TO FIX: {json.dumps(contract_feedback or [], ensure_ascii=False)}\n"
             f"- name must be: {name}\n\n"
             f"SPEC: {json.dumps(spec, ensure_ascii=False)}\n\n"
             f"CANDIDATES: {json.dumps(candidates, ensure_ascii=False)}\n\n"
@@ -443,7 +612,9 @@ class Agent:
             schema=CIRCUIT_IR,
             max_tokens=4096,
         ))
-        return ir_from_json(data), {"candidates": candidates, "knowledge": snippets}
+        return ir_from_json(data), {
+            "candidates": candidates, "knowledge": snippets, "contracts": contracts,
+        }
 
     # ---- stage 2b: block decomposition (board scale, plan §7.2) ----
 
@@ -497,16 +668,20 @@ class Agent:
         return catalog
 
     def synthesize_block(
-        self, spec: dict, block: dict, catalog: list[dict], name: str
+        self, spec: dict, block: dict, catalog: list[dict], name: str,
+        contract_feedback: list[str] | None = None,
     ) -> tuple[CircuitIR, dict]:
+        from .contracts import contract_instructions, infer_contracts
+
         sub_spec = {
             "summary": spec.get("summary", ""),
             "power": spec.get("power", {}),
             "parts_needed": [
                 p for p in spec.get("parts_needed", []) if p["role"] in block["roles"]
             ],
-            "connections_intent": [block.get("description", "")],
+            "connections_intent": [block.get("description", "")] + spec.get("connections_intent", [])[:6],
         }
+        contracts = infer_contracts(sub_spec)
         candidates, snippets, pin_tables = self._gather(sub_spec)
         # Support passives are always available: without R/C candidates a
         # block synthesizes its bare IC and no decoupling can ever appear.
@@ -548,6 +723,10 @@ class Agent:
             "- Be terse: short net names, plain values (100nF, 10k), no prose.\n"
             "- Apply the KNOWLEDGE rules (decoupling beside ICs, pull-ups, "
             "series resistors).\n"
+            f"- FUNCTIONAL CONTRACTS (mandatory): "
+            f"{json.dumps(contract_instructions(contracts), ensure_ascii=False)}\n"
+            f"- PREVIOUS CONTRACT FAILURES TO FIX: "
+            f"{json.dumps(contract_feedback or [], ensure_ascii=False)}\n"
             f"- name must be: {name}\n\n"
             f"SPEC: {json.dumps(sub_spec, ensure_ascii=False)}\n\n"
             f"CANDIDATES: {json.dumps(candidates, ensure_ascii=False)}\n\n"
@@ -561,7 +740,10 @@ class Agent:
         ))
         ir = ir_from_json(data)
         template_notes = self._limit_template_copies(ir, candidates)
-        return ir, {"candidates": candidates, "notes": template_notes}
+        return ir, {
+            "candidates": candidates, "notes": template_notes, "contracts": contracts,
+            "sub_spec": sub_spec,
+        }
 
     def wire_mcu_interfaces(self, ir: CircuitIR, catalog: list[dict]) -> list[str]:
         """Connect dangling interface nets to free MCU pins.
@@ -725,11 +907,28 @@ class Agent:
     def _ensure_pullups(self, ir: CircuitIR, spec: dict) -> list[str]:
         from .normalize import ensure_bus_pullups
 
-        plus = next(
+        symbols = self._resolve_symbols(ir)
+        plus = None
+        pin_net = {(r, str(p)): n.name for n in ir.nets for r, p in n.nodes}
+        bus_refs = {
+            r for n in ir.nets if n.name.upper() in {"SDA", "SCL"} for r, _ in n.nodes
+        }
+        for ref in bus_refs:
+            comp = ir.components.get(ref); sym = symbols.get(comp.lib_id) if comp else None
+            if sym is None:
+                continue
+            plus = next(
+                (pin_net.get((ref, p.number)) for p in sym.pins
+                 if p.etype.name == "PWRIN" and (pin_net.get((ref, p.number)) or "").startswith("+")),
+                None,
+            )
+            if plus:
+                break
+        plus = plus or next(
             (r["name"] for r in spec.get("power", {}).get("rails", []) if r["name"].startswith("+")),
-            None,
+            next((n.name for n in ir.nets if n.name.startswith("+")), None),
         )
-        return ensure_bus_pullups(ir, self._resolve_symbols(ir), plus)
+        return ensure_bus_pullups(ir, symbols, plus)
 
     def attach_power_symbols(self, ir: CircuitIR, spec: dict) -> list[str]:
         """Deterministically add power symbols to rail nets (never the LLM's
@@ -850,7 +1049,8 @@ class Agent:
         return view, True
 
     def _filter_ops(
-        self, ir: CircuitIR, ops: list[dict], problems: list[str]
+        self, ir: CircuitIR, ops: list[dict], problems: list[str],
+        candidates: dict[str, list[dict]] | None = None,
     ) -> tuple[list[dict], list[str]]:
         """Deterministic op gate.
 
@@ -884,10 +1084,35 @@ class Agent:
             return supply, grounded
 
         text = " ".join(problems)
+        # refs this same patch adds (and whose lib_id will be accepted):
+        # connect/disconnect/mark_nc on them is the addition's second half,
+        # regardless of op order within the patch
+        pending_adds: set[str] = set()
+        for op in ops:
+            if op.get("op") != "add_component" or op.get("ref", "") in ir.components:
+                continue
+            lid = op.get("lib_id", "")
+            if lid.startswith("Conceptual:"):
+                pending_adds.add(op.get("ref", ""))
+            else:
+                try:
+                    self.parts.symbol_source(lid)
+                    pending_adds.add(op.get("ref", ""))
+                except KeyError:
+                    pass
         kept, notes = [], []
         for op in ops:
             kind = op.get("op")
             ref = op.get("ref", "")
+            if kind in ("connect", "disconnect", "mark_nc") and ref not in ir.components:
+                if ref in pending_adds:
+                    # the same patch added this part; wiring it is the
+                    # legitimate second half of that addition (ops are
+                    # filtered before any is applied)
+                    kept.append(op)
+                    continue
+                notes.append(f"rejected op: {kind} references missing component {ref}")
+                continue
             if kind == "connect" and ref in ir.components:
                 sym = symbols.get(ir.components[ref].lib_id)
                 try:
@@ -895,6 +1120,11 @@ class Agent:
                 except KeyError:
                     etype = None
                 if etype:
+                    if etype == "NOCONNECT":
+                        notes.append(
+                            f"rejected op: connect documented NC pin {ref}.{op.get('pin')}"
+                        )
+                        continue
                     supply, grounded = is_rail(str(op.get("net", "")))
                     bad = (
                         (etype in ("OUTPUT", "TRISTATE") and supply)
@@ -909,6 +1139,18 @@ class Agent:
                         continue
             if kind == "add_component":
                 lid = op.get("lib_id", "")
+                generic = lid.startswith(("Device:", "power:", "Conceptual:"))
+                if (
+                    not generic
+                    and ref not in ir.components
+                    and any(c.lib_id == lid for c in ir.components.values())
+                ):
+                    # blocks duplicated ICs/modules only — a second Device:R
+                    # (pullup, series R) is routine repair material
+                    notes.append(
+                        f"rejected op: duplicate {lid} addition while repairing existing circuit"
+                    )
+                    continue
                 if not lid.startswith("Conceptual:"):
                     try:
                         self.parts.symbol_source(lid)
@@ -951,7 +1193,9 @@ class Agent:
             schema=REPAIR_PATCH,
             max_tokens=1024,
         ))
-        ops, gate_notes = self._filter_ops(ir, patch.get("ops", []), shown)
+        ops, gate_notes = self._filter_ops(
+            ir, patch.get("ops", []), shown, candidates=candidates
+        )
         return gate_notes + apply_patch(ir, ops)
 
     # ---- full run ----
@@ -1025,7 +1269,7 @@ class Agent:
 
         use_blocks = len(spec.get("parts_needed", [])) >= BLOCK_THRESHOLD
         if use_blocks:
-            from .blocks import instantiate_blocks
+            from .blocks import instantiate_blocks, validate_block_template
 
             res.stage = "block-plan"
             try:
@@ -1043,13 +1287,71 @@ class Agent:
             merged_candidates: dict = {}
             for block in plan:
                 res.stage = f"block-{block['id']}"
-                try:
-                    bir, bctx = self.synthesize_block(spec, block, catalog, f"{name}_{block['id']}")
-                    block_irs[block["id"]] = bir
-                    merged_candidates.update(bctx.get("candidates", {}))
-                    res.log.extend(bctx.get("notes", []))
-                except Exception as e:
-                    res.log.append(f"block {block['id']} synthesis failed: {e}")
+                block_error = ""
+                contract_feedback: list[str] = []
+                # One full regeneration is cheaper and safer than allowing a
+                # missing functional block into ERC/repair.  ERC proves wiring,
+                # not that the requested controller or sensor still exists.
+                for attempt in range(1, 3):
+                    try:
+                        bir, bctx = self.synthesize_block(
+                            spec, block, catalog, f"{name}_{block['id']}",
+                            contract_feedback=contract_feedback,
+                        )
+                        issues = validate_block_template(
+                            block, bir, bctx.get("candidates", {})
+                        )
+                        if not issues and bctx.get("contracts"):
+                            from .contracts import repair_contracts, validate_contracts
+
+                            symbols = self._resolve_symbols(bir)
+                            issues = validate_contracts(
+                                bir, symbols, bctx["contracts"]
+                            )
+                            if issues and attempt == 2:
+                                res.log.extend(repair_contracts(
+                                    bir, symbols, bctx["sub_spec"], bctx["contracts"]
+                                ))
+                                issues = validate_contracts(
+                                    bir, symbols, bctx["contracts"]
+                                )
+                        if issues:
+                            block_error = "; ".join(issues)
+                            contract_feedback = issues
+                            res.log.append(
+                                f"block {block['id']} attempt {attempt} rejected by "
+                                f"requirement gate: {block_error}"
+                            )
+                            continue
+                        block_irs[block["id"]] = bir
+                        merged_candidates.update(bctx.get("candidates", {}))
+                        res.log.extend(bctx.get("notes", []))
+                        block_error = ""
+                        break
+                    except Exception as e:
+                        block_error = str(e)
+                        res.log.append(
+                            f"block {block['id']} synthesis attempt {attempt} failed: {e}"
+                        )
+                if block_error:
+                    res.stage = "functional-completeness"
+                    res.log.append(
+                        f"generation stopped: required block {block['id']} was not "
+                        f"produced after retry ({block_error})"
+                    )
+                    rec.event(
+                        "failed", stage=res.stage, block=block["id"],
+                        error=block_error[:300],
+                    )
+                    # Preserve the rejected artifact for diagnosis. It is not
+                    # emitted as KiCad and cannot be mistaken for a result.
+                    from .ir_json import ir_to_json
+
+                    if "bir" in locals():
+                        rec.set("rejected_block_ir", ir_to_json(bir))
+                    rec.set("agent_log", res.log)
+                    rec.save()
+                    return res
 
             res.stage = "merge"
             rails = [r["name"] for r in spec.get("power", {}).get("rails", [])]
@@ -1067,11 +1369,63 @@ class Agent:
                 return res
         else:
             res.stage = "synthesis"
-            try:
-                ir, ctx = self.synthesize_ir(spec, name)
-            except Exception as e:
-                res.log.append(f"IR synthesis failed: {e}")
-                rec.event("failed", stage=res.stage, error=str(e)[:300])
+            synthesis_error = ""
+            contract_feedback: list[str] = []
+            for attempt in range(1, 3):
+                try:
+                    ir, ctx = self.synthesize_ir(
+                        spec, name, contract_feedback=contract_feedback
+                    )
+                    from .blocks import validate_block_template
+                    from .contracts import repair_contracts, validate_contracts
+
+                    symbols = self._resolve_symbols(ir)
+                    issues = validate_block_template(
+                        {"id": "CIRCUIT", "roles": [p["role"] for p in spec.get("parts_needed", [])]},
+                        ir,
+                        ctx.get("candidates", {}),
+                    )
+                    if not issues:
+                        issues = validate_contracts(
+                            ir, symbols, ctx.get("contracts", [])
+                        )
+                    if issues and attempt == 2:
+                        res.log.extend(repair_contracts(
+                            ir, symbols, spec, ctx.get("contracts", [])
+                        ))
+                        # re-run the SAME validation sequence: contract repair
+                        # cannot fix template issues, and overwriting them
+                        # with a contracts-only recheck would silently accept
+                        # an IR that is missing required roles
+                        issues = validate_block_template(
+                            {"id": "CIRCUIT", "roles": [p["role"] for p in spec.get("parts_needed", [])]},
+                            ir,
+                            ctx.get("candidates", {}),
+                        ) or validate_contracts(ir, symbols, ctx.get("contracts", []))
+                    if issues:
+                        synthesis_error = "; ".join(issues)
+                        contract_feedback = issues
+                        res.log.append(
+                            f"synthesis attempt {attempt} rejected by topology "
+                            f"contract: {synthesis_error}"
+                        )
+                        continue
+                    synthesis_error = ""
+                    break
+                except Exception as e:
+                    synthesis_error = str(e)
+                    res.log.append(f"IR synthesis attempt {attempt} failed: {e}")
+            if synthesis_error:
+                res.stage = "functional-topology"
+                res.log.append(
+                    f"generation stopped after topology retry: {synthesis_error}"
+                )
+                rec.event("failed", stage=res.stage, error=synthesis_error[:300])
+                from .ir_json import ir_to_json
+
+                if "ir" in locals():
+                    rec.set("rejected_ir", ir_to_json(ir))
+                rec.set("agent_log", res.log)
                 rec.save()
                 return res
         res.ir = ir
@@ -1111,6 +1465,8 @@ class Agent:
             ensure_canfd_bus_protection,
             ensure_stm32g4_power_network,
             ensure_stm32g4_system_support,
+            mark_documented_no_connects,
+            ensure_relay_flyback,
         )
 
         symbols = self._resolve_symbols(ir)
@@ -1126,6 +1482,8 @@ class Agent:
         # the FOC map itself only needs the MCU/driver/encoder definitions.
         res.log.extend(apply_stm32g474ret6_foc_pinmap(ir, self._resolve_symbols(ir)))
         res.log.extend(ensure_canfd_bus_protection(ir))
+        res.log.extend(mark_documented_no_connects(ir, self._resolve_symbols(ir)))
+        res.log.extend(ensure_relay_flyback(ir, self._resolve_symbols(ir)))
         res.log.extend(self.resolve_pin_names(ir))
         res.log.extend(self._ensure_pullups(ir, spec))
         res.log.extend(self._fix_footprints(ir))
@@ -1161,6 +1519,21 @@ class Agent:
                 res.log.append(f"repair round {rounds} failed: {e}")
                 break
             res.repairs.extend(notes)
+            res.log.extend(self._limit_main_device_copies(ir, ctx.get("candidates", {}), spec))
+            from .blocks import validate_block_template
+
+            completeness = validate_block_template(
+                {"id": "CIRCUIT", "roles": [p["role"] for p in spec.get("parts_needed", [])]},
+                ir,
+                ctx.get("candidates", {}),
+            )
+            if completeness:
+                res.stage = "functional-completeness"
+                res.log.append(
+                    "repair rejected by functional completeness gate: "
+                    + "; ".join(completeness)
+                )
+                break
             # patches may use pin names, introduce new lib_ids, invalid
             # footprints, or rail nets that still need their supply symbol
             res.log.extend(normalize_common_symbol_aliases(ir))
@@ -1170,6 +1543,8 @@ class Agent:
             res.log.extend(self.resolve_pin_names(ir))
             res.log.extend(self.attach_power_symbols(ir, spec))
             res.log.extend(self._ensure_pullups(ir, spec))
+            res.log.extend(mark_documented_no_connects(ir, self._resolve_symbols(ir)))
+            res.log.extend(ensure_relay_flyback(ir, self._resolve_symbols(ir)))
             res.log.extend(self._fix_footprints(ir))
             pr = self._generate(ir, name)
             res.pipeline = pr
@@ -1199,3 +1574,42 @@ class Agent:
         rec.event("finished", ok=res.ok, stage=res.stage)
         rec.save()
         return res
+
+    def _limit_main_device_copies(
+        self, ir: CircuitIR, candidates: dict[str, list[dict]], spec: dict | None = None
+    ) -> list[str]:
+        """Undo repair-model duplication of requested IC/modules.
+
+        Trims to the requirement's QUANTITY, never blindly to one — a 4-axis
+        board legitimately holds 4 drivers and 4 encoders, and cutting to
+        refs[0] would delete healthy channels after every repair round. A
+        role that cannot be matched to a spec entry is left untouched."""
+        notes: list[str] = []
+
+        def norm(s: str) -> str:
+            return re.sub(r"[^a-z]", "", s.lower())
+
+        qty_by_role = {
+            norm(str(p.get("role", ""))): int(p.get("quantity") or 1)
+            for p in (spec or {}).get("parts_needed", [])
+            if p.get("role")
+        }
+        for role, hits in candidates.items():
+            qty = qty_by_role.get(norm(role))
+            if qty is None:
+                continue
+            ids = {
+                h.get("lib_id") for h in hits
+                if h.get("lib_id") and not h.get("lib_id", "").startswith("Device:")
+            }
+            refs = sorted(r for r, c in ir.components.items() if c.lib_id in ids)
+            for ref in refs[max(1, qty):]:
+                ir.components.pop(ref, None)
+                for net in ir.nets:
+                    net.nodes = [node for node in net.nodes if node[0] != ref]
+                ir.nc_pins = [node for node in ir.nc_pins if node[0] != ref]
+                notes.append(
+                    f"repair duplicate removed: {ref} beyond quantity {qty} for role {role}"
+                )
+        ir.nets = [net for net in ir.nets if net.nodes]
+        return notes

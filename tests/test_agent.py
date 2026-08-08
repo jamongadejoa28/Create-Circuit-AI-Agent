@@ -14,6 +14,7 @@ import pytest
 from circuitgen.agent import Agent
 from circuitgen.kicad_cli import KICAD_CLI
 from circuitgen.knowledge import KNOWLEDGE_DIR, KnowledgeIndex, build_index as build_kn
+from circuitgen.ir import CircuitIR, Component
 from circuitgen.partindex import LibrarySource, PartIndex, build_index as build_parts
 from circuitgen.symbols import KICAD_SYMBOL_DIR
 
@@ -55,6 +56,12 @@ def test_mcu_requirement_gets_missing_3v3_logic_rail():
     assert [r["name"] for r in spec["power"]["rails"]] == ["+12V", "GND", "+3V3"]
     Agent._ensure_logic_rail(spec)
     assert [r["name"] for r in spec["power"]["rails"]].count("+3V3") == 1
+
+
+def test_explicit_input_and_output_voltage_rails_survive_extractor_omission():
+    spec = {"power": {"rails": [{"name": "+12V", "voltage": "12V"}, {"name": "GND", "voltage": "0V"}]}}
+    Agent._ensure_explicit_voltage_rails("12V 입력을 5V로 변환하고 3.3V를 추가", spec)
+    assert [r["name"] for r in spec["power"]["rails"]] == ["+12V", "GND", "+5V", "+3V3"]
 
 
 def test_bldc_requirement_restores_missing_driver_count_from_axes():
@@ -211,6 +218,95 @@ def test_incompatible_stepper_candidate_is_rejected_for_bldc():
     assert Agent._filter_incompatible_candidates(need, hits) == [hits[1]]
 
 
+def test_series_regulator_request_rejects_shunt_reference_category():
+    need = {"role": "regulator", "search_query": "voltage regulator"}
+    hits = [
+        {"lib_id": "Reference_Voltage:TL431DBZ", "description": "Shunt Regulator"},
+        {"lib_id": "Regulator_Linear:Example", "description": "Linear regulator"},
+    ]
+    assert Agent._filter_incompatible_candidates(need, hits) == [hits[1]]
+
+
+def test_simple_regulator_ranking_prefers_three_pin_complete_device():
+    parts = PartIndex()
+    agent = object.__new__(Agent)
+    agent.parts = parts
+    hits = parts.search_parts("5V linear voltage regulator", 12)
+    ranked = agent._rank_simple_regulators(hits)
+    pins = parts.get_part_pins(ranked[0]["lib_id"])
+    names = {p["name"].upper() for p in pins}
+    assert {"IN", "OUT", "GND"} <= names
+    assert not any(p["type"] == "INPUT" for p in pins)
+
+
+def test_connection_pseudo_parts_are_nets_not_bom_items():
+    spec = {"parts_needed": [
+        {"role": "radio", "search_query": "module"},
+        {"role": "TX_CONNECTION", "search_query": "concept symbol"},
+        {"role": "GND_CONNECTION", "search_query": "concept symbol"},
+        {"role": "gpio", "search_query": "LED"},
+    ], "connections_intent": []}
+    Agent._remove_connection_pseudo_parts(spec)
+    assert [p["role"] for p in spec["parts_needed"]] == ["radio"]
+
+
+def test_explicit_conceptual_named_module_forces_catalog_miss():
+    spec = {"parts_needed": [{"role": "radio", "search_query": "module", "value": "MY_CUSTOM_RADIO"}]}
+    Agent._preserve_explicit_conceptual_parts("MY_CUSTOM_RADIO를 개념 심볼로 표시", spec)
+    assert spec["parts_needed"][0]["search_query"] == "__conceptual__MY_CUSTOM_RADIO"
+
+
+def test_i2c_capability_filter_rejects_analog_temperature_sensor():
+    parts = PartIndex(); agent = object.__new__(Agent); agent.parts = parts
+    hits = [
+        {"lib_id": "Sensor_Temperature:BD1020HFV"},
+        {"lib_id": "Sensor_Temperature:Si7050-A20"},
+    ]
+    accepted = agent._parts_with_pins(hits, {"SDA", "SCL"})
+    assert [h["lib_id"] for h in accepted] == ["Sensor_Temperature:Si7050-A20"]
+
+
+def test_relay_capability_accepts_a1_a2_as_pin_numbers():
+    parts = PartIndex(); agent = object.__new__(Agent); agent.parts = parts
+    hits = [{"lib_id": "Relay:Relay_SPST-NO"}]
+    assert agent._parts_with_pins(hits, {"A1", "A2"}) == hits
+
+
+def test_repair_gate_duplicates_and_same_patch_adds(agent_env):
+    parts, knowledge, tmp = agent_env
+    agent = Agent(MockLLM(SPEC), parts, knowledge, tmp / "repair-gate")
+    ir = CircuitIR("gate")
+    ir.add(Component("R1", "Device:R", "4.7k"))
+    ir.add(Component("SW1", "Switch:SW_Push", "SW_Push"))
+
+    # generic passives are routine repair material: adding a second Device:R
+    # and wiring it in the SAME patch must both survive the gate
+    ops = [
+        {"op": "add_component", "ref": "R2", "lib_id": "Device:R", "value": "4.7k"},
+        {"op": "connect", "ref": "R2", "pin": "1", "net": "SDA"},
+    ]
+    kept, notes = agent._filter_ops(ir, ops, ["unconnected pin R1.1"])
+    assert [op["op"] for op in kept] == ["add_component", "connect"]
+
+    # duplicating a main device (IC/module lib_id) stays rejected
+    kept, notes = agent._filter_ops(
+        ir,
+        [{"op": "add_component", "ref": "SW2", "lib_id": "Switch:SW_Push", "value": "SW"}],
+        ["unconnected pin SW1.1"],
+    )
+    assert kept == []
+    assert "duplicate" in notes[0]
+
+    # connect to a ref that nothing in the patch adds stays rejected
+    kept, notes = agent._filter_ops(
+        ir,
+        [{"op": "connect", "ref": "R9", "pin": "1", "net": "SDA"}],
+        ["unconnected pin R1.1"],
+    )
+    assert kept == []
+    assert "missing component" in notes[0]
+
+
 def test_repeated_block_template_keeps_one_main_part_per_role():
     from circuitgen.ir import CircuitIR, Component
 
@@ -253,3 +349,27 @@ def test_repair_gate_rejects_output_pin_to_supply_net(agent_env):
     kept, notes = agent._filter_ops(ir, ops, ["unconnected pin U1.3", "unconnected pin U1.4"])
     assert [(o["pin"], o["net"]) for o in kept] == [("4", "GND")]
     assert sum("rejected op: connect U1.3" in n for n in notes) == 2
+
+
+def test_limit_main_device_copies_respects_role_quantity(agent_env):
+    parts, knowledge, tmp = agent_env
+    agent = Agent(MockLLM(SPEC), parts, knowledge, tmp / "qty-gate")
+    ir = CircuitIR("qty")
+    for n in range(1, 6):  # 4 legitimate drivers + 1 repair-round duplicate
+        ir.add(Component(f"U{n}", "Driver_Motor:DRV8311H", "DRV8311H"))
+        ir.connect(f"PWM{n}", (f"U{n}", "1"))
+    spec = {"parts_needed": [{"role": "bldc_motor_driver", "search_query": "x", "quantity": 4}]}
+    notes = agent._limit_main_device_copies(
+        ir, {"bldc_motor_driver": [{"lib_id": "Driver_Motor:DRV8311H"}]}, spec
+    )
+    assert sorted(ir.components) == ["U1", "U2", "U3", "U4"]
+    assert any("beyond quantity 4" in n for n in notes)
+
+    # a role absent from the spec is left untouched
+    ir2 = CircuitIR("unknown_role")
+    ir2.add(Component("U1", "Driver_Motor:DRV8311H", "D"))
+    ir2.add(Component("U2", "Driver_Motor:DRV8311H", "D"))
+    notes2 = agent._limit_main_device_copies(
+        ir2, {"mystery": [{"lib_id": "Driver_Motor:DRV8311H"}]}, spec
+    )
+    assert sorted(ir2.components) == ["U1", "U2"] and notes2 == []
