@@ -16,6 +16,7 @@ import re
 from pathlib import Path
 
 from simp_sexp import Sexp
+from functools import lru_cache
 
 from .ir import PinDef, SymbolDef
 from .pins import KICAD_PIN_TYPES
@@ -254,7 +255,26 @@ def library_path(symbol_dir: Path, lib: str) -> Path | None:
     return f if f.exists() else None
 
 
+@lru_cache(maxsize=128)
+def _parse_library_cached(path_str: str, nickname: str) -> dict[str, SymbolDef]:
+    return _parse_library(Path(path_str), nickname)
+
+
 def parse_library(path: str | Path, lib_nickname: str | None = None) -> dict[str, SymbolDef]:
+    """Parse one library → {lib_id: SymbolDef}, memoized per (path, nickname).
+
+    Parsing a library costs ~0.75-1.1 s (MCU_ST_STM32G4 is 1.07 s) and
+    Agent._resolve_symbols asked for the same lib_ids 14 times in a single
+    run, so the uncached version dominated both the agent (83 s of a 124 s
+    run) and the test suite. SymbolDefs are never mutated anywhere in the
+    tree, so sharing them is safe; callers copy the entries they want into
+    their own dict.
+    """
+    path = Path(path)
+    return _parse_library_cached(str(path), lib_nickname or path.stem)
+
+
+def _parse_library(path: Path, lib_nickname: str | None = None) -> dict[str, SymbolDef]:
     """Parse one library → {lib_id: SymbolDef}, resolving extends.
 
     Accepts either a single .kicad_sym file (Windows-install / vendor
