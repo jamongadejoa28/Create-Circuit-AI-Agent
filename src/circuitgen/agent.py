@@ -1545,29 +1545,12 @@ class Agent:
         res.log.extend(ensure_drv8311h_operating_network(ir, symbols, "+3V3"))
         # Re-resolve because the operating pass introduced R/C/connectors;
         # the FOC map itself only needs the MCU/driver/encoder definitions.
-        # The fixed G474 FOC allocation is a domain rule, not a generic MCU
-        # default.  Applying it to an I2C/UART board fabricates dozens of
-        # single-pin PWM/SPI/CAN nets and makes an otherwise complete circuit
-        # fail ERC.  Only activate it when the approved request actually asks
-        # for BLDC/FOC/motor-control functionality.
-        domain_text = " ".join(
-            [prompt, str(spec.get("summary", ""))]
-            + [
-                f"{p.get('role', '')} {p.get('search_query', '')}"
-                for p in spec.get("parts_needed", [])
-            ]
-            + list(map(str, spec.get("connections_intent", [])))
-        ).lower()
-        if any(
-            k in domain_text
-            for k in (
-                "bldc", "foc", "motor control", "motor driver",
-                # Korean particles break exact-phrase matching: "모터를 제어",
-                # "모터 컨트롤러", "모터 드라이버" must all count
-                "모터 제어", "모터를 제어", "모터 컨트롤", "모터 드라이버",
-            )
-        ):
-            res.log.extend(apply_stm32g474ret6_foc_pinmap(ir, self._resolve_symbols(ir)))
+        # The FOC pin map gates itself on the presence of motor hardware
+        # (see normalize.apply_stm32g474ret6_foc_pinmap); a prompt-keyword
+        # gate here was a second, weaker copy of that decision and fired on
+        # unrelated boards because "motor control" is a substring of
+        # "motor controller".
+        res.log.extend(apply_stm32g474ret6_foc_pinmap(ir, self._resolve_symbols(ir)))
         res.log.extend(ensure_canfd_bus_protection(ir))
         res.log.extend(mark_documented_no_connects(ir, self._resolve_symbols(ir)))
         res.log.extend(ensure_relay_flyback(ir, self._resolve_symbols(ir)))

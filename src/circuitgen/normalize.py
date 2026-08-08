@@ -935,6 +935,21 @@ def apply_stm32g474ret6_foc_pinmap(
     mcu_sym = symbols.get(ir.components[mcu_ref].lib_id)
     if mcu_sym is None:
         return notes
+    # Gate on the DEVICE SET, not on prompt wording. The caller used to gate
+    # this by keyword, and "motor control" is a substring of "motor
+    # controller", so a plain G474 board got the full FOC allocation and was
+    # left with five orphan single-pin nets (SPI_SCK/MISO/MOSI, CAN_RX/TX)
+    # that the repair loop then chased. Only a board that actually carries
+    # motor hardware gets the motor pin map.
+    has_motor_hw = any(
+        any(k in c.lib_id.upper() for k in ("DRV83", "AS5048", "AS5045", "DRV8"))
+        for c in ir.components.values()
+    )
+    if not has_motor_hw:
+        notes.append(
+            f"{mcu_ref}: FOC pin map skipped — no motor driver or encoder on this board"
+        )
+        return notes
     mcu_pins = {p.name.upper(): p.number for p in mcu_sym.pins}
 
     def move(ref: str, pin: str, net_name: str) -> None:
