@@ -492,3 +492,29 @@ def test_conceptual_device_injected_for_uncatalogued_role(agent_env):
         ["my_custom_radio"], spec, ir, {"my_custom_radio": []}, log,
     )
     assert sum(c.lib_id.startswith("Conceptual:") for c in ir.components.values()) == 1
+
+
+def test_dropped_power_capacitor_is_restored_not_fatal(agent_env):
+    parts, knowledge, tmp = agent_env
+    agent = Agent(MockLLM(), parts, knowledge, tmp / "restore")
+    spec = {
+        "power": {"rails": [{"name": "+3V3", "voltage": "3.3V"}, {"name": "GND", "voltage": "0V"}]},
+        "parts_needed": [
+            {"role": "power_capacitor", "search_query": "capacitor", "quantity": 1},
+            {"role": "series_resistor", "search_query": "resistor", "value": "1k"},
+        ],
+    }
+    ir = CircuitIR("r")
+    ir.add(Component("U1", "Conceptual:X", "X"))  # model kept only the module
+    log: list = []
+    cands = {
+        "power_capacitor": [{"lib_id": "Device:C", "reference_prefix": "C"}],
+        "series_resistor": [{"lib_id": "Device:R", "reference_prefix": "R"}],
+    }
+    exempt = agent._restore_passive_roles(spec, ir, cands, log)
+    # power cap restored across the rail; plain resistor exempted, not fatal
+    assert "C1" in ir.components and ir.components["C1"].lib_id == "Device:C"
+    nets = {n.name: n.nodes for n in ir.nets}
+    assert ("C1", "1") in nets["+3V3"] and ("C1", "2") in nets["GND"]
+    assert exempt == {"series_resistor"}
+    assert any("restored dropped passive role" in n for n in log)

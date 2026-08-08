@@ -1614,11 +1614,20 @@ class Agent:
                     ctx.get("candidates", {}),
                     res.log,
                 )
+            exempt_roles: set[str] = set()
+            if not ctx.get("pattern"):
+                exempt_roles = self._restore_passive_roles(
+                    spec, ir, ctx.get("candidates", {}), res.log
+                )
             completeness = [] if ctx.get("pattern") else validate_block_template(
                 {"id": "CIRCUIT", "roles": [p["role"] for p in spec.get("parts_needed", [])]},
                 ir,
                 ctx.get("candidates", {}),
             )
+            completeness = [
+                i for i in completeness
+                if not any(f"role '{r}'" in i for r in exempt_roles)
+            ]
             if completeness:
                 res.stage = "functional-completeness"
                 res.log.append(
@@ -1703,6 +1712,54 @@ class Agent:
                 ref = f"{token[:10].upper()}{n}"
             ir.add(Component(ref, lib, token, "", (need.get("role") or "CONCEPTUAL").upper()[:16]))
             log.append(f"conceptual device injected for uncatalogued role {role!r}: {ref} ({lib})")
+
+    def _restore_passive_roles(
+        self, spec: dict, ir: CircuitIR, candidates: dict, log: list[str]
+    ) -> set[str]:
+        """Deterministically restore dropped passive roles; returns roles the
+        strict completeness gate must exempt.
+
+        A dropped MCU is a dead board; a dropped bulk capacitor is not —
+        aborting for it is disproportionate (measured: unknown_module died
+        because the model omitted 'power_capacitor'). Power-hinted caps are
+        re-added across the logic rail; other passives are logged and
+        exempted instead of fatal."""
+        exempt: set[str] = set()
+        present = {c.lib_id for c in ir.components.values()}
+        rails = [r.get("name") for r in spec.get("power", {}).get("rails", [])]
+        supply = next(
+            (r for r in rails if r and r.upper() not in ("GND", "0V", "VSS")), None
+        )
+        for p in spec.get("parts_needed", []):
+            role = str(p.get("role", ""))
+            hits = candidates.get(role) or []
+            if not hits:
+                continue
+            prefixes = {str(h.get("reference_prefix") or "?") for h in hits}
+            if not prefixes <= {"R", "C", "L"}:
+                continue
+            if {h.get("lib_id") for h in hits} & present:
+                continue
+            text = f"{role} {p.get('search_query', '')}".lower()
+            powerish = any(
+                w in text
+                for w in ("power", "bypass", "decoupl", "bulk", "전원", "바이패스", "디커플링")
+            )
+            if powerish and "C" in prefixes and supply:
+                n = 1
+                while f"C{n}" in ir.components:
+                    n += 1
+                ref = f"C{n}"
+                ir.add(Component(ref, "Device:C", str(p.get("value") or "100nF"), "", "POWER"))
+                ir.connect(supply, (ref, "1"))
+                ir.connect("GND", (ref, "2"))
+                log.append(
+                    f"restored dropped passive role {role!r}: {ref} across {supply}/GND"
+                )
+            else:
+                exempt.add(role)
+                log.append(f"passive role {role!r} missing from IR — exempted from hard gate")
+        return exempt
 
     def _pattern_synthesis(
         self, prompt: str, spec: dict, name: str, log: list[str]
