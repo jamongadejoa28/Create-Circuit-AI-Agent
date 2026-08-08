@@ -35,7 +35,8 @@ OUT = Path(__file__).resolve().parent.parent / "out" / "tests" / "patterns"
 def test_seed_patterns_load_and_validate():
     patterns = load_patterns(PATTERN_DIR)
     assert {"noninverting_amplifier", "inverting_amplifier",
-            "rc_lowpass_filter", "ldo_linear_regulator"} <= set(patterns)
+            "rc_lowpass_filter", "ldo_linear_regulator",
+            "i2c_temperature_sensor"} <= set(patterns)
     for p in patterns.values():
         assert validate_pattern(p) == []
         assert p["source"]["book"] and p["source"]["section"]
@@ -54,12 +55,43 @@ def test_validate_rejects_broken_patterns():
     }
     assert any("source.book" in e for e in validate_pattern(uncited))
 
+    unsafe_partial = {
+        "id": "z", "roles": {"R": {"kind": "resistor", "allow_unbound_pins": True}},
+        "ports": [], "topology": [], "source": {"book": "b", "section": "s"},
+        "status": "draft",
+    }
+    assert any("explicit hub roles" in e for e in validate_pattern(unsafe_partial))
+
 
 def test_match_patterns_by_keyword():
     patterns = load_patterns(PATTERN_DIR)
     hits = match_patterns("5V 비반전 증폭 회로를 만들어줘", patterns)
     assert [p["id"] for p in hits] == ["noninverting_amplifier"]
     assert match_patterns("just an MCU board", patterns) == []
+    assert [p["id"] for p in match_patterns(
+        "MCU에 I2C 온도센서를 연결해줘. 풀업과 디커플링 포함", patterns
+    )] == ["i2c_temperature_sensor"]
+
+
+@oracle
+def test_i2c_pattern_binds_verified_mcu_sensor_pair():
+    pattern = load_patterns(PATTERN_DIR)["i2c_temperature_sensor"]
+    lib_ids = {role: spec["lib_id"] for role, spec in pattern["roles"].items()}
+    symbols = load_symbols(sorted(set(lib_ids.values())))
+    binding, errors = bind_pattern(
+        pattern, {role: (lid, symbols[lid]) for role, lid in lib_ids.items()}
+    )
+    assert errors == [], errors
+    assert binding.pins["MCU"] == {"SDA": "62", "SCL": "51"}
+    assert binding.pins["SENSOR"] == {"SDA": "1", "SCL": "6", "VDD": "5", "GND": "2"}
+
+    ir = CircuitIR("i2c_pattern")
+    refs = {"MCU": "U1", "SENSOR": "U2", "R_SDA": "R1", "R_SCL": "R2", "C_SENSOR": "C1"}
+    instantiate_pattern(ir, pattern, binding, refs, {"VCC": "+3V3"})
+    assert verify_pattern_instance(ir, pattern, binding, refs, {"VCC": "+3V3"}) == []
+    nets = {n.name: set(n.nodes) for n in ir.nets}
+    assert {("U1", "62"), ("U2", "1"), ("R1", "1")} <= nets["MCU_SDA"]
+    assert {("U1", "51"), ("U2", "6"), ("R2", "1")} <= nets["MCU_SCL"]
 
 
 @oracle

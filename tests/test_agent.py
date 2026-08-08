@@ -118,7 +118,11 @@ def agent_env(tmp_path_factory):
     tmp = tmp_path_factory.mktemp("agent")
     subset = tmp / "libs"
     subset.mkdir()
-    for name in ("Device", "Switch", "power", "Amplifier_Operational", "Connector_Generic", "Regulator_Linear"):
+    for name in (
+        "Device", "Switch", "power", "Amplifier_Operational",
+        "Connector_Generic", "Regulator_Linear", "MCU_ST_STM32G4",
+        "Sensor_Temperature",
+    ):
         src = library_path(KICAD_SYMBOL_DIR, name)
         if src.is_dir():
             shutil.copytree(src, subset / src.name)
@@ -451,6 +455,49 @@ def test_pattern_synthesis_maps_regulator_ports_to_spec_rails(agent_env):
     # regulator ports landed on the SPEC rails, not literal VIN/VOUT
     names = {n.name for n in res.ir.nets}
     assert "+12V" in names and "+5V" in names and "VIN" not in names
+
+
+def test_pattern_synthesis_builds_complete_i2c_mcu_sensor_bus(agent_env):
+    parts, knowledge, tmp = agent_env
+    spec = {
+        "summary": "STM32 MCU with I2C temperature sensor",
+        "power": {"rails": [
+            {"name": "+3V3", "voltage": "3.3V"},
+            {"name": "GND", "voltage": "0V"},
+        ]},
+        "parts_needed": [
+            {"role": "microcontroller", "search_query": "STM32 microcontroller"},
+            {"role": "I2C temperature sensor", "search_query": "I2C temperature sensor"},
+            {"role": "SDA pull-up", "search_query": "resistor", "value": "10k"},
+            {"role": "SCL pull-up", "search_query": "resistor", "value": "10k"},
+            {"role": "sensor decoupling", "search_query": "capacitor", "value": "100nF"},
+        ],
+        "connections_intent": ["I2C SDA/SCL with pull-ups and local decoupling"],
+    }
+    llm = MockLLM(spec=spec)
+    agent = Agent(llm, parts, knowledge, tmp / "out-i2c-pattern")
+    res = agent.run(
+        "MCU에 I2C 온도센서를 연결해줘. 풀업과 디커플링 포함",
+        name="agent_i2c",
+    )
+    assert any("pattern synthesis: i2c_temperature_sensor" in n for n in res.log), res.log
+    assert res.ok, (res.stage, res.log[-12:], res.pipeline.errors if res.pipeline else None)
+    assert llm.calls == ["spec"]
+    assert res.pipeline.kicad_erc.ok and res.pipeline.connectivity_ok
+
+    mcu = next(r for r, c in res.ir.components.items() if "STM32G474" in c.lib_id)
+    sensor = next(r for r, c in res.ir.components.items() if "Si7050" in c.lib_id)
+    bus = [n for n in res.ir.nets if n.name not in {"+3V3", "GND"}
+           and any(r == mcu for r, _ in n.nodes)
+           and any(r == sensor for r, _ in n.nodes)]
+    assert len(bus) == 2
+    for net in bus:
+        pullups = [r for r, _ in net.nodes if r.startswith("R")]
+        assert pullups
+        assert any(
+            n.name == "+3V3" and any(r == pullups[0] for r, _ in n.nodes)
+            for n in res.ir.nets
+        )
 
 
 def test_header_roles_fall_back_to_generic_connectors(agent_env):

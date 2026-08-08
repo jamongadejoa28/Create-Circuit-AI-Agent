@@ -14,6 +14,8 @@ Pattern JSON (data/patterns/*.json):
   roles         role -> {kind, query?, lib_id?, param?, pins?}
                 IC roles declare pins: key -> {names: [...], etype?: NAME};
                 two-pin passives may omit pins (defaults to "1"/"2")
+                allow_unbound_pins may be true for hub devices (MCUs) whose
+                remaining pins are deliberately completed/NC'd downstream
   ports         external net names, order = naming priority (VIN, VOUT, ...)
   topology      [[endpoint, endpoint], ...]; endpoint = "ROLE.PINKEY" | port
   params        param -> formula string (documentation, not evaluated)
@@ -82,6 +84,14 @@ def validate_pattern(pattern: dict) -> list[str]:
     for role, spec in pattern["roles"].items():
         if _role_pins(pattern, role) is None:
             errors.append(f"role {role}: kind {spec.get('kind')!r} needs explicit pins")
+        if spec.get("allow_unbound_pins") not in (None, False, True):
+            errors.append(f"role {role}: allow_unbound_pins must be boolean")
+        if spec.get("allow_unbound_pins") and spec.get("kind") not in {
+            "microcontroller", "processor", "module", "connector"
+        }:
+            errors.append(
+                f"role {role}: allow_unbound_pins is only valid for explicit hub roles"
+            )
     seen_endpoints: set[str] = set()
     for edge in pattern["topology"]:
         if len(edge) != 2:

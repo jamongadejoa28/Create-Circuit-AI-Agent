@@ -1546,7 +1546,21 @@ class Agent:
         res.log.extend(ensure_drv8311h_operating_network(ir, symbols, "+3V3"))
         # Re-resolve because the operating pass introduced R/C/connectors;
         # the FOC map itself only needs the MCU/driver/encoder definitions.
-        res.log.extend(apply_stm32g474ret6_foc_pinmap(ir, self._resolve_symbols(ir)))
+        # The fixed G474 FOC allocation is a domain rule, not a generic MCU
+        # default.  Applying it to an I2C/UART board fabricates dozens of
+        # single-pin PWM/SPI/CAN nets and makes an otherwise complete circuit
+        # fail ERC.  Only activate it when the approved request actually asks
+        # for BLDC/FOC/motor-control functionality.
+        domain_text = " ".join(
+            [prompt, str(spec.get("summary", ""))]
+            + [
+                f"{p.get('role', '')} {p.get('search_query', '')}"
+                for p in spec.get("parts_needed", [])
+            ]
+            + list(map(str, spec.get("connections_intent", [])))
+        ).lower()
+        if any(k in domain_text for k in ("bldc", "foc", "motor control", "모터 제어")):
+            res.log.extend(apply_stm32g474ret6_foc_pinmap(ir, self._resolve_symbols(ir)))
         res.log.extend(ensure_canfd_bus_protection(ir))
         res.log.extend(mark_documented_no_connects(ir, self._resolve_symbols(ir)))
         res.log.extend(ensure_relay_flyback(ir, self._resolve_symbols(ir)))
@@ -1835,7 +1849,7 @@ class Agent:
                     if p.number not in set(pins.values())
                     and not p.hidden and p.etype.name != "NOCONNECT"
                 ]
-                if extras:
+                if extras and not rspec.get("allow_unbound_pins", False):
                     continue
                 bound = (lid, pins)
                 break
@@ -1897,6 +1911,27 @@ class Agent:
         except Exception as e:
             log.append(f"pattern instantiation failed: {e} — LLM fallback")
             return None
+
+        # A hub role (normally an MCU) intentionally exposes many more pins
+        # than one reusable peripheral pattern consumes.  Keep the exception
+        # explicit in pattern data and close every unused visible pin here;
+        # later device-specific support passes may safely move power, reset,
+        # boot and debug pins off NC onto their verified networks.
+        for role, rspec in pattern["roles"].items():
+            if not rspec.get("allow_unbound_pins", False):
+                continue
+            ref = refs[role]
+            try:
+                sym = self.parts.load_symbols([binding.lib_ids[role]])[binding.lib_ids[role]]
+            except Exception as e:
+                log.append(f"pattern {pattern['id']}: cannot close hub pins for {role}: {e}")
+                return None
+            bound_numbers = set(binding.pins[role].values())
+            for pin in sym.pins:
+                node = (ref, pin.number)
+                if pin.number not in bound_numbers and not pin.hidden and node not in ir.nc_pins:
+                    ir.nc_pins.append(node)
+            log.append(f"pattern hub {role}: unused visible pins closed as NC")
         issues = verify_pattern_instance(ir, pattern, binding, refs, ports)
         if issues:
             log.append(f"pattern verify failed: {'; '.join(issues)} — LLM fallback")
