@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from .ir import CircuitIR, SymbolDef, ValidationIssue
 from .pins import ERROR, OK, PIN_INFO, WARNING, PinDrive, PinType, pin_conflict
+from .netnames import GROUND_NAMES
 
 _SEV = {WARNING: "warning", ERROR: "error"}
 
@@ -29,7 +30,6 @@ def check_circuit(
 
 # Ground-ish net names for the extended rules; a net is also treated as
 # ground/power if a power symbol of that kind is a member.
-_GND_NAMES = {"GND", "VSS", "AGND", "DGND", "GNDA", "GNDD", "GNDPWR", "GNDREF", "0V"}
 
 
 def _power_symbol_values(ir: CircuitIR, symbols: dict[str, SymbolDef], net) -> set[str]:
@@ -51,7 +51,7 @@ def _power_symbol_values(ir: CircuitIR, symbols: dict[str, SymbolDef], net) -> s
 def _net_kind(ir: CircuitIR, symbols: dict[str, SymbolDef], net) -> str:
     """'gnd' | 'power' | 'signal' for extended-rule purposes."""
     vals = _power_symbol_values(ir, symbols, net)
-    if vals & _GND_NAMES or net.name in _GND_NAMES:
+    if vals & GROUND_NAMES or net.name in GROUND_NAMES:
         return "gnd"
     if vals or any(
         (t := _pin_type(ir, symbols, r, str(p))) == PinType.PWROUT

@@ -66,7 +66,8 @@
     "book": "Fundamentals of Electric Circuits, 7th International Student Edition (Alexander & Sadiku)",
     "section": "14.7.1-14.7.2 Passive Filters, Low-Pass and High-Pass (Eqs. 14.50-14.53)",
     "pdf_page_index": 661,
-    "tier": "A"
+    "tier": "A",
+    "provenance": "textbook"
   },
   "status": "verified"
 }

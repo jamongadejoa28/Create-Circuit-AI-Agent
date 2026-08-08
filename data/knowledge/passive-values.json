@@ -4,18 +4,85 @@
     "type": "table",
     "statement": "Standard 10% resistor values follow the E12 series per decade; any computed resistance should be rounded to the nearest value in the target series before it appears in a schematic.",
     "condition": "Choosing any commercial resistor value at 10% tolerance.",
-    "values": {"E12": [1.0, 1.2, 1.5, 1.8, 2.2, 2.7, 3.3, 3.9, 4.7, 5.6, 6.8, 8.2]},
-    "tags": ["resistor", "standard", "value", "E12", "series", "tolerance"],
-    "source": {"book": "IEC 60063 (standard); Introductory Circuit Analysis 14th ed., Table 3.5", "section": "Ch.3 standard resistor values", "tier": "B"}
+    "values": {
+      "E12": [
+        1.0,
+        1.2,
+        1.5,
+        1.8,
+        2.2,
+        2.7,
+        3.3,
+        3.9,
+        4.7,
+        5.6,
+        6.8,
+        8.2
+      ]
+    },
+    "tags": [
+      "resistor",
+      "standard",
+      "value",
+      "E12",
+      "series",
+      "tolerance"
+    ],
+    "source": {
+      "book": "IEC 60063 (standard); Introductory Circuit Analysis 14th ed., Table 3.5",
+      "section": "Ch.3 standard resistor values",
+      "tier": "B",
+      "provenance": "textbook"
+    }
   },
   {
     "id": "resistor-e24-series",
     "type": "table",
     "statement": "Standard 5% resistor values follow the E24 series per decade (E12 plus intermediate steps).",
     "condition": "Choosing any commercial resistor value at 5% tolerance — the default for generic design.",
-    "values": {"E24": [1.0, 1.1, 1.2, 1.3, 1.5, 1.6, 1.8, 2.0, 2.2, 2.4, 2.7, 3.0, 3.3, 3.6, 3.9, 4.3, 4.7, 5.1, 5.6, 6.2, 6.8, 7.5, 8.2, 9.1]},
-    "tags": ["resistor", "standard", "value", "E24", "series", "tolerance"],
-    "source": {"book": "IEC 60063 (standard); Sedra/Smith Microelectronic Circuits 7th ed., Appendix J (values verified by extraction, pdf_page_index 1682); Introductory Circuit Analysis 14th ed., Table 3.5", "section": "standard resistor values", "pdf_page_index": 1682, "tier": "A"}
+    "values": {
+      "E24": [
+        1.0,
+        1.1,
+        1.2,
+        1.3,
+        1.5,
+        1.6,
+        1.8,
+        2.0,
+        2.2,
+        2.4,
+        2.7,
+        3.0,
+        3.3,
+        3.6,
+        3.9,
+        4.3,
+        4.7,
+        5.1,
+        5.6,
+        6.2,
+        6.8,
+        7.5,
+        8.2,
+        9.1
+      ]
+    },
+    "tags": [
+      "resistor",
+      "standard",
+      "value",
+      "E24",
+      "series",
+      "tolerance"
+    ],
+    "source": {
+      "book": "IEC 60063 (standard); Sedra/Smith Microelectronic Circuits 7th ed., Appendix J (values verified by extraction, pdf_page_index 1682); Introductory Circuit Analysis 14th ed., Table 3.5",
+      "section": "standard resistor values",
+      "pdf_page_index": 1682,
+      "tier": "A",
+      "provenance": "textbook"
+    }
   },
   {
     "id": "led-series-resistor",
@@ -23,8 +90,25 @@
     "statement": "The series current-limit resistor for an LED is R = (Vsupply − Vf) / If, rounded UP to the next standard E-series value so the current stays at or below the target. Typical Vf: red ≈ 1.8–2.0 V, green/yellow ≈ 2.0–2.2 V, blue/white ≈ 3.0–3.4 V; typical indicator If: 2–20 mA.",
     "condition": "Any LED driven from a fixed supply rail through a resistor.",
     "formula": "R = (Vsupply - Vf) / If",
-    "values": {"Vf_red": "1.8-2.0V", "Vf_green_yellow": "2.0-2.2V", "Vf_blue_white": "3.0-3.4V", "If_indicator": "2-20mA"},
-    "tags": ["LED", "resistor", "current", "limit", "series", "Vf"],
-    "source": {"book": "basic circuit law (Ohm/KVL); worked examples in Practical Electronics for Inventors Ch.5 and Fundamentals of Electric Circuits", "section": "LED biasing", "tier": "A"}
+    "values": {
+      "Vf_red": "1.8-2.0V",
+      "Vf_green_yellow": "2.0-2.2V",
+      "Vf_blue_white": "3.0-3.4V",
+      "If_indicator": "2-20mA"
+    },
+    "tags": [
+      "LED",
+      "resistor",
+      "current",
+      "limit",
+      "series",
+      "Vf"
+    ],
+    "source": {
+      "book": "basic circuit law (Ohm/KVL); worked examples in Practical Electronics for Inventors Ch.5 and Fundamentals of Electric Circuits",
+      "section": "LED biasing",
+      "tier": "A",
+      "provenance": "textbook"
+    }
   }
 ]

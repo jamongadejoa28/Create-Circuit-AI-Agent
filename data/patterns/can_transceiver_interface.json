@@ -234,7 +234,8 @@
   "source": {
     "book": "circuitgen pattern fixtures (kicad-cli ERC-verified)",
     "section": "tests/test_agent.py CAN pattern E2E; FDCAN2 PB5/PB6 assignment per apply_stm32g474ret6_foc_pinmap rationale (normalize.py: AF9, avoids HRTIM bank); TJA1051 pin functions per sanitize_known_device_nets whitelist",
-    "tier": "A"
+    "tier": "A",
+    "provenance": "internal-fixture"
   },
   "status": "verified"
 }

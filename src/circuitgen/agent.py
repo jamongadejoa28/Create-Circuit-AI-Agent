@@ -28,6 +28,7 @@ from .knowledge import KnowledgeIndex
 from .partindex import PartIndex
 from .pipeline import PipelineResult, generate
 from .schemas import BLOCK_PLAN, CIRCUIT_IR, REPAIR_PATCH, REQUIREMENT_SPEC
+from .netnames import GROUND_NAMES
 
 MAX_REPAIRS = 3
 CANDIDATES_PER_QUERY = 3
@@ -71,7 +72,6 @@ _SYSTEM = (
     "and net conventions given to you. Never invent library ids or pins."
 )
 
-_GND_NAMES = {"GND", "VSS", "AGND", "DGND", "0V"}
 
 
 _RAIL_ALIASES = {
@@ -112,14 +112,14 @@ def _normalize_rails(spec: dict) -> dict:
     rails = spec.setdefault("power", {}).setdefault("rails", [])
     for rail in rails:
         name = rail.get("name", "").strip().upper().replace(" ", "")
-        if name in _GND_NAMES:
+        if name in GROUND_NAMES:
             rail["name"] = "GND" if name in ("GND", "0V") else name
             continue
         name = name.replace("3.3V", "3V3").replace("1.8V", "1V8").replace("2.5V", "2V5")
         if name and name[0].isdigit():
             name = "+" + name
         rail["name"] = name
-    if not any(r.get("name") in _GND_NAMES for r in rails):
+    if not any(r.get("name") in GROUND_NAMES for r in rails):
         rails.append({"name": "GND", "voltage": "0V"})
     return spec
 
@@ -390,7 +390,7 @@ class Agent:
                 supply_names = [
                     str(r.get("name", ""))
                     for r in spec.get("power", {}).get("rails", [])
-                    if str(r.get("name", "")).upper() not in _GND_NAMES
+                    if str(r.get("name", "")).upper() not in GROUND_NAMES
                 ]
                 output_hint = supply_names[-1].lstrip("+") if len(supply_names) > 1 else ""
                 query = f"{output_hint} linear voltage regulator".strip()
@@ -1077,12 +1077,11 @@ class Agent:
         A/B/INDEX outputs to GND, ERC 21→58); pin-type math says that can
         never be right.
         """
-        gnd_like = {"GND", "VSS", "AGND", "DGND", "PGND", "0V"}
         symbols = self._resolve_symbols(ir)
 
         def is_rail(net_name: str) -> tuple[bool, bool]:
             """(is a supply net, is ground-like)"""
-            grounded = net_name.upper() in gnd_like
+            grounded = net_name.upper() in GROUND_NAMES
             supply = grounded or net_name.startswith("+")
             if not supply:
                 for net in ir.nets:
@@ -1093,7 +1092,7 @@ class Agent:
                         sym = symbols.get(c.lib_id) if c else None
                         if sym and sym.is_power and c.lib_id != "power:PWR_FLAG":
                             supply = True
-                            grounded = grounded or (c.value or "").upper() in gnd_like
+                            grounded = grounded or (c.value or "").upper() in GROUND_NAMES
             return supply, grounded
 
         text = " ".join(problems)
@@ -1951,7 +1950,7 @@ class Agent:
         # A port whose net already reaches a connector inside the pattern
         # (CAN bus lines on J_CAN) is anchored by design — a second header
         # paired with GND would be a duplicate.
-        rail_names = {"GND", "0V", "VSS", supply.upper()}
+        rail_names = GROUND_NAMES | {supply.upper()}
         jn = 0
         for port in pattern.get("ports", []):
             net = ports.get(port, port)

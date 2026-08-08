@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from .ir import CircuitIR, SymbolDef
+from .netnames import GROUND_NAMES
 
 
 @dataclass
@@ -107,10 +108,9 @@ def analyze_topology(ir: CircuitIR, symbols: dict[str, SymbolDef]) -> TopologyRe
     report = TopologyReport()
     pin_net = _pin_nets(ir)
     graph = _two_pin_edges(ir, symbols, pin_net)
-    ground_names = {"GND", "VSS", "AGND", "DGND", "PGND", "0V"}
     # rails must not carry a feedback path: ground-like names plus any net
     # holding a power-symbol pin (matches how the emitter identifies rails)
-    rail_nets = {n for n in (net.name for net in ir.nets) if n.upper() in ground_names}
+    rail_nets = {n for n in (net.name for net in ir.nets) if n.upper() in GROUND_NAMES}
     for net in ir.nets:
         for r, _p in net.nodes:
             comp = ir.components.get(r)
@@ -168,7 +168,7 @@ def analyze_topology(ir: CircuitIR, symbols: dict[str, SymbolDef]) -> TopologyRe
             continue
         in_pin = _named_pin(sym, {"IN", "VIN", "VI", "INPUT"})
         out_pin = _named_pin(sym, {"OUT", "VOUT", "VO", "OUTPUT"})
-        gnd_pin = _named_pin(sym, ground_names)
+        gnd_pin = _named_pin(sym, GROUND_NAMES)
         if not (in_pin and out_pin and gnd_pin):
             continue
         report.regulator_total += 1

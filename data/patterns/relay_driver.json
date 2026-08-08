@@ -1,55 +1,153 @@
 {
   "id": "relay_driver",
   "function": "GPIO drives a relay coil through an NPN low-side switch with base resistor and flyback diode across the coil",
-  "apply_when": ["relay", "릴레이"],
+  "apply_when": [
+    "relay",
+    "릴레이"
+  ],
   "roles": {
     "Q": {
       "kind": "transistor",
       "query": "NPN transistor",
       "pins": {
-        "B": {"names": ["B", "BASE"]},
-        "C": {"names": ["C", "COLLECTOR"]},
-        "E": {"names": ["E", "EMITTER"]}
+        "B": {
+          "names": [
+            "B",
+            "BASE"
+          ]
+        },
+        "C": {
+          "names": [
+            "C",
+            "COLLECTOR"
+          ]
+        },
+        "E": {
+          "names": [
+            "E",
+            "EMITTER"
+          ]
+        }
       }
     },
-    "RB": {"kind": "resistor", "lib_id": "Device:R", "param": "Rb", "default_value": "1k"},
+    "RB": {
+      "kind": "resistor",
+      "lib_id": "Device:R",
+      "param": "Rb",
+      "default_value": "1k"
+    },
     "D": {
       "kind": "diode",
       "lib_id": "Device:D",
-      "pins": {"K": {"names": ["K"]}, "A": {"names": ["A"]}}
+      "pins": {
+        "K": {
+          "names": [
+            "K"
+          ]
+        },
+        "A": {
+          "names": [
+            "A"
+          ]
+        }
+      }
     },
     "K1": {
       "kind": "relay",
       "query": "relay SPST",
-      "pins": {"A1": {}, "A2": {}, "13": {}, "14": {}}
+      "pins": {
+        "A1": {},
+        "A2": {},
+        "13": {},
+        "14": {}
+      }
     },
     "LOAD": {
       "kind": "connector",
       "lib_id": "Connector_Generic:Conn_01x02",
-      "pins": {"1": {}, "2": {}}
+      "pins": {
+        "1": {},
+        "2": {}
+      }
     }
   },
-  "ports": ["GPIO", "VCOIL", "GND"],
-  "rail_ports": {"VCOIL": "highest_supply"},
-  "topology": [
-    ["GPIO", "RB.1"],
-    ["RB.2", "Q.B"],
-    ["Q.E", "GND"],
-    ["Q.C", "K1.A2"],
-    ["D.A", "K1.A2"],
-    ["D.K", "K1.A1"],
-    ["K1.A1", "VCOIL"],
-    ["K1.13", "LOAD.1"],
-    ["K1.14", "LOAD.2"]
+  "ports": [
+    "GPIO",
+    "VCOIL",
+    "GND"
   ],
-  "params": {"Rb": "base resistor sized for saturation at GPIO voltage"},
-  "required_wired": [["RB.2", "Q.B"], ["D.A", "K1.A2"], ["D.K", "K1.A1"]],
-  "placement": {"inputs": ["GPIO"], "outputs": ["LOAD"]},
+  "rail_ports": {
+    "VCOIL": "highest_supply"
+  },
+  "topology": [
+    [
+      "GPIO",
+      "RB.1"
+    ],
+    [
+      "RB.2",
+      "Q.B"
+    ],
+    [
+      "Q.E",
+      "GND"
+    ],
+    [
+      "Q.C",
+      "K1.A2"
+    ],
+    [
+      "D.A",
+      "K1.A2"
+    ],
+    [
+      "D.K",
+      "K1.A1"
+    ],
+    [
+      "K1.A1",
+      "VCOIL"
+    ],
+    [
+      "K1.13",
+      "LOAD.1"
+    ],
+    [
+      "K1.14",
+      "LOAD.2"
+    ]
+  ],
+  "params": {
+    "Rb": "base resistor sized for saturation at GPIO voltage"
+  },
+  "required_wired": [
+    [
+      "RB.2",
+      "Q.B"
+    ],
+    [
+      "D.A",
+      "K1.A2"
+    ],
+    [
+      "D.K",
+      "K1.A1"
+    ]
+  ],
+  "placement": {
+    "inputs": [
+      "GPIO"
+    ],
+    "outputs": [
+      "LOAD"
+    ]
+  },
   "source": {
     "book": "Practical Electronics for Inventors, 4th Ed. (Scherz & Monk)",
     "section": "13.5.3 High-Power Digital Outputs — Relays and Other Inductive Loads",
     "pdf_page_index": 1369,
-    "tier": "A"
+    "tier": "A",
+    "provenance": "textbook"
   },
   "status": "verified"
 }

@@ -9,12 +9,19 @@
 # --- copyrighted textbook PDFs (never commit / redistribute) ---
 /이론지식/
 
+# --- copyrighted / reference binaries kept locally, never committed ---
+/DS_*.pdf
+/dvk-*.pdf
+/*.png
+
 # --- python ---
 .venv/
 .venv-skidl/
 __pycache__/
 *.pyc
 .pytest_cache/
+.coverage
+htmlcov/
 *.egg-info/
 dist/
 build/

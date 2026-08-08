@@ -27,7 +27,8 @@
       "book": "Digital Fundamentals 11ed (Floyd)",
       "section": "15-3 TTL (Bipolar) Circuits (Open-Collector Gates) + 15-2 CMOS Circuits (Open-Drain Gates); current limits in 15-4 (pdf_page_index 867, 872, 877, 878)",
       "pdf_page_index": 872,
-      "tier": "A"
+      "tier": "A",
+      "provenance": "textbook"
     }
   },
   {
@@ -62,7 +63,8 @@
       "book": "Digital Fundamentals 11ed (Floyd)",
       "section": "15-4 Practical Considerations in the Use of TTL (Using Open-Collector Gates for Wired-AND Operation, Figures 15-37/15-38/15-39)",
       "pdf_page_index": 875,
-      "tier": "A"
+      "tier": "A",
+      "provenance": "textbook"
     }
   },
   {
@@ -93,7 +95,8 @@
       "book": "Digital Fundamentals 11ed (Floyd)",
       "section": "15-4 Practical Considerations in the Use of TTL, Example 15-6 (Figure 15-40)",
       "pdf_page_index": 877,
-      "tier": "A"
+      "tier": "A",
+      "provenance": "textbook"
     }
   },
   {
@@ -116,7 +119,8 @@
       "book": "Digital Fundamentals 11ed (Floyd)",
       "section": "15-4 Practical Considerations in the Use of TTL (Connection of Totem-Pole Outputs, Figure 15-41; chapter summary pdf_page_index 885)",
       "pdf_page_index": 877,
-      "tier": "A"
+      "tier": "A",
+      "provenance": "textbook"
     }
   },
   {
@@ -146,7 +150,8 @@
       "book": "Digital Fundamentals 11ed (Floyd)",
       "section": "14 Practical Computer System Considerations (Shared Signal Lines) + 13-10 Bus Interfacing + 15-2/15-3 tri-state circuits (pdf_page_index 785-786, 807, 867, 872)",
       "pdf_page_index": 807,
-      "tier": "A"
+      "tier": "A",
+      "provenance": "textbook"
     }
   },
   {
@@ -169,7 +174,8 @@
       "book": "Digital Fundamentals 11ed (Floyd)",
       "section": "13-10 Bus Interfacing (Bus Contention) + 14 Practical Computer System Considerations (Shared Signal Lines) (pdf_page_index 786 and 807)",
       "pdf_page_index": 786,
-      "tier": "A"
+      "tier": "A",
+      "provenance": "textbook"
     }
   },
   {
@@ -206,7 +212,8 @@
       "book": "Digital Fundamentals 11ed (Floyd)",
       "section": "13-10 Bus Interfacing (Multiplexed I/Os, Figure 13-80; two-source select, Figure 13-76)",
       "pdf_page_index": 786,
-      "tier": "A"
+      "tier": "A",
+      "provenance": "textbook"
     }
   },
   {
@@ -230,7 +237,8 @@
       "book": "Digital Fundamentals 11ed (Floyd)",
       "section": "7-5 One-Shots (The Schmitt-Trigger Symbol) + 14 Practical Computer System Considerations (buffers, pdf_page_index 809)",
       "pdf_page_index": 417,
-      "tier": "A"
+      "tier": "A",
+      "provenance": "textbook"
     }
   },
   {
@@ -265,7 +273,8 @@
       "book": "Digital Fundamentals 11ed (Floyd)",
       "section": "7-5 One-Shots (Schmitt-Trigger Symbol, pdf_page_index 417) + 7-6 The Astable Multivibrator (Figure 7-55, pdf_page_index 423) + ch. 14 (pdf_page_index 809)",
       "pdf_page_index": 417,
-      "tier": "A"
+      "tier": "A",
+      "provenance": "textbook"
     }
   },
   {
@@ -303,7 +312,8 @@
       "book": "Digital Fundamentals 11ed (Floyd)",
       "section": "7-1 Latches (An Application: The Latch as a Contact-Bounce Eliminator, Figure 7-6; 74HC279A Figure 7-7)",
       "pdf_page_index": 391,
-      "tier": "A"
+      "tier": "A",
+      "provenance": "textbook"
     }
   }
 ]

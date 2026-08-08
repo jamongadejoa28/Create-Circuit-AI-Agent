@@ -17,7 +17,8 @@
       "book": "Fundamentals of Electric Circuits, 7th International Student Edition (Alexander & Sadiku)",
       "section": "5.3 Ideal Op Amp (Eqs. 5.5-5.7); 5.2 for feedback definition",
       "pdf_page_index": 203,
-      "tier": "A"
+      "tier": "A",
+      "provenance": "textbook"
     }
   },
   {
@@ -38,7 +39,8 @@
       "book": "Fundamentals of Electric Circuits, 7th International Student Edition (Alexander & Sadiku)",
       "section": "5.2 Operational Amplifiers (Eq. 5.4, Fig. 5.5)",
       "pdf_page_index": 201,
-      "tier": "A"
+      "tier": "A",
+      "provenance": "textbook"
     }
   },
   {
@@ -60,7 +62,8 @@
       "book": "Fundamentals of Electric Circuits, 7th International Student Edition (Alexander & Sadiku)",
       "section": "5.4 Inverting Amplifier (Eq. 5.9, Example 5.3)",
       "pdf_page_index": 205,
-      "tier": "A"
+      "tier": "A",
+      "provenance": "textbook"
     }
   },
   {
@@ -83,7 +86,8 @@
       "book": "Fundamentals of Electric Circuits, 7th International Student Edition (Alexander & Sadiku)",
       "section": "5.5 Noninverting Amplifier (Eqs. 5.11-5.12)",
       "pdf_page_index": 207,
-      "tier": "A"
+      "tier": "A",
+      "provenance": "textbook"
     }
   },
   {
@@ -106,7 +110,8 @@
       "book": "Fundamentals of Electric Circuits, 7th International Student Edition (Alexander & Sadiku)",
       "section": "5.6 Summing Amplifier (Eq. 5.15, Example 5.6)",
       "pdf_page_index": 209,
-      "tier": "A"
+      "tier": "A",
+      "provenance": "textbook"
     }
   },
   {
@@ -130,7 +135,8 @@
       "book": "Fundamentals of Electric Circuits, 7th International Student Edition (Alexander & Sadiku)",
       "section": "5.7 Difference Amplifier (Eqs. 5.18-5.21)",
       "pdf_page_index": 211,
-      "tier": "A"
+      "tier": "A",
+      "provenance": "textbook"
     }
   },
   {
@@ -155,7 +161,8 @@
       "book": "Fundamentals of Electric Circuits, 7th International Student Edition (Alexander & Sadiku)",
       "section": "14.7.1-14.7.2 Passive Filters, Low-Pass and High-Pass (Eqs. 14.50-14.53)",
       "pdf_page_index": 661,
-      "tier": "A"
+      "tier": "A",
+      "provenance": "textbook"
     }
   },
   {
@@ -179,7 +186,8 @@
       "book": "Fundamentals of Electric Circuits, 7th International Student Edition (Alexander & Sadiku)",
       "section": "14.8.1-14.8.2 Active Filters, First-Order Low-Pass/High-Pass (Eqs. 14.58-14.64)",
       "pdf_page_index": 666,
-      "tier": "A"
+      "tier": "A",
+      "provenance": "textbook"
     }
   },
   {
@@ -211,7 +219,8 @@
       "book": "Fundamentals of Electric Circuits, 7th International Student Edition (Alexander & Sadiku)",
       "section": "5.2 Operational Amplifiers, Table 5.1 (741 values in Example 5.1, pdf index 202) — Table 5.1 values verified against the rendered page image (vision pass, 2026-08-07)",
       "pdf_page_index": 201,
-      "tier": "A"
+      "tier": "A",
+      "provenance": "textbook"
     }
   }
 ]

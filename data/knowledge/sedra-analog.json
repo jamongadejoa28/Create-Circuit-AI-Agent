@@ -24,7 +24,8 @@
       "book": "Sedra/Smith Microelectronic Circuits 7e",
       "section": "4.5.1-4.5.3 Rectifier Circuits",
       "pdf_page_index": 237,
-      "tier": "A"
+      "tier": "A",
+      "provenance": "textbook"
     }
   },
   {
@@ -52,7 +53,8 @@
       "book": "Sedra/Smith Microelectronic Circuits 7e",
       "section": "4.5.4 The Rectifier with a Filter Capacitor (Peak Rectifier)",
       "pdf_page_index": 244,
-      "tier": "A"
+      "tier": "A",
+      "provenance": "textbook"
     }
   },
   {
@@ -80,7 +82,8 @@
       "book": "Sedra/Smith Microelectronic Circuits 7e",
       "section": "7.4 Biasing",
       "pdf_page_index": 490,
-      "tier": "A"
+      "tier": "A",
+      "provenance": "textbook"
     }
   },
   {
@@ -110,7 +113,8 @@
       "book": "Sedra/Smith Microelectronic Circuits 7e",
       "section": "7.4 Biasing, Example 7.12",
       "pdf_page_index": 491,
-      "tier": "A"
+      "tier": "A",
+      "provenance": "textbook"
     }
   },
   {
@@ -138,7 +142,8 @@
       "book": "Sedra/Smith Microelectronic Circuits 7e",
       "section": "7.4 Biasing (classical MOSFET bias example)",
       "pdf_page_index": 486,
-      "tier": "A"
+      "tier": "A",
+      "provenance": "textbook"
     }
   },
   {
@@ -163,7 +168,8 @@
       "book": "Sedra/Smith Microelectronic Circuits 7e",
       "section": "18.2.1 The Wien-Bridge Oscillator",
       "pdf_page_index": 1417,
-      "tier": "A"
+      "tier": "A",
+      "provenance": "textbook"
     }
   },
   {
@@ -187,7 +193,8 @@
       "book": "Sedra/Smith Microelectronic Circuits 7e",
       "section": "18.7.2 The 555 Circuit (monostable)",
       "pdf_page_index": 1448,
-      "tier": "A"
+      "tier": "A",
+      "provenance": "textbook"
     }
   },
   {
@@ -218,7 +225,8 @@
       "book": "Sedra/Smith Microelectronic Circuits 7e",
       "section": "18.7.3 An Astable Multivibrator Using the 555 IC",
       "pdf_page_index": 1451,
-      "tier": "A"
+      "tier": "A",
+      "provenance": "textbook"
     }
   }
 ]

@@ -21,7 +21,8 @@
       "book": "Digital Fundamentals, 11th ed., Thomas L. Floyd",
       "section": "7-5 One-Shots, 'The 555 Timer as a One-Shot', Equation 7-3, Figure 7-53, Example 7-13",
       "pdf_page_index": 420,
-      "tier": "A"
+      "tier": "A",
+      "provenance": "textbook"
     }
   },
   {
@@ -46,7 +47,8 @@
       "book": "Digital Fundamentals, 11th ed., Thomas L. Floyd",
       "section": "7-6 The Astable Multivibrator, Equations 7-4 to 7-7, Figure 7-56, Example 7-14",
       "pdf_page_index": 425,
-      "tier": "A"
+      "tier": "A",
+      "provenance": "textbook"
     }
   },
   {
@@ -69,7 +71,8 @@
       "book": "Digital Fundamentals, 11th ed., Thomas L. Floyd",
       "section": "7-6 The Astable Multivibrator, Equation 7-8, Figure 7-59",
       "pdf_page_index": 425,
-      "tier": "A"
+      "tier": "A",
+      "provenance": "textbook"
     }
   },
   {
@@ -99,7 +102,8 @@
       "book": "Digital Fundamentals, 11th ed., Thomas L. Floyd",
       "section": "3-8 Fan-Out and Loading (p.168) and 15-1 Loading and Fan-Out (pp.861-863)",
       "pdf_page_index": 168,
-      "tier": "A"
+      "tier": "A",
+      "provenance": "textbook"
     }
   },
   {
@@ -126,7 +130,8 @@
       "book": "Digital Fundamentals, 11th ed., Thomas L. Floyd",
       "section": "15-4 Practical Considerations in the Use of TTL, 'Unused TTL Inputs' / 'Inputs to VCC or Ground' (p.879); CMOS rule in 15-2 (p.868); summary in 3-8 (p.169)",
       "pdf_page_index": 879,
-      "tier": "A"
+      "tier": "A",
+      "provenance": "textbook"
     }
   },
   {
@@ -174,7 +179,8 @@
       "book": "Digital Fundamentals, 11th ed., Thomas L. Floyd",
       "section": "15-1 Basic Operational Characteristics and Parameters, Figures 15-2/15-3, Equations 15-1/15-2, Example 15-1 (pp.856-859); same values in 3-8 (p.168)",
       "pdf_page_index": 857,
-      "tier": "A"
+      "tier": "A",
+      "provenance": "textbook"
     }
   },
   {
@@ -249,7 +255,8 @@
       "book": "Digital Fundamentals, 11th ed., Thomas L. Floyd",
       "section": "15-5 Comparison of CMOS and TTL Performance, Table 15-1 — Table 15-1 values verified against the rendered page image (vision pass, 2026-08-07)",
       "pdf_page_index": 881,
-      "tier": "A"
+      "tier": "A",
+      "provenance": "textbook"
     }
   }
 ]

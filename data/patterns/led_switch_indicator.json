@@ -1,36 +1,105 @@
 {
   "id": "led_switch_indicator",
   "function": "Series chain VCC -> push button -> current-limit resistor -> LED -> GND; button closes the loop, resistor sets LED current",
-  "apply_when": ["led 회로", "led circuit", "led indicator", "switch led", "켜는 led", "led를 켜", "button led"],
-  "apply_unless": ["mcu", "마이크로컨트롤러", "stm32", "esp32", "gpio"],
+  "apply_when": [
+    "led 회로",
+    "led circuit",
+    "led indicator",
+    "switch led",
+    "켜는 led",
+    "led를 켜",
+    "button led"
+  ],
+  "apply_unless": [
+    "mcu",
+    "마이크로컨트롤러",
+    "stm32",
+    "esp32",
+    "gpio"
+  ],
   "roles": {
     "SW": {
       "kind": "switch",
       "query": "push button switch",
-      "pins": {"1": {}, "2": {}}
+      "pins": {
+        "1": {},
+        "2": {}
+      }
     },
-    "R": {"kind": "resistor", "lib_id": "Device:R", "param": "Rled", "default_value": "330R"},
+    "R": {
+      "kind": "resistor",
+      "lib_id": "Device:R",
+      "param": "Rled",
+      "default_value": "330R"
+    },
     "D": {
       "kind": "led",
       "lib_id": "Device:LED",
-      "pins": {"A": {"names": ["A"]}, "K": {"names": ["K"]}}
+      "pins": {
+        "A": {
+          "names": [
+            "A"
+          ]
+        },
+        "K": {
+          "names": [
+            "K"
+          ]
+        }
+      }
     }
   },
-  "ports": ["VCC", "GND"],
-  "rail_ports": {"VCC": "highest_supply"},
-  "topology": [
-    ["VCC", "SW.1"],
-    ["SW.2", "R.1"],
-    ["R.2", "D.A"],
-    ["D.K", "GND"]
+  "ports": [
+    "VCC",
+    "GND"
   ],
-  "params": {"Rled": "(VCC - Vf) / If"},
-  "required_wired": [["SW.2", "R.1"], ["R.2", "D.A"]],
-  "placement": {"inputs": ["SW"], "outputs": ["D"]},
+  "rail_ports": {
+    "VCC": "highest_supply"
+  },
+  "topology": [
+    [
+      "VCC",
+      "SW.1"
+    ],
+    [
+      "SW.2",
+      "R.1"
+    ],
+    [
+      "R.2",
+      "D.A"
+    ],
+    [
+      "D.K",
+      "GND"
+    ]
+  ],
+  "params": {
+    "Rled": "(VCC - Vf) / If"
+  },
+  "required_wired": [
+    [
+      "SW.2",
+      "R.1"
+    ],
+    [
+      "R.2",
+      "D.A"
+    ]
+  ],
+  "placement": {
+    "inputs": [
+      "SW"
+    ],
+    "outputs": [
+      "D"
+    ]
+  },
   "source": {
     "book": "circuitgen golden fixtures (kicad-cli ERC-verified)",
     "section": "examples.py (golden 1) — knowledge id golden1_led_button",
-    "tier": "A"
+    "tier": "A",
+    "provenance": "internal-fixture"
   },
   "status": "verified"
 }

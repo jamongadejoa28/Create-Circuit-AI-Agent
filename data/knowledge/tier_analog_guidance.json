@@ -35,7 +35,8 @@
       "book": "Sedra/Smith Microelectronic Circuits 7e",
       "section": "2.4.1 (Fig. 2.16, Eqs. 2.15-2.17, 2.20)",
       "pdf_page_index": 107,
-      "tier": "A"
+      "tier": "A",
+      "provenance": "textbook"
     }
   },
   {
@@ -62,7 +63,8 @@
       "book": "Sedra/Smith Microelectronic Circuits 7e",
       "section": "2.4.1 (Eq. 2.19, Exercise 2.15)",
       "pdf_page_index": 110,
-      "tier": "A"
+      "tier": "A",
+      "provenance": "textbook"
     }
   },
   {
@@ -100,7 +102,8 @@
       "book": "Sedra/Smith Microelectronic Circuits 7e",
       "section": "2.4.2 (Fig. 2.20b, Eq. 2.22)",
       "pdf_page_index": 112,
-      "tier": "A"
+      "tier": "A",
+      "provenance": "textbook"
     }
   },
   {
@@ -121,7 +124,8 @@
       "book": "Sedra/Smith Microelectronic Circuits 7e",
       "section": "2.4.2 (Fig. 2.20a discussion, drawbacks 1-3)",
       "pdf_page_index": 112,
-      "tier": "A"
+      "tier": "A",
+      "provenance": "textbook"
     }
   },
   {
@@ -157,7 +161,8 @@
       "book": "Sedra/Smith Microelectronic Circuits 7e (with Sadiku FEC 7e Sec. 5.10.2 gain form)",
       "section": "2.4.1-2.4.2",
       "pdf_page_index": 109,
-      "tier": "A"
+      "tier": "A",
+      "provenance": "textbook"
     }
   },
   {
@@ -189,7 +194,8 @@
       "book": "Sedra/Smith Microelectronic Circuits 7e",
       "section": "2.4.2 Example 2.3, Fig. 2.21",
       "pdf_page_index": 113,
-      "tier": "A"
+      "tier": "A",
+      "provenance": "textbook"
     }
   },
   {
@@ -227,7 +233,8 @@
       "book": "Sedra/Smith Microelectronic Circuits 7e",
       "section": "18.4 (Figs. 18.21-18.22, Eqs. 18.31-18.32, Exercise 18.18)",
       "pdf_page_index": 1435,
-      "tier": "A"
+      "tier": "A",
+      "provenance": "textbook"
     }
   },
   {
@@ -251,7 +258,8 @@
       "book": "Sedra/Smith Microelectronic Circuits 7e",
       "section": "18.4.6 (Figs. 18.23-18.24)",
       "pdf_page_index": 1438,
-      "tier": "A"
+      "tier": "A",
+      "provenance": "textbook"
     }
   },
   {
@@ -289,7 +297,8 @@
       "book": "Sedra/Smith Microelectronic Circuits (legacy Ch. 9 data-converter section bundled in this PDF)",
       "section": "9.7.1-9.7.3 (Fig. 9.36)",
       "pdf_page_index": 1728,
-      "tier": "B"
+      "tier": "B",
+      "provenance": "textbook"
     }
   },
   {
@@ -317,7 +326,8 @@
       "book": "Sadiku Fundamentals of Electric Circuits 7e",
       "section": "2.8 Applications (Eq. 2.61, Fig. 2.61, Practice Prob. 2.17)",
       "pdf_page_index": 86,
-      "tier": "A"
+      "tier": "A",
+      "provenance": "textbook"
     }
   },
   {
@@ -345,7 +355,8 @@
       "book": "Sadiku Fundamentals of Electric Circuits 7e",
       "section": "5.10.2 (Eq. 5.25, Fig. 5.38, Example 5.13)",
       "pdf_page_index": 221,
-      "tier": "A"
+      "tier": "A",
+      "provenance": "textbook"
     }
   }
 ]

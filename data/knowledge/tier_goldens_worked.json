@@ -29,7 +29,8 @@
     "source": {
       "book": "circuitgen golden fixtures (kicad-cli ERC-verified)",
       "section": "examples.py (golden 1)",
-      "tier": "A"
+      "tier": "A",
+      "provenance": "internal-fixture"
     },
     "statement": "Wire a push-button-controlled LED indicator on a +5V rail with a current-limit resistor, producing a KiCad schematic that passes ERC with zero violations.",
     "tags": [
@@ -73,7 +74,8 @@
     "source": {
       "book": "circuitgen golden fixtures (kicad-cli ERC-verified)",
       "section": "goldens.py",
-      "tier": "A"
+      "tier": "A",
+      "provenance": "internal-fixture"
     },
     "statement": "Minimal bring-up circuit for an STM32G474RETx (LQFP-64): full power/decoupling, reset, boot strap, and a 10-pin ARM SWD debug connector, passing kicad-cli ERC with zero violations.",
     "tags": [
@@ -115,7 +117,8 @@
     "source": {
       "book": "circuitgen golden fixtures (kicad-cli ERC-verified)",
       "section": "goldens.py",
-      "tier": "A"
+      "tier": "A",
+      "provenance": "internal-fixture"
     },
     "statement": "Attach an Si7050-A20 I2C temperature sensor to an STM32G474RETx over I2C1 with proper pull-ups, plus the full minimal MCU hookup, passing kicad-cli ERC with zero violations.",
     "tags": [
@@ -158,7 +161,8 @@
     "source": {
       "book": "circuitgen golden fixtures (kicad-cli ERC-verified)",
       "section": "goldens.py",
-      "tier": "A"
+      "tier": "A",
+      "provenance": "internal-fixture"
     },
     "statement": "Attach a W25Q32JVSS SPI NOR flash (SOIC-8) to an STM32G474RETx over SPI1, handling /CS, /WP and /HOLD correctly, plus full minimal MCU hookup, passing kicad-cli ERC with zero violations.",
     "tags": [
@@ -199,7 +203,8 @@
     "source": {
       "book": "circuitgen golden fixtures (kicad-cli ERC-verified)",
       "section": "goldens.py",
-      "tier": "A"
+      "tier": "A",
+      "provenance": "internal-fixture"
     },
     "statement": "STM32G474RETx with a 4-pin UART debug header, a 2-pin screw-terminal power input, and a GPIO-driven status LED, passing kicad-cli ERC with zero violations.",
     "tags": [
@@ -235,7 +240,8 @@
     "source": {
       "book": "circuitgen golden fixtures (kicad-cli ERC-verified)",
       "section": "goldens.py",
-      "tier": "A"
+      "tier": "A",
+      "provenance": "internal-fixture"
     },
     "statement": "Any STM32 design needs a canonical support skeleton before peripherals: all supply pins powered and decoupled, reset conditioned, boot mode strapped, and a debug port attached.",
     "tags": [
@@ -270,7 +276,8 @@
     "source": {
       "book": "circuitgen golden fixtures (kicad-cli ERC-verified)",
       "section": "goldens.py",
-      "tier": "A"
+      "tier": "A",
+      "provenance": "internal-fixture"
     },
     "statement": "Connect an I2C peripheral to an MCU: the bus is open-drain and will not function without pull-ups, and sensors need local decoupling.",
     "tags": [
@@ -305,7 +312,8 @@
     "source": {
       "book": "circuitgen golden fixtures (kicad-cli ERC-verified)",
       "section": "goldens.py",
-      "tier": "A"
+      "tier": "A",
+      "provenance": "internal-fixture"
     },
     "statement": "Attach a SOIC-8 SPI NOR flash (W25Qxx-class) to an MCU so it is electrically sound in single-SPI mode and safe during MCU reset.",
     "tags": [
@@ -340,7 +348,8 @@
     "source": {
       "book": "circuitgen golden fixtures (kicad-cli ERC-verified)",
       "section": "goldens.py",
-      "tier": "A"
+      "tier": "A",
+      "provenance": "internal-fixture"
     },
     "statement": "Expose an MCU UART on a pin header for logging/console/bootloader access via a USB-serial adapter.",
     "tags": [
@@ -375,7 +384,8 @@
     "source": {
       "book": "circuitgen golden fixtures (kicad-cli ERC-verified)",
       "section": "goldens.py",
-      "tier": "A"
+      "tier": "A",
+      "provenance": "internal-fixture"
     },
     "statement": "Add a firmware-controlled indicator LED to any MCU design with correct polarity and safe current.",
     "tags": [

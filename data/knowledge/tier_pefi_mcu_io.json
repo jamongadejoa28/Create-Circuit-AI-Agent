@@ -47,7 +47,8 @@
         482,
         486
       ],
-      "tier": "A"
+      "tier": "A",
+      "provenance": "textbook"
     }
   },
   {
@@ -99,7 +100,8 @@
         1365,
         1366
       ],
-      "tier": "A"
+      "tier": "A",
+      "provenance": "textbook"
     }
   },
   {
@@ -144,7 +146,8 @@
         1368,
         1369
       ],
-      "tier": "A"
+      "tier": "A",
+      "provenance": "textbook"
     }
   },
   {
@@ -178,7 +181,8 @@
         481,
         482
       ],
-      "tier": "A"
+      "tier": "A",
+      "provenance": "textbook"
     }
   },
   {
@@ -207,7 +211,8 @@
       "book": "Practical Electronics for Inventors, 4th Edition",
       "section": "13.5.3 High-Power Digital Outputs",
       "pdf_page_index": 1368,
-      "tier": "A"
+      "tier": "A",
+      "provenance": "textbook"
     }
   },
   {
@@ -250,7 +255,8 @@
         1382,
         1383
       ],
-      "tier": "A"
+      "tier": "A",
+      "provenance": "textbook"
     }
   },
   {
@@ -293,7 +299,8 @@
         1366,
         1367
       ],
-      "tier": "A"
+      "tier": "A",
+      "provenance": "textbook"
     }
   },
   {
@@ -325,7 +332,8 @@
         1385,
         1386
       ],
-      "tier": "A"
+      "tier": "A",
+      "provenance": "textbook"
     }
   },
   {
@@ -361,7 +369,8 @@
         480,
         481
       ],
-      "tier": "A"
+      "tier": "A",
+      "provenance": "textbook"
     }
   },
   {
@@ -393,7 +402,8 @@
         483,
         485
       ],
-      "tier": "A"
+      "tier": "A",
+      "provenance": "textbook"
     }
   }
 ]

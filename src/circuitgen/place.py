@@ -26,6 +26,7 @@ from .geometry import (
 )
 from .ir import CircuitIR, SymbolDef
 from .pins import PinType
+from .netnames import GROUND_NAMES
 
 
 def _snap(v: float) -> float:
@@ -76,7 +77,6 @@ def _unit_extent(sym: SymbolDef, unit: int) -> tuple[float, float]:
 
 def _classify(ir: CircuitIR, symbols: dict[str, SymbolDef]):
     """Split refs into roles; find decoupling caps and their target ICs."""
-    gnd_names = {"GND", "VSS", "AGND", "DGND", "GNDA", "GNDD", "0V"}
     net_of: dict[tuple[str, str], str] = {}
     for net in ir.nets:
         for ref, pin_no in net.nodes:
@@ -92,10 +92,10 @@ def _classify(ir: CircuitIR, symbols: dict[str, SymbolDef]):
                 if sym and sym.is_power:
                     try:
                         if sym.pin(pin_no).etype == PinType.PWRIN:
-                            return "gnd" if comp.value in gnd_names else "power"
+                            return "gnd" if comp.value in GROUND_NAMES else "power"
                     except KeyError:
                         pass
-        return "gnd" if name in gnd_names else "signal"
+        return "gnd" if name in GROUND_NAMES else "signal"
 
     roles: dict[str, str] = {}
     decouple_target: dict[str, tuple[str, int]] = {}  # cap ref -> (ic ref, unit)
@@ -110,7 +110,7 @@ def _classify(ir: CircuitIR, symbols: dict[str, SymbolDef]):
     for ref, comp in ir.components.items():
         sym = symbols[comp.lib_id]
         if sym.is_power:
-            roles[ref] = "gnd_sym" if comp.value in gnd_names else "rail_sym"
+            roles[ref] = "gnd_sym" if comp.value in GROUND_NAMES else "rail_sym"
         elif ref in ics:
             roles[ref] = "ic"
         elif sym.reference_prefix in ("SW", "J", "BT"):
@@ -146,7 +146,6 @@ def _classify(ir: CircuitIR, symbols: dict[str, SymbolDef]):
 
 # --- signal-flow layered placement (topology-based, replaces shelf order) ---
 
-_GNDISH = {"GND", "VSS", "AGND", "DGND", "PGND", "0V"}
 _DRIVER_ETYPES = {"OUTPUT", "PWROUT", "OPENCOLL", "OPENEMIT", "TRISTATE"}
 
 
@@ -158,7 +157,7 @@ def _signal_edges(ir: CircuitIR, symbols: dict[str, SymbolDef], refs: set[str]):
     names) carry no flow information and are skipped."""
     edges: list[tuple[str, str, bool]] = []
     for net in ir.nets:
-        if net.name.upper() in _GNDISH:
+        if net.name.upper() in GROUND_NAMES:
             continue
         if any(
             symbols[c.lib_id].is_power

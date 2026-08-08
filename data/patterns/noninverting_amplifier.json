@@ -132,7 +132,8 @@
     "book": "Fundamentals of Electric Circuits, 7th International Student Edition (Alexander & Sadiku)",
     "section": "5.5 Noninverting Amplifier (Eqs. 5.11-5.12)",
     "pdf_page_index": 207,
-    "tier": "A"
+    "tier": "A",
+    "provenance": "textbook"
   },
   "status": "verified"
 }

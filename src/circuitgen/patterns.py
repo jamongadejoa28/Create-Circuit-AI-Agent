@@ -107,9 +107,19 @@ def validate_pattern(pattern: dict) -> list[str]:
         for text in pair:
             if text not in seen_endpoints:
                 errors.append(f"required_wired endpoint {text!r} not present in topology")
+    src = pattern.get("source", {})
     for src_key in ("book", "section"):
-        if not pattern.get("source", {}).get(src_key):
+        if not src.get(src_key):
             errors.append(f"source.{src_key} is required (no uncited patterns)")
+    # A pattern derived from our own ERC-verified fixture is legitimate, but it
+    # must not be indistinguishable from a textbook citation: every entry used
+    # to claim "tier A" regardless of origin, which made circular authority
+    # invisible to review.
+    provenance = src.get("provenance")
+    if provenance not in ("textbook", "internal-fixture"):
+        errors.append("source.provenance must be 'textbook' or 'internal-fixture'")
+    elif provenance == "textbook" and not src.get("pdf_page_index"):
+        errors.append("source.pdf_page_index is required for a textbook citation")
     return errors
 
 

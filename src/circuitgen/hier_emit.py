@@ -23,8 +23,8 @@ from .ir import CircuitIR, Component, SymbolDef
 from .normalize import ensure_pwr_flags
 from .place import heuristic_place
 from .uuids import uuid_for
+from .netnames import GROUND_NAMES
 
-_GND_NAMES = {"GND", "VSS", "AGND", "DGND", "0V"}
 
 
 def _rail_symbol_lib(rail: str, symbols: dict[str, SymbolDef], parts_index) -> str | None:

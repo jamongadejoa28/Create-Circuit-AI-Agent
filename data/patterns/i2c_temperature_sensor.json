@@ -13,53 +13,147 @@
       "lib_id": "MCU_ST_STM32G4:STM32G474RETx",
       "allow_unbound_pins": true,
       "pins": {
-        "SDA": {"names": ["PB9"]},
-        "SCL": {"names": ["PA15"]}
+        "SDA": {
+          "names": [
+            "PB9"
+          ]
+        },
+        "SCL": {
+          "names": [
+            "PA15"
+          ]
+        }
       }
     },
     "SENSOR": {
       "kind": "sensor",
       "lib_id": "Sensor_Temperature:Si7050-A20",
       "pins": {
-        "SDA": {"names": ["SDA"]},
-        "SCL": {"names": ["SCL"]},
-        "VDD": {"names": ["VDD"]},
-        "GND": {"names": ["GND"]}
+        "SDA": {
+          "names": [
+            "SDA"
+          ]
+        },
+        "SCL": {
+          "names": [
+            "SCL"
+          ]
+        },
+        "VDD": {
+          "names": [
+            "VDD"
+          ]
+        },
+        "GND": {
+          "names": [
+            "GND"
+          ]
+        }
       }
     },
-    "R_SDA": {"kind": "resistor", "lib_id": "Device:R", "param": "Rpullup", "default_value": "10k"},
-    "R_SCL": {"kind": "resistor", "lib_id": "Device:R", "param": "Rpullup", "default_value": "10k"},
-    "C_SENSOR": {"kind": "capacitor", "lib_id": "Device:C", "param": "Cdecouple", "default_value": "100nF"}
+    "R_SDA": {
+      "kind": "resistor",
+      "lib_id": "Device:R",
+      "param": "Rpullup",
+      "default_value": "10k"
+    },
+    "R_SCL": {
+      "kind": "resistor",
+      "lib_id": "Device:R",
+      "param": "Rpullup",
+      "default_value": "10k"
+    },
+    "C_SENSOR": {
+      "kind": "capacitor",
+      "lib_id": "Device:C",
+      "param": "Cdecouple",
+      "default_value": "100nF"
+    }
   },
-  "ports": ["VCC", "GND"],
-  "rail_ports": {"VCC": "lowest_supply"},
+  "ports": [
+    "VCC",
+    "GND"
+  ],
+  "rail_ports": {
+    "VCC": "lowest_supply"
+  },
   "topology": [
-    ["MCU.SDA", "SENSOR.SDA"],
-    ["SENSOR.SDA", "R_SDA.1"],
-    ["R_SDA.2", "VCC"],
-    ["MCU.SCL", "SENSOR.SCL"],
-    ["SENSOR.SCL", "R_SCL.1"],
-    ["R_SCL.2", "VCC"],
-    ["SENSOR.VDD", "VCC"],
-    ["C_SENSOR.1", "VCC"],
-    ["SENSOR.GND", "GND"],
-    ["C_SENSOR.2", "GND"]
+    [
+      "MCU.SDA",
+      "SENSOR.SDA"
+    ],
+    [
+      "SENSOR.SDA",
+      "R_SDA.1"
+    ],
+    [
+      "R_SDA.2",
+      "VCC"
+    ],
+    [
+      "MCU.SCL",
+      "SENSOR.SCL"
+    ],
+    [
+      "SENSOR.SCL",
+      "R_SCL.1"
+    ],
+    [
+      "R_SCL.2",
+      "VCC"
+    ],
+    [
+      "SENSOR.VDD",
+      "VCC"
+    ],
+    [
+      "C_SENSOR.1",
+      "VCC"
+    ],
+    [
+      "SENSOR.GND",
+      "GND"
+    ],
+    [
+      "C_SENSOR.2",
+      "GND"
+    ]
   ],
   "params": {
     "Rpullup": "10k for the verified standard-mode short bus; reduce according to bus capacitance and sink-current limits",
     "Cdecouple": "100nF local bypass at the sensor supply pins"
   },
   "required_wired": [
-    ["MCU.SDA", "SENSOR.SDA"],
-    ["SENSOR.SDA", "R_SDA.1"],
-    ["MCU.SCL", "SENSOR.SCL"],
-    ["SENSOR.SCL", "R_SCL.1"]
+    [
+      "MCU.SDA",
+      "SENSOR.SDA"
+    ],
+    [
+      "SENSOR.SDA",
+      "R_SDA.1"
+    ],
+    [
+      "MCU.SCL",
+      "SENSOR.SCL"
+    ],
+    [
+      "SENSOR.SCL",
+      "R_SCL.1"
+    ]
   ],
-  "placement": {"inputs": ["MCU"], "outputs": ["SENSOR"]},
+  "placement": {
+    "inputs": [
+      "MCU"
+    ],
+    "outputs": [
+      "SENSOR"
+    ]
+  },
   "source": {
     "book": "circuitgen golden fixtures (kicad-cli ERC-verified)",
     "section": "goldens.py golden3_mcu_i2c_ir — knowledge id pattern_i2c_sensor_pullups",
-    "tier": "A"
+    "tier": "A",
+    "provenance": "internal-fixture"
   },
   "status": "verified"
 }

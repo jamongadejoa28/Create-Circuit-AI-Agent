@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from .ir import CircuitIR, SymbolDef
 from .topology import analyze_topology
+from .netnames import is_ground
 
 
 def infer_contracts(spec: dict) -> list[str]:
@@ -165,7 +166,7 @@ def repair_contracts(
             if not inp or not out or not gnd:
                 continue
             rails = [r.get("name") for r in spec.get("power", {}).get("rails", [])]
-            supplies = [r for r in rails if r and r.upper() not in {"GND", "0V", "VSS"}]
+            supplies = [r for r in rails if r and not is_ground(r)]
             # Under an explicit input->output regulator contract the approved
             # rail order is authoritative. Do not preserve a model's swapped
             # pin-number wiring (measured: GND on +12V and IN on GND).

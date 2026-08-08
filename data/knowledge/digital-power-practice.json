@@ -4,30 +4,82 @@
     "type": "component_rule",
     "statement": "Place a decoupling capacitor, typically multilayer ceramic, 0.01–0.1 µF (rated >5 V), directly across the VCC-to-ground pins of each logic IC. Place it as close to the IC as possible so switching current spikes stay local instead of propagating into the supply line.",
     "condition": "Every digital/logic IC power pin pair in the design.",
-    "values": {"capacitance_min": "0.01uF", "capacitance_max": "0.1uF", "dielectric": "multilayer ceramic", "voltage_rating": ">5V"},
+    "values": {
+      "capacitance_min": "0.01uF",
+      "capacitance_max": "0.1uF",
+      "dielectric": "multilayer ceramic",
+      "voltage_rating": ">5V"
+    },
     "erc_rule": "decoupling_missing",
-    "tags": ["decoupling", "bypass", "capacitor", "IC", "power", "VCC", "placement"],
-    "source": {"book": "Practical Electronics for Inventors, 4th ed.", "section": "12.5.1 Power Supply Decoupling", "pdf_page_index": 1213, "tier": "A"}
+    "tags": [
+      "decoupling",
+      "bypass",
+      "capacitor",
+      "IC",
+      "power",
+      "VCC",
+      "placement"
+    ],
+    "source": {
+      "book": "Practical Electronics for Inventors, 4th ed.",
+      "section": "12.5.1 Power Supply Decoupling",
+      "pdf_page_index": 1213,
+      "tier": "A",
+      "provenance": "textbook"
+    }
   },
   {
     "id": "decoupling-cap-density",
     "type": "component_rule",
     "statement": "As a coverage guideline, use at least one decoupling capacitor for every five to ten gates, or one for every five counter or register ICs.",
     "condition": "Boards with many small logic ICs where one capacitor per IC is impractical.",
-    "values": {"per_gates": "5-10", "per_counter_or_register_ics": "5"},
+    "values": {
+      "per_gates": "5-10",
+      "per_counter_or_register_ics": "5"
+    },
     "erc_rule": "decoupling_missing",
-    "tags": ["decoupling", "capacitor", "density", "guideline"],
-    "source": {"book": "Practical Electronics for Inventors, 4th ed.", "section": "12.5.1 Power Supply Decoupling", "pdf_page_index": 1213, "tier": "A"}
+    "tags": [
+      "decoupling",
+      "capacitor",
+      "density",
+      "guideline"
+    ],
+    "source": {
+      "book": "Practical Electronics for Inventors, 4th ed.",
+      "section": "12.5.1 Power Supply Decoupling",
+      "pdf_page_index": 1213,
+      "tier": "A",
+      "provenance": "textbook"
+    }
   },
   {
     "id": "unused-inputs-never-float",
     "type": "component_rule",
     "statement": "Unused logic inputs that affect the chip's logical state must not float — tie them high or low as logic requires (unused NAND/AND inputs high, unused NOR/OR inputs low; flip-flop CLEAR/PRESET grounded or tied high as appropriate). Inputs of entirely unused sections of a CMOS IC should be grounded: floating unused-section inputs can charge to a level where output MOS transistors conduct simultaneously, causing excessive supply current and possible IC damage.",
     "condition": "Any logic IC with unused input pins or unused gates in a multi-gate package.",
-    "values": {"unused_nand_and_inputs": "tie high", "unused_nor_or_inputs": "tie low", "unused_cmos_sections": "ground inputs"},
+    "values": {
+      "unused_nand_and_inputs": "tie high",
+      "unused_nor_or_inputs": "tie low",
+      "unused_cmos_sections": "ground inputs"
+    },
     "erc_rule": "input_floating",
-    "tags": ["unused", "input", "floating", "CMOS", "NAND", "NOR", "tie", "gate"],
-    "source": {"book": "Practical Electronics for Inventors, 4th ed.", "section": "12.5.2 Unused Inputs", "pdf_page_index": 1214, "tier": "A"}
+    "tags": [
+      "unused",
+      "input",
+      "floating",
+      "CMOS",
+      "NAND",
+      "NOR",
+      "tie",
+      "gate"
+    ],
+    "source": {
+      "book": "Practical Electronics for Inventors, 4th ed.",
+      "section": "12.5.2 Unused Inputs",
+      "pdf_page_index": 1214,
+      "tier": "A",
+      "provenance": "textbook"
+    }
   },
   {
     "id": "pullup-resistor-sizing",
@@ -35,10 +87,28 @@
     "statement": "A pull-up resistor holds an otherwise-floating input high; 10 kΩ is the typical value. Verify the resistor is small enough not to sag the input below the IC's minimum high threshold: Vin = Vsupply − R·IIH must stay above VIH,min (example: 74LS with IIH ≈ 20 µA and R = 10 kΩ gives Vin = 4.80 V at 5 V supply). Verify it is large enough that grounding the pin does not waste excessive power: PD = V²/R (10 kΩ at 5 V → 2.5 mW... 25 mW when switched).",
     "condition": "Logic/MCU input held high with a switch or open-drain driver pulling low.",
     "formula": "Vin = Vsupply - R*IIH ; PD = Vsupply^2 / R",
-    "values": {"typical": "10kΩ", "check_high": "Vin > VIH_min", "example_74LS_IIH": "20uA"},
+    "values": {
+      "typical": "10kΩ",
+      "check_high": "Vin > VIH_min",
+      "example_74LS_IIH": "20uA"
+    },
     "erc_rule": "pullup_missing",
-    "tags": ["pull-up", "pullup", "resistor", "sizing", "I2C", "input", "threshold"],
-    "source": {"book": "Practical Electronics for Inventors, 4th ed.", "section": "12.6.9 Pullup and Pulldown Resistors", "pdf_page_index": 1246, "tier": "A"}
+    "tags": [
+      "pull-up",
+      "pullup",
+      "resistor",
+      "sizing",
+      "I2C",
+      "input",
+      "threshold"
+    ],
+    "source": {
+      "book": "Practical Electronics for Inventors, 4th ed.",
+      "section": "12.6.9 Pullup and Pulldown Resistors",
+      "pdf_page_index": 1246,
+      "tier": "A",
+      "provenance": "textbook"
+    }
   },
   {
     "id": "pulldown-resistor-sizing",
@@ -46,9 +116,26 @@
     "statement": "A pull-down resistor holds a floating terminal low and must be much smaller than a pull-up because the input low current IIL (sourced by the IC) is much larger than IIH — typically 100 Ω to 1 kΩ. Verify Vin = IIL·R stays below VIL,max (example: 74LS with IIL = 400 µA and 500 Ω gives 0.20 V, well under the ~0.8 V VIL,max). Beware power dissipation when the pin is driven high: PD = V²/R (500 Ω at 5 V → 50 mW).",
     "condition": "Logic/MCU input held low with a switch or push-pull driver pulling high.",
     "formula": "Vin = IIL*R ; PD = Vsupply^2 / R",
-    "values": {"typical_min": "100Ω", "typical_max": "1kΩ", "check_low": "Vin < VIL_max", "example_74LS_IIL": "400uA"},
+    "values": {
+      "typical_min": "100Ω",
+      "typical_max": "1kΩ",
+      "check_low": "Vin < VIL_max",
+      "example_74LS_IIL": "400uA"
+    },
     "erc_rule": "pulldown_missing",
-    "tags": ["pull-down", "pulldown", "resistor", "sizing", "input"],
-    "source": {"book": "Practical Electronics for Inventors, 4th ed.", "section": "12.6.9 Pullup and Pulldown Resistors", "pdf_page_index": 1247, "tier": "A"}
+    "tags": [
+      "pull-down",
+      "pulldown",
+      "resistor",
+      "sizing",
+      "input"
+    ],
+    "source": {
+      "book": "Practical Electronics for Inventors, 4th ed.",
+      "section": "12.6.9 Pullup and Pulldown Resistors",
+      "pdf_page_index": 1247,
+      "tier": "A",
+      "provenance": "textbook"
+    }
   }
 ]
