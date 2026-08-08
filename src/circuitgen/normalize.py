@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 
 from .ir import CircuitIR, Component, SymbolDef
+from .netnames import GROUND_NAMES, is_ground, logic_rail
 from .pins import PinType
 
 PWR_FLAG_LIB_ID = "power:PWR_FLAG"
@@ -566,9 +567,10 @@ def complete_known_device_pins(
     """
     notes: list[str] = []
     rail_set = set(rails)
-    logic = "+3V3" if "+3V3" in rail_set else next(
-        (r for r in rails if r.startswith("+")), None
-    )
+    # The digital rail is the LOWEST-voltage supply, not the first one the
+    # spec happened to list: picking by order tied a 3.3 V MCU's VDD to +12V
+    # (and, on a 12V/5V board, to +5V) — ERC-clean and part-destroying.
+    logic = logic_rail(rails)
     motor = "VBAT" if "VBAT" in rail_set else (
         "+12V" if "+12V" in rail_set else logic
     )

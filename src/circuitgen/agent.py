@@ -28,7 +28,7 @@ from .knowledge import KnowledgeIndex
 from .partindex import PartIndex
 from .pipeline import PipelineResult, generate
 from .schemas import BLOCK_PLAN, CIRCUIT_IR, REPAIR_PATCH, REQUIREMENT_SPEC
-from .netnames import GROUND_NAMES
+from .netnames import GROUND_NAMES, supply_voltage
 
 MAX_REPAIRS = 3
 CANDIDATES_PER_QUERY = 3
@@ -1861,15 +1861,7 @@ class Agent:
         # Mapping is voltage-aware, not order-luck: highest_supply = the
         # rail with the largest parsed voltage (regulator input, relay
         # coil), lowest_supply = the smallest (regulator output).
-        def _volt(rail: str) -> float:
-            s = str(rail)
-            m = re.search(r"(\d+)V(\d+)", s)  # 3V3 / 1V8 notation
-            if m:
-                return float(f"{m.group(1)}.{m.group(2)}")
-            m = re.search(r"(\d+(?:\.\d+)?)", s)
-            return float(m.group(1)) if m else 0.0
-
-        ranked = sorted(supplies, key=_volt)
+        ranked = sorted(supplies, key=lambda r: supply_voltage(r) or 0.0)
         for port, kind in pattern.get("rail_ports", {}).items():
             if not ranked:
                 continue

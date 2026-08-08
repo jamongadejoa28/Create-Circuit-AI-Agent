@@ -35,3 +35,39 @@ def is_supply(name: str) -> bool:
     if is_ground(n):
         return False
     return n.startswith("+") or n in {"VCC", "VDD", "VBAT", "VIN", "VBUS"}
+
+
+def supply_voltage(name: str) -> float | None:
+    """Nominal volts encoded in a rail name: +3V3 -> 3.3, +5V -> 5.0, 1V8 -> 1.8.
+
+    Returns None when the name carries no number (VCC, VBAT), so callers can
+    tell "unknown" apart from "zero".
+    """
+    import re
+
+    s = name.strip().upper()
+    m = re.search(r"(\d+)V(\d+)", s)          # 3V3 / 1V8 notation
+    if m:
+        return float(f"{m.group(1)}.{m.group(2)}")
+    m = re.search(r"(\d+(?:\.\d+)?)\s*V", s)  # 3.3V / 12V
+    if m:
+        return float(m.group(1))
+    m = re.search(r"(\d+(?:\.\d+)?)", s)
+    return float(m.group(1)) if m else None
+
+
+def logic_rail(rails: list[str], max_volts: float = 5.5) -> str | None:
+    """The digital supply among `rails`: the LOWEST-voltage supply, and only
+    if it is plausibly a logic rail.
+
+    Picking by list order instead tied a 3.3 V MCU's VDD to +12V whenever the
+    spec happened to list the input rail first — an ERC-clean board that
+    destroys the part on power-up.
+    """
+    supplies = [r for r in rails if r and not is_ground(r)]
+    known = [(supply_voltage(r), r) for r in supplies]
+    numbered = sorted((v, r) for v, r in known if v is not None)
+    if numbered:
+        volts, rail = numbered[0]
+        return rail if volts <= max_volts else None
+    return supplies[0] if supplies else None

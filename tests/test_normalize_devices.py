@@ -418,3 +418,30 @@ def test_tja1051_whitelist_accepts_standard_bus_net_spellings(high, low):
     ir.connect(low, ("U1", "6"), ("J1", "2"))
     sanitize_known_device_nets(ir, symbols)
     assert sorted(n.name for n in ir.nets) == sorted([high, low])
+
+
+@pytest.mark.parametrize("rails,expected", [
+    (["+12V", "GND", "+5V"], "+5V"),      # not the first-listed rail
+    (["+12V", "GND", "+3V3"], "+3V3"),
+    (["+3V3", "GND"], "+3V3"),
+    (["+24V", "GND"], None),              # no plausible logic rail: refuse
+])
+def test_logic_rail_is_the_lowest_supply_not_the_first_listed(rails, expected):
+    """Picking by list order tied a 3.3V MCU's VDD to +12V — ERC-clean and
+    part-destroying."""
+    from circuitgen.netnames import logic_rail
+
+    assert logic_rail(rails) == expected
+
+
+def test_known_device_pins_refuse_to_guess_a_high_voltage_logic_rail():
+    from circuitgen.normalize import complete_known_device_pins
+    from circuitgen.symbols import load_symbols
+
+    lib = "MCU_ST_STM32G4:STM32G474RETx"
+    symbols = load_symbols([lib])
+    ir = CircuitIR("hv")
+    ir.add(Component("U1", lib, "STM32G474RETx"))
+    complete_known_device_pins(ir, symbols, ["+24V", "GND"])
+    vdd_nets = [n.name for n in ir.nets if any(p in ("16", "32", "48", "64") for r, p in n.nodes if r == "U1")]
+    assert vdd_nets == []
