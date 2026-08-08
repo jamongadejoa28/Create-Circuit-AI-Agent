@@ -1338,6 +1338,7 @@ class Agent:
             for block in plan:
                 res.stage = f"block-{block['id']}"
                 block_error = ""
+                bir = None
                 contract_feedback: list[str] = []
                 # One full regeneration is cheaper and safer than allowing a
                 # missing functional block into ERC/repair.  ERC proves wiring,
@@ -1404,7 +1405,7 @@ class Agent:
                     # emitted as KiCad and cannot be mistaken for a result.
                     from .ir_json import ir_to_json
 
-                    if "bir" in locals():
+                    if bir is not None:
                         rec.set("rejected_block_ir", ir_to_json(bir))
                     rec.set("agent_log", res.log)
                     rec.save()

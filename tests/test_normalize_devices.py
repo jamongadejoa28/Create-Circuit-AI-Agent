@@ -434,14 +434,40 @@ def test_logic_rail_is_the_lowest_supply_not_the_first_listed(rails, expected):
     assert logic_rail(rails) == expected
 
 
-def test_known_device_pins_refuse_to_guess_a_high_voltage_logic_rail():
+def test_unsafe_logic_rail_fails_loudly_not_silently():
+    """Refusing to wire is only correct if the refusal is VISIBLE. The pattern
+    path blanket-NCs unbound hub pins and erc.py skips NC pins, so leaving the
+    marker in place produced an unpowered MCU scoring ERC 0."""
+    from circuitgen.erc import check_circuit
     from circuitgen.normalize import complete_known_device_pins
     from circuitgen.symbols import load_symbols
 
     lib = "MCU_ST_STM32G4:STM32G474RETx"
     symbols = load_symbols([lib])
+    sym = symbols[lib]
+    supply = [p.number for p in sym.pins if p.name.upper() in ("VDD", "VDDA", "VBAT", "VREF+")]
+
     ir = CircuitIR("hv")
     ir.add(Component("U1", lib, "STM32G474RETx"))
+    ir.nc_pins = [("U1", p.number) for p in sym.pins if not p.hidden]  # pattern-path closure
     complete_known_device_pins(ir, symbols, ["+24V", "GND"])
-    vdd_nets = [n.name for n in ir.nets if any(p in ("16", "32", "48", "64") for r, p in n.nodes if r == "U1")]
-    assert vdd_nets == []
+
+    # nothing tied to the 24V rail ...
+    assert not [n for n in ir.nets if any(r == "U1" and p in supply for r, p in n.nodes)]
+    # ... and the pins are exposed, so self-ERC can see them
+    findings = [str(p) for p in check_circuit(ir, symbols)]
+    assert [f for f in findings if "unconnected" in f.lower()]
+
+
+def test_motor_rail_does_not_inherit_the_logic_rail_refusal():
+    """A DRV8311 VM pin spans 4.5-35V, so a +24V-only board is legitimate for
+    it even where no logic rail is safe."""
+    from circuitgen.normalize import complete_known_device_pins
+    from circuitgen.symbols import load_symbols
+
+    lib = "Driver_Motor:DRV8311H"
+    symbols = load_symbols([lib])
+    ir = CircuitIR("vm")
+    ir.add(Component("U1", lib, "DRV8311H"))
+    complete_known_device_pins(ir, symbols, ["+24V", "GND"])
+    assert [n.name for n in ir.nets if any(r == "U1" and p == "8" for r, p in n.nodes)] == ["+24V"]

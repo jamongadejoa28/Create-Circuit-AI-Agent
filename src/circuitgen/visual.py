@@ -13,6 +13,7 @@ from dataclasses import dataclass
 
 from .geometry import Placement, pin_stub_end
 from .ir import CircuitIR, SymbolDef
+from .place import _body_box
 
 
 @dataclass
@@ -24,19 +25,12 @@ class VisualIssue:
 def _bounds(sym: SymbolDef, unit: int, p: Placement):
     """Approximate BODY box in sheet coordinates.
 
-    Two calibrations against false positives on the (KiCad-verified)
-    golden layout: pin envelopes shrink by the pin stick-out — facing
-    pins joined by a wire legitimately bring envelopes together, only
-    body intersections are unreadable — and the extent axes follow the
-    placement rotation (a rot-90 resistor is horizontal, not vertical).
+    Shares the placer's calibration deliberately: this gate must judge
+    overlap by the same extents the placer used to avoid it. A private copy
+    (byte-identical over 16 symbol/rotation cases) silently coupled the two
+    while looking independent.
     """
-    pins = [x for x in sym.pins if x.unit in (0, unit)] or sym.pins
-    stick = max((x.length for x in pins), default=2.54)
-    ex = max(max((abs(x.x) for x in pins), default=5.08) - stick, 2.54) + 1.27
-    ey = max(max((abs(x.y) for x in pins), default=5.08) - stick, 2.54) + 1.27
-    if p.rotation % 180 == 90:
-        ex, ey = ey, ex
-    return p.x - ex, p.y - ey, p.x + ex, p.y + ey
+    return _body_box(sym, unit, p)
 
 
 def check_layout(

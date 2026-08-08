@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Board-scale model benchmark over the user's testprompt.md suite.
 
-Unlike bench_models.py (scenario checkers), these 18 prompts are diverse
+Unlike per-scenario functional checkers, these 18 prompts are diverse
 boards, so scoring is generic per run: spec/plan health, component and
 conceptual counts, unknown-symbol count, KiCad ERC violations, draft
 visibility, wall time. Results append to out/bench_boards/<label>.jsonl —

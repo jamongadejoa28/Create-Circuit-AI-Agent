@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 
 from .ir import CircuitIR, Component, SymbolDef
-from .netnames import GROUND_NAMES, is_ground, logic_rail
+from .netnames import GROUND_NAMES, is_ground, logic_rail, supply_voltage
 from .pins import PinType
 
 PWR_FLAG_LIB_ID = "power:PWR_FLAG"
@@ -571,15 +571,34 @@ def complete_known_device_pins(
     # spec happened to list: picking by order tied a 3.3 V MCU's VDD to +12V
     # (and, on a 12V/5V board, to +5V) — ERC-clean and part-destroying.
     logic = logic_rail(rails)
+    # `motor` must NOT inherit logic's refusal: a DRV8311 VM pin is happy on
+    # 4.5-35 V, so a +24V-only board is legitimate for it even though there
+    # is no plausible logic rail.
+    supplies_by_volts = sorted(
+        ((supply_voltage(r) or 0.0, r) for r in rails if r and not is_ground(r)),
+    )
+    highest = supplies_by_volts[-1][1] if supplies_by_volts else None
     motor = "VBAT" if "VBAT" in rail_set else (
-        "+12V" if "+12V" in rail_set else logic
+        "+12V" if "+12V" in rail_set else (logic or highest)
     )
 
     def connected(ref: str, pin: str) -> bool:
         return any((ref, pin) in n.nodes for n in ir.nets)
 
     def wire(ref: str, pin: str, net: str | None) -> None:
-        if net is None or connected(ref, pin):
+        if connected(ref, pin):
+            return
+        if net is None:
+            # No safe rail for a pin this table says MUST be supplied. Leaving
+            # the NC marker would make that SILENT: the pattern path blanket-
+            # NCs unbound hub pins and erc.py skips NC pins, so an unpowered
+            # MCU scored ERC 0. Strip the marker so self-ERC reports an
+            # unconnected pin and the repair loop can see it.
+            if (ref, pin) in ir.nc_pins:
+                ir.nc_pins.remove((ref, pin))
+                notes.append(
+                    f"{ref}.{pin} needs a supply but no rail is safe — exposed as unconnected"
+                )
             return
         ir.connect(net, (ref, pin))
         if (ref, pin) in ir.nc_pins:
