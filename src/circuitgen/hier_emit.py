@@ -109,9 +109,10 @@ def emit_hierarchical(
             sub.add(Component(ref, lib, rail))
             sub.connect(net_name, (ref, "1"))
             counter += 1
-        if any(n not in flag_done and n in touched_rails for n in touched_rails):
-            ensure_pwr_flags(sub, symbols)
-            flag_done.update(touched_rails)
+        pending = set(touched_rails) - flag_done
+        if pending:
+            ensure_pwr_flags(sub, symbols, only_nets=pending)
+            flag_done |= pending
 
         ports = {p for p in sheet.ports if p not in touched_rails}
         placements = heuristic_place(sub, symbols)

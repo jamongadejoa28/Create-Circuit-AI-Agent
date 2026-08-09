@@ -1050,32 +1050,6 @@ class Agent:
 
         return assign_footprints(ir, self._resolve_symbols(ir), self.parts)
 
-    def _ensure_pullups(self, ir: CircuitIR, spec: dict) -> list[str]:
-        from .normalize import ensure_bus_pullups
-
-        symbols = self._resolve_symbols(ir)
-        plus = None
-        pin_net = {(r, str(p)): n.name for n in ir.nets for r, p in n.nodes}
-        bus_refs = {
-            r for n in ir.nets if n.name.upper() in {"SDA", "SCL"} for r, _ in n.nodes
-        }
-        for ref in bus_refs:
-            comp = ir.components.get(ref); sym = symbols.get(comp.lib_id) if comp else None
-            if sym is None:
-                continue
-            plus = next(
-                (pin_net.get((ref, p.number)) for p in sym.pins
-                 if p.etype.name == "PWRIN" and (pin_net.get((ref, p.number)) or "").startswith("+")),
-                None,
-            )
-            if plus:
-                break
-        plus = plus or next(
-            (r["name"] for r in spec.get("power", {}).get("rails", []) if r["name"].startswith("+")),
-            next((n.name for n in ir.nets if n.name.startswith("+")), None),
-        )
-        return ensure_bus_pullups(ir, symbols, plus)
-
     def attach_power_symbols(self, ir: CircuitIR, spec: dict) -> list[str]:
         """Deterministically add power symbols to rail nets (never the LLM's
         job — an invented 'power:5V' cost a repair round in live testing).
@@ -1803,7 +1777,6 @@ class Agent:
             ensure_dc_power_entry,
             ensure_relay_flyback,
             ensure_stm32g4_power_network,
-            ensure_stm32g4_system_support,
             enforce_requested_stm32_variant,
             mark_documented_no_connects,
             merge_dangling_interface_nets,
@@ -1840,12 +1813,10 @@ class Agent:
         notes += complete_generic_power_pins(ir, syms(), rails)
         if "+3V3" in rails:
             notes += ensure_stm32g4_power_network(ir, syms(), "+3V3")
-            notes += ensure_stm32g4_system_support(ir, syms(), "+3V3")
         notes += mark_documented_no_connects(ir, syms())
         notes += ensure_relay_flyback(ir, syms())
         notes += self.resolve_pin_names(ir)
         notes += unify_stacked_pins(ir, syms())
-        notes += self._ensure_pullups(ir, spec)
         notes += self._fix_footprints(ir)
         return notes
 

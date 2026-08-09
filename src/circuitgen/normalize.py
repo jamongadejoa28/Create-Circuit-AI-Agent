@@ -444,106 +444,9 @@ def ensure_dc_power_entry(ir: CircuitIR, output_rail: str = "+12V") -> list[str]
     return notes
 
 
-def ensure_bus_pullups(
-    ir: CircuitIR, symbols: dict[str, SymbolDef], plus_rail: str | None
+def ensure_pwr_flags(
+    ir: CircuitIR, symbols: dict[str, SymbolDef], only_nets: set[str] | None = None
 ) -> list[str]:
-    """Add missing bus pull-ups deterministically (knowledge:
-    pullup-resistor-sizing — 10k typical).
-
-    Live golden runs showed models reliably wire the buses but omit the
-    pull-ups; like PWR_FLAG insertion this is a rule, not a design choice:
-    - I2C nets (named SDA/SCL, or carrying pins named so) get 10k to the rail
-    - SPI chip-select nets (name matches CS/SS/NSS) get 10k to the rail
-    """
-    if plus_rail is None or not any(n.name == plus_rail for n in ir.nets):
-        return []
-    notes: list[str] = []
-
-    def has_pullup(net) -> bool:
-        for ref, comp in ir.components.items():
-            sym = symbols.get(comp.lib_id)
-            if sym is None or sym.reference_prefix != "R" or len(sym.pins) != 2:
-                continue
-            touched = set()
-            for n in ir.nets:
-                if any(r == ref for r, _ in n.nodes):
-                    touched.add(n.name)
-            if net.name in touched and plus_rail in touched:
-                return True
-        return False
-
-    def pin_names_of(net) -> set[str]:
-        out = set()
-        for ref, pin_no in net.nodes:
-            comp = ir.components.get(ref)
-            sym = symbols.get(comp.lib_id) if comp else None
-            if sym is None:
-                continue
-            try:
-                out.add((sym.pin(str(pin_no)).name or "").upper())
-            except KeyError:
-                pass
-        return out
-
-    counter = 1
-    claimed: set[str] = set()
-
-    def next_ref() -> str:
-        nonlocal counter
-        while f"RPU{counter}" in ir.components:
-            counter += 1
-        return f"RPU{counter}"
-
-    for net in list(ir.nets):
-        if net.name in (plus_rail, "GND") or not net.nodes:
-            continue
-        names = pin_names_of(net)
-        is_i2c = net.name.upper() in ("SDA", "SCL") or any(
-            n in ("SDA", "SCL") or n.endswith("/SDA") or n.endswith("/SCL") for n in names
-        )
-        is_cs = bool(_CS_NET_RE.search(net.name))
-        if not (is_i2c or is_cs):
-            continue
-        if has_pullup(net):
-            continue
-        # Reuse an intended-but-miswired pull-up before adding another part.
-        # Small models often put both resistor pins on GND, or leave one pin
-        # open after one-net-per-pin sanitization. A resistor already touching
-        # this bus or GND is a safer candidate than duplicating it.
-        reuse = None
-        for rref, comp in ir.components.items():
-            sym = symbols.get(comp.lib_id)
-            if rref in claimed or sym is None or sym.reference_prefix != "R" or len(sym.pins) != 2:
-                continue
-            touched = {
-                n.name for n in ir.nets if any(r == rref for r, _ in n.nodes)
-            }
-            if touched and touched <= {net.name, "GND", plus_rail}:
-                reuse = rref
-                break
-        if reuse:
-            rsym = symbols[ir.components[reuse].lib_id]
-            for existing in ir.nets:
-                existing.nodes = [node for node in existing.nodes if node[0] != reuse]
-            net.nodes.append((reuse, rsym.pins[0].number))
-            ir.connect(plus_rail, (reuse, rsym.pins[1].number))
-            ir.nc_pins = [node for node in ir.nc_pins if node[0] != reuse]
-            claimed.add(reuse)
-            kind = "I2C" if is_i2c else "chip-select"
-            notes.append(
-                f"rewired {reuse} as {kind} pull-up on {net.name} to {plus_rail}"
-            )
-            continue
-        ref = next_ref()
-        ir.add(Component(ref, "Device:R", "10k"))
-        net.nodes.append((ref, "1"))
-        ir.connect(plus_rail, (ref, "2"))
-        kind = "I2C" if is_i2c else "chip-select"
-        notes.append(f"added {kind} pull-up {ref} (10k) on net {net.name} to {plus_rail}")
-    return notes
-
-
-def ensure_pwr_flags(ir: CircuitIR, symbols: dict[str, SymbolDef]) -> list[str]:
     """Add a power:PWR_FLAG to every power net lacking a power_out driver.
 
     KiCad ERC raises "Input Power pin not driven by any Output Power pins"
@@ -555,6 +458,12 @@ def ensure_pwr_flags(ir: CircuitIR, symbols: dict[str, SymbolDef]) -> list[str]:
 
     Returns the list of added component refs (the placer must place them).
     PWR_FLAG's symbol definition must be present in `symbols`.
+
+    `only_nets` limits which nets may receive a flag. The hierarchical emitter
+    needs it: a rail crossing sheets must get exactly ONE flag project-wide,
+    and its previous guard ran this pass over a whole sheet whenever any rail
+    on it was new, so an already-flagged rail collected a second PWR_FLAG and
+    KiCad reported two power outputs connected together.
     """
     added: list[str] = []
     referenced = {r for net in ir.nets for r, _ in net.nodes}
@@ -614,6 +523,8 @@ def ensure_pwr_flags(ir: CircuitIR, symbols: dict[str, SymbolDef]) -> list[str]:
             elif etype == PinType.PWROUT:
                 has_power_out = True
         if has_power_in and not has_power_out:
+            if only_nets is not None and net.name not in only_nets:
+                continue
             ref = next_ref()
             owner_group = next(
                 (
@@ -1078,114 +989,3 @@ def ensure_stm32g4_power_network(
     return notes
 
 
-def ensure_stm32g4_system_support(
-    ir: CircuitIR, symbols: dict[str, SymbolDef], logic_rail: str = "+3V3"
-) -> list[str]:
-    """Add reset, boot-mode and standard 10-pin SWD support for STM32G4.
-
-    KiCad names the dual-function system pins by their GPIO aliases (PG10
-    and PB8).  ST DS12288/AN5093 identify them as PG10-NRST and PB8-BOOT0;
-    PA13/PA14 are SWDIO/SWCLK.  Mapping by pin *name* keeps this valid across
-    STM32G4 packages without hard-coding LQFP64 numbers.
-    """
-    notes: list[str] = []
-    counters: dict[str, int] = {}
-
-    def next_ref(prefix: str) -> str:
-        if prefix not in counters:
-            nums = [int(m.group(1)) for r in ir.components if (m := re.fullmatch(prefix + r"(\d+)", r))]
-            counters[prefix] = max(nums, default=0) + 1
-        ref = f"{prefix}{counters[prefix]}"
-        counters[prefix] += 1
-        return ref
-
-
-    def move_with_companions(ref: str, pin: str, target: str) -> None:
-        """Rename the pin's whole net onto the canonical name.
-
-        A reset button (or debug attachment) already wired to the MCU's
-        NRST/SWD pin must FOLLOW the pin onto the conditioned net — moving
-        the pin alone orphans the companion on a single-pin net (measured:
-        the UART pattern's reset button stranded on MCU_NRST)."""
-        old = next((n for n in ir.nets if (ref, pin) in n.nodes), None)
-        if old is None or old.name == target:
-            move_pin(ir, ref, pin, target)
-            return
-        nodes = list(old.nodes)
-        old.nodes = []
-        ir.nets = [n for n in ir.nets if n.nodes]
-        ir.connect(target, *nodes)
-        ir.nc_pins = [node for node in ir.nc_pins if node not in nodes]
-
-    def touches(ref: str) -> set[str]:
-        return {n.name for n in ir.nets if any(r == ref for r, _ in n.nodes)}
-
-    for mcu_ref, comp in list(ir.components.items()):
-        if "STM32G4" not in comp.lib_id.upper():
-            continue
-        sym = symbols.get(comp.lib_id)
-        if sym is None:
-            continue
-        pins = {p.name.upper(): p.number for p in sym.pins}
-        required = {"PG10", "PB8", "PA13", "PA14"}
-        if not required <= pins.keys():
-            notes.append(f"{mcu_ref}: STM32G4 system aliases missing {sorted(required - pins.keys())}")
-            continue
-        group = comp.group or "MCU"
-        move_with_companions(mcu_ref, pins["PG10"], "NRST")
-        move_with_companions(mcu_ref, pins["PB8"], "BOOT0")
-        move_with_companions(mcu_ref, pins["PA13"], "SWDIO")
-        move_with_companions(mcu_ref, pins["PA14"], "SWCLK")
-        if "PB3" in pins:
-            move_with_companions(mcu_ref, pins["PB3"], "SWO")
-
-        # DS12288 Figure 27: 100 nF close to NRST; internal pull-up exists.
-        reset_cap = next(
-            (r for r, c in ir.components.items() if c.group == group and c.lib_id == "Device:C"
-             and c.value.upper() == "100NF" and {"NRST", "GND"} <= touches(r)),
-            None,
-        )
-        if reset_cap is None:
-            cref = next_ref("C")
-            ir.add(Component(cref, "Device:C", "100nF", group=group))
-            ir.connect("NRST", (cref, "1"))
-            ir.connect("GND", (cref, "2"))
-            notes.append(f"added {cref} 100nF NRST protection capacitor")
-
-        # Default to main flash while retaining a two-pin header to assert
-        # BOOT0 high for service/programming.
-        boot_pull = next(
-            (r for r, c in ir.components.items() if c.group == group and c.lib_id == "Device:R"
-             and c.value.upper() == "10K" and {"BOOT0", "GND"} <= touches(r)),
-            None,
-        )
-        if boot_pull is None:
-            rref = next_ref("R")
-            ir.add(Component(rref, "Device:R", "10k", group=group))
-            ir.connect("BOOT0", (rref, "1"))
-            ir.connect("GND", (rref, "2"))
-            notes.append(f"added {rref} 10k BOOT0 pull-down")
-
-        if not any(c.group == group and c.value == "BOOT_MODE" for c in ir.components.values()):
-            jboot = next_ref("J")
-            ir.add(Component(jboot, "Connector_Generic:Conn_01x02", "BOOT_MODE", group=group))
-            ir.connect(logic_rail, (jboot, "1"))
-            ir.connect("BOOT0", (jboot, "2"))
-            notes.append(f"added {jboot} BOOT0 service header")
-
-        if not any(c.group == group and c.value == "ARM_SWD_10PIN" for c in ir.components.values()):
-            jswd = next_ref("J")
-            ir.add(Component(jswd, "Connector_Generic:Conn_02x05_Odd_Even", "ARM_SWD_10PIN", group=group))
-            ir.connect(logic_rail, (jswd, "1"))
-            ir.connect("SWDIO", (jswd, "2"))
-            ir.connect("GND", (jswd, "3"), (jswd, "5"), (jswd, "9"))
-            ir.connect("SWCLK", (jswd, "4"))
-            if "PB3" in pins:
-                ir.connect("SWO", (jswd, "6"))
-            else:
-                ir.nc_pins.append((jswd, "6"))
-            ir.nc_pins.extend([(jswd, "7"), (jswd, "8")])
-            ir.connect("NRST", (jswd, "10"))
-            notes.append(f"added {jswd} standard 10-pin ARM SWD header")
-    ir.nets = [n for n in ir.nets if n.nodes]
-    return notes

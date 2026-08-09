@@ -6,7 +6,6 @@ from circuitgen.normalize import (
     ensure_dc_power_entry,
     enforce_requested_stm32_variant,
     ensure_stm32g4_power_network,
-    ensure_stm32g4_system_support,
     normalize_common_symbol_aliases,
     sanitize_known_device_nets,
 )
@@ -140,29 +139,6 @@ def test_stm32g4_power_network_adds_per_vdd_and_analog_decoupling():
     on_rail = {n.name for n in ir.nets for r, p in n.nodes
                if r == "U1" and p in {"28", "29"}}
     assert on_rail == {"+3V3"}, "3.11.1: VDDA belongs on the VDD rail"
-
-
-def test_stm32g4_system_aliases_create_reset_boot_and_swd_support():
-    lid = "MCU_ST_STM32G4:STM32G474RETx"
-    symbols = {lid: _sym(lid, [
-        (7, "PG10", PinType.BIDIR), (49, "PA13", PinType.BIDIR),
-        (50, "PA14", PinType.BIDIR), (56, "PB3", PinType.BIDIR),
-        (61, "PB8", PinType.BIDIR),
-    ])}
-    ir = CircuitIR("x")
-    ir.add(Component("U1", lid, "STM32G474", group="MCU"))
-    ir.connect("+3V3", ("U1", "7"))  # deliberately wrong prior model wiring
-    ir.connect("SPI_SCK", ("U1", "50"))
-    ir.connect("GND")
-    notes = ensure_stm32g4_system_support(ir, symbols)
-    nodes = {n.name: set(n.nodes) for n in ir.nets}
-    assert ("U1", "7") in nodes["NRST"]
-    assert ("U1", "61") in nodes["BOOT0"]
-    assert ("U1", "49") in nodes["SWDIO"]
-    assert ("U1", "50") in nodes["SWCLK"] and ("U1", "50") not in nodes.get("SPI_SCK", set())
-    assert any(c.value == "ARM_SWD_10PIN" for c in ir.components.values())
-    assert any(c.value == "BOOT_MODE" for c in ir.components.values())
-    assert any("NRST protection" in note for note in notes)
 
 
 def test_merge_dangling_interface_nets():
