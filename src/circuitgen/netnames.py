@@ -24,6 +24,21 @@ def is_ground(name: str) -> bool:
     return name.strip().upper() in GROUND_NAMES
 
 
+_GROUND_PIN_PREFIXES = ("VSS", "GND", "AGND", "DGND", "PGND", "GNDA", "GNDD")
+
+
+def is_ground_pin(name: str) -> bool:
+    """True if a PIN name denotes a ground node.
+
+    Deliberately looser than `is_ground`, which matches canonical NET names
+    exactly. Vendors suffix ground pins per power domain — STM32G474 has VSSA,
+    MC68HC912 has VSSX — and neither is in GROUND_NAMES. Treating those as
+    positive supplies would tie a rail straight to ground.
+    """
+    n = name.strip().upper().replace("~", "")
+    return is_ground(n) or n.startswith(_GROUND_PIN_PREFIXES)
+
+
 def is_supply(name: str) -> bool:
     """True if a name denotes a non-ground supply rail (+3V3, +5V, VCC...).
 

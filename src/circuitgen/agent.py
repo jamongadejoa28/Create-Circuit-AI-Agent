@@ -32,11 +32,22 @@ from .ir import CircuitIR, Component
 from .ir_json import apply_patch, ir_from_json
 from .knowledge import KnowledgeIndex
 from .partindex import PartIndex
+from .llm_client import TruncatedCompletionError
 from .pipeline import PipelineResult, generate
-from .schemas import BLOCK_PLAN, CIRCUIT_IR, REPAIR_PATCH, REQUIREMENT_SPEC
+from .schemas import BLOCK_CIRCUIT_IR, BLOCK_PLAN, CIRCUIT_IR, REPAIR_PATCH, REQUIREMENT_SPEC
 from .netnames import GROUND_NAMES, supply_voltage
 
 MAX_REPAIRS = 3
+# llama-server per-slot context in this deployment (confirmed via /props).
+# Prompt + reply must fit: a block prompt that left less room than the reply
+# cap produced a hard "Context size has been exceeded" HTTP 500.
+SLOT_CONTEXT_TOKENS = 8192
+# Conservative on purpose: real block prompts measured 1.87-2.57 chars/token,
+# the low end on pin-dense tables (a 169-pin MCU, a 484-pin FPGA). Estimating
+# high would let the reply cap overrun the slot, which the server answers with
+# an opaque HTTP 500 instead of an error anyone can act on.
+_CHARS_PER_TOKEN = 2.0
+_CONTEXT_MARGIN = 256
 CANDIDATES_PER_QUERY = 3
 KNOWLEDGE_PER_TOPIC = 2
 BLOCK_THRESHOLD = 5  # parts_needed roles at/above which block decomposition kicks in
@@ -47,13 +58,46 @@ class LLMBackend(Protocol):
     def complete_json(self, messages: list[dict], schema: dict, **kw) -> dict: ...
 
 
-def _with_retry(fn, tries: int = 2):
+class PromptTooLargeError(RuntimeError):
+    """A request cannot fit the model's context however it is answered."""
+
+
+MIN_USEFUL_REPLY_TOKENS = 512
+_MAX_TRIM_LEVEL = 2  # 0 full, 1 no KNOWLEDGE, 2 first candidate only
+
+
+def _output_budget(content: str, cap: int = 4096) -> int:
+    """Tokens the reply may use without overrunning the slot context.
+
+    Raises when the prompt leaves no room for even a minimal answer: sending
+    it anyway gets an opaque HTTP 500 from llama-server, which reads as a
+    server fault rather than "this request cannot fit".
+    """
+    estimated_prompt = int(len(content) / _CHARS_PER_TOKEN) + 64  # + system message
+    room = SLOT_CONTEXT_TOKENS - estimated_prompt - _CONTEXT_MARGIN
+    if room < MIN_USEFUL_REPLY_TOKENS:
+        raise PromptTooLargeError(
+            f"prompt needs ~{estimated_prompt} of {SLOT_CONTEXT_TOKENS} context tokens, "
+            f"leaving {room} for the reply (minimum {MIN_USEFUL_REPLY_TOKENS}) — "
+            f"trim the request instead of sending it"
+        )
+    return min(cap, room)
+
+
+def _with_retry(fn, tries: int = 2, pass_attempt: bool = False):
     """One retry for transient server errors — a benchmark run died on a
-    single failed HTTP call; a whole agent run must not."""
+    single failed HTTP call; a whole agent run must not.
+
+    With `pass_attempt`, `fn` receives the 0-based attempt number so it can
+    send something SMALLER next time. A truncated completion is not transient:
+    re-sending the identical request reproduces it, and the two recorded
+    "attempts" on the unknown_module MCU block were four byte-identical
+    4096-token generations.
+    """
     last = None
-    for _ in range(tries):
+    for attempt in range(tries):
         try:
-            return fn()
+            return fn(attempt) if pass_attempt else fn()
         except Exception as e:  # LlamaServerError, HTTP hiccups
             last = e
     raise last
@@ -717,6 +761,7 @@ class Agent:
     def synthesize_block(
         self, spec: dict, block: dict, catalog: list[dict], name: str,
         contract_feedback: list[str] | None = None,
+        start_level: int = 0,
     ) -> tuple[CircuitIR, dict]:
         from .contracts import contract_instructions, infer_contracts
 
@@ -740,7 +785,19 @@ class Agent:
         others = [c for c in catalog if not c["block"].startswith(block["id"] + "#")]
         rails = [r["name"] for r in spec.get("power", {}).get("rails", [])]
 
-        content = (
+        # Each retry level sends a SMALLER request. Order is by measured token
+        # cost against how much the block needs the section: KNOWLEDGE (~720
+        # tokens of style guidance) goes first, then alternate candidates and
+        # the foreign-net catalog (~866). The spec, the rules, the first
+        # candidate's lib_id and its pin numbers are never dropped.
+        def build(level: int) -> str:
+            snips = snippets if level < 1 else []
+            cands = (
+                candidates if level < 2
+                else {role: hits[:1] for role, hits in candidates.items()}
+            )
+            other_nets = others if level < 2 else []
+            return (
             f"Design ONLY this functional block as CircuitIR JSON: "
             f"{block['id']} — {block.get('description', '')}\n"
             "Rules:\n"
@@ -758,15 +815,23 @@ class Agent:
             f"(keep any {{n}} literal — instances are stamped later): {own_ifaces}\n"
             + (
                 f"- Nets exported by other blocks that this block may connect to: "
-                f"{json.dumps(others, ensure_ascii=False)}\n"
-                if others
+                f"{json.dumps(other_nets, ensure_ascii=False)}\n"
+                if other_nets
                 else ""
             )
             + f"- Power rails (already exist, connect power pins to them by name, "
             f"do NOT add power:* symbols): {rails}\n"
             "- Internal net names are free — they get namespaced automatically.\n"
-            "- Every pin of every used component must be in a net or nc_pins. "
-            "UNUSED pins of large ICs go in nc_pins — NEVER as one-pin nets.\n"
+            # Per-pin accounting for a 132-pin MCU was 87% of the reply and
+            # exhausted the output budget mid-JSON; code closes those pins.
+            # The schema for this call has no nc_pins field, so this states
+            # what the grammar already enforces.
+            "- Leave unused pins of large ICs OUT of the answer entirely — "
+            "deterministic code marks them no-connect. Only wire what the "
+            "circuit needs.\n"
+            "- You MUST still put every POWER and GROUND pin of every component "
+            "in a net: those are never closed for you, and a device left "
+            "unpowered fails the build.\n"
             "- Be terse: short net names, plain values (100nF, 10k), no prose.\n"
             "- Apply the KNOWLEDGE rules (decoupling beside ICs, pull-ups, "
             "series resistors).\n"
@@ -776,19 +841,53 @@ class Agent:
             f"{json.dumps(contract_feedback or [], ensure_ascii=False)}\n"
             f"- name must be: {name}\n\n"
             f"SPEC: {json.dumps(sub_spec, ensure_ascii=False)}\n\n"
-            f"CANDIDATES: {json.dumps(candidates, ensure_ascii=False)}\n\n"
+            f"CANDIDATES: {json.dumps(cands, ensure_ascii=False)}\n\n"
             f"PIN_TABLES: {json.dumps(pin_tables, ensure_ascii=False)}\n\n"
-            f"KNOWLEDGE: {json.dumps(snippets, ensure_ascii=False)}"
-        )
-        data = _with_retry(lambda: self.llm.complete_json(
-            [{"role": "system", "content": _SYSTEM}, {"role": "user", "content": content}],
-            schema=CIRCUIT_IR,
-            max_tokens=4096,
-        ))
+            + (f"KNOWLEDGE: {json.dumps(snips, ensure_ascii=False)}" if snips else "")
+            )
+
+        accepted_level = 0
+        prev_total: int | None = None
+
+        def ask(attempt: int) -> dict:
+            nonlocal accepted_level, prev_total
+            level = min(start_level + attempt, _MAX_TRIM_LEVEL)
+            accepted_level = level
+            content = build(level)
+            # derived, not fixed: a prompt large enough that a 4096-token
+            # reply would not fit produced a hard HTTP 500 "Context size has
+            # been exceeded" instead of an answer.
+            budget = _output_budget(content)
+            estimated_prompt = int(len(content) / _CHARS_PER_TOKEN) + 64
+            if prev_total is not None:
+                # Dropping KNOWLEDGE (3.15 chars/token) refunds fewer prompt
+                # tokens than it hands back as reply budget, so an unclamped
+                # ladder could ask for MORE total context than the attempt
+                # that just failed.
+                budget = min(budget, max(
+                    MIN_USEFUL_REPLY_TOKENS, prev_total - estimated_prompt
+                ))
+            prev_total = estimated_prompt + budget
+            return self.llm.complete_json(
+                [{"role": "system", "content": _SYSTEM}, {"role": "user", "content": content}],
+                schema=BLOCK_CIRCUIT_IR,
+                max_tokens=budget,
+            )
+
+        data = _with_retry(ask, tries=_MAX_TRIM_LEVEL + 1 - start_level, pass_attempt=True)
         ir = ir_from_json(data)
-        template_notes = self._limit_template_copies(ir, candidates)
+        notes = self._limit_template_copies(ir, candidates)
+        if accepted_level:
+            # a degraded attempt loses the knowledge rules and the alternate
+            # candidates; the audit record must not imply it had them
+            notes.insert(
+                0,
+                f"block {block['id']}: accepted at trim level {accepted_level} "
+                f"({'no KNOWLEDGE' if accepted_level >= 1 else ''}"
+                f"{', first candidate only, no foreign-net catalog' if accepted_level >= 2 else ''})",
+            )
         return ir, {
-            "candidates": candidates, "notes": template_notes, "contracts": contracts,
+            "candidates": candidates, "notes": notes, "contracts": contracts,
             "sub_spec": sub_spec,
         }
 
@@ -916,10 +1015,45 @@ class Agent:
                 return new
             return pin
 
-        connected = {(r, str(p)) for net in ir.nets for r, p in net.nodes}
+        from .pins import PinType
+
+        def expand(ref: str, pin: str) -> list[str]:
+            """A supply NAME matching several pins means all of them.
+
+            KiCad symbols stack duplicate supply pins — MC68332 has 13 named
+            VDD and 15 named VSS — so `fix` found the name ambiguous, left it
+            alone and self-ERC reported unknown_pin U1.VDD. "Connect this net
+            to VDD" means the whole stack, which is what unify_stacked_pins
+            already does once one pin of a stack is on a net. Restricted to
+            power pins: two signal pins sharing a name are not a stack, and
+            tying them together would invent a connection.
+            """
+            comp = ir.components.get(ref)
+            sym = symbols.get(comp.lib_id) if comp else None
+            if sym is None or pin in {p.number for p in sym.pins}:
+                return [pin]
+            matches = [p for p in sym.pins if p.name.upper() == pin.upper()]
+            supplies = [p for p in matches if p.etype in (PinType.PWRIN, PinType.PWROUT)]
+            # KiCad types the HIDDEN duplicates of a stack as PASSIVE, not as
+            # power (STM32G474: VSS 15 is PWRIN, 31/47/63 are hidden PASSIVE).
+            # Wire the visible supply pins and leave the hidden ones to
+            # unify_stacked_pins, which joins a stack by coordinate.
+            if len(matches) > 1 and supplies and all(
+                p.hidden for p in matches if p not in supplies
+            ):
+                notes.append(
+                    f"resolved {ref}.{pin} -> {len(supplies)} stacked supply pin(s)"
+                )
+                return [p.number for p in supplies]
+            return [fix(ref, pin)]
 
         for net in ir.nets:
-            net.nodes = [(r, fix(r, str(p))) for r, p in net.nodes]
+            expanded: list[tuple[str, str]] = []
+            for r, p in net.nodes:
+                for number in expand(r, str(p)):
+                    if (r, number) not in expanded:
+                        expanded.append((r, number))
+            net.nodes = expanded
         ir.nc_pins = [(r, fix(r, str(p))) for r, p in ir.nc_pins]
         # Block synthesis frequently marks all unused pins NC, then the merge
         # or MCU-interface pass connects a subset.  Connected always wins.
@@ -1377,11 +1511,16 @@ class Agent:
                 # One full regeneration is cheaper and safer than allowing a
                 # missing functional block into ERC/repair.  ERC proves wiring,
                 # not that the requested controller or sensor still exists.
+                # trim level carries across the outer attempts: without it,
+                # attempt 2 re-sent attempt 1's ladder byte for byte, so a
+                # truncating block burned six identical generations
+                start_level = 0
                 for attempt in range(1, 3):
                     try:
                         bir, bctx = self.synthesize_block(
                             spec, block, catalog, f"{name}_{block['id']}",
                             contract_feedback=contract_feedback,
+                            start_level=start_level,
                         )
                         self._ensure_conceptual_devices(
                             block.get("roles", []),
@@ -1422,6 +1561,8 @@ class Agent:
                         break
                     except Exception as e:
                         block_error = str(e)
+                        if isinstance(e, (TruncatedCompletionError, PromptTooLargeError)):
+                            start_level = _MAX_TRIM_LEVEL
                         res.log.append(
                             f"block {block['id']} synthesis attempt {attempt} failed: {e}"
                         )
@@ -1563,9 +1704,11 @@ class Agent:
         from .normalize import (
             add_shared_spi_miso_series_resistors,
             apply_stm32g474ret6_foc_pinmap,
+            complete_generic_power_pins,
             complete_known_device_pins,
             ensure_drv8311_vm_decoupling,
             ensure_drv8311h_operating_network,
+            close_unused_hub_pins,
             ensure_canfd_bus_protection,
             ensure_stm32g4_power_network,
             ensure_stm32g4_system_support,
@@ -1577,6 +1720,9 @@ class Agent:
         symbols = self._resolve_symbols(ir)
         rails = [r["name"] for r in spec.get("power", {}).get("rails", [])]
         res.log.extend(complete_known_device_pins(ir, symbols, rails))
+        # the residual of that device table: supply pins on parts nobody wrote
+        # a rule for. A 7B left 28 of a 132-pin MCU's supply pins dangling.
+        res.log.extend(complete_generic_power_pins(ir, symbols, rails))
         if "+3V3" in rails:
             res.log.extend(ensure_stm32g4_power_network(ir, symbols, "+3V3"))
             res.log.extend(ensure_stm32g4_system_support(ir, symbols, "+3V3"))
@@ -1597,6 +1743,13 @@ class Agent:
         res.log.extend(self.resolve_pin_names(ir))
         res.log.extend(unify_stacked_pins(ir, self._resolve_symbols(ir)))
         res.log.extend(self._ensure_pullups(ir, spec))
+        # Every path, not just the block path: a flat-path run left the 104
+        # unused signal pins of a 132-pin MCU merely unconnected and scored
+        # ERC 175, where the same board on the block path scored 0. Runs after
+        # unify_stacked_pins on purpose — closing first lets a stack join a net
+        # while still marked NC, which KiCad reports as nc_marked_but_connected.
+        auto_nc = close_unused_hub_pins(ir, self._resolve_symbols(ir))
+        res.log.extend(auto_nc)
         res.log.extend(self._fix_footprints(ir))
 
         res.stage = "pipeline"
@@ -1691,6 +1844,9 @@ class Agent:
             res.log.extend(mark_documented_no_connects(ir, self._resolve_symbols(ir)))
             res.log.extend(ensure_relay_flyback(ir, self._resolve_symbols(ir)))
             res.log.extend(unify_stacked_pins(ir, self._resolve_symbols(ir)))
+            round_nc = close_unused_hub_pins(ir, self._resolve_symbols(ir))
+            auto_nc.extend(round_nc)
+            res.log.extend(round_nc)
             res.log.extend(self._fix_footprints(ir))
             pr = self._generate(ir, name)
             res.pipeline = pr
@@ -1718,6 +1874,11 @@ class Agent:
 
         rec.set("ir", ir_to_json(ir))
         rec.set("compliance", res.compliance.as_dict())
+        # Auto-closed pins are invisible to ERC by construction, so the audit
+        # record names every one of them. The name deny-list in
+        # close_unused_hub_pins is necessarily incomplete; this is how a
+        # reviewer finds out what it decided.
+        rec.set("auto_nc", auto_nc)
         rec.set("knowledge_trace", self._knowledge_trace)
         rec.set("repairs", res.repairs)
         rec.set("log", res.log)

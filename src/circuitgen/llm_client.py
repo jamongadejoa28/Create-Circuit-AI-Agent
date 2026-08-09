@@ -22,6 +22,25 @@ class LlamaServerError(RuntimeError):
     pass
 
 
+class TruncatedCompletionError(LlamaServerError):
+    """The model ran out of output budget mid-reply (finish_reason=length).
+
+    Distinct from a transient server error because the remedy is different:
+    re-sending the identical request produces the identical truncation, so a
+    caller must shrink the request instead of retrying it. Measured: a 132-pin
+    MCU block burned all 4096 tokens enumerating no-connect pins and the two
+    "attempts" were four byte-identical generations.
+
+    Carries the partial text so the failure stays diagnosable — it used to be
+    thrown away, which is why nobody could confirm what the model was emitting.
+    """
+
+    def __init__(self, message: str, partial_content: str = "", usage: dict | None = None):
+        super().__init__(message)
+        self.partial_content = partial_content
+        self.usage = usage or {}
+
+
 class LlamaClient:
     def __init__(
         self,
@@ -104,15 +123,27 @@ class LlamaClient:
             payload["model"] = model
         payload.update(self.extra_payload)
         data = self._post("/v1/chat/completions", payload)
+        # Truncation is checked BEFORE parsing: a reply cut at the output cap
+        # can still be valid JSON (the grammar closes the braces), and that
+        # would be accepted as a complete circuit with components silently
+        # missing. finish_reason used to be read only inside the parse-error
+        # handler, so the success path could never see it.
         try:
             choice = data["choices"][0]
             content = choice["message"]["content"]
+        except (KeyError, IndexError) as e:
+            raise LlamaServerError(f"completion unusable ({e}); payload={str(data)[:400]}") from e
+        if choice.get("finish_reason") == "length":
+            usage = data.get("usage") or {}
+            raise TruncatedCompletionError(
+                f"completion truncated at the output cap "
+                f"(max_tokens={max_tokens}, usage={usage}); the reply is incomplete",
+                partial_content=content,
+                usage=usage,
+            )
+        try:
             return json.loads(content)
-        except (KeyError, IndexError, json.JSONDecodeError) as e:
-            finish = None
-            try:
-                finish = data["choices"][0].get("finish_reason")
-            except Exception:
-                pass
-            detail = f"finish_reason={finish}" if finish else f"payload={str(data)[:400]}"
-            raise LlamaServerError(f"completion unusable ({e}); {detail}") from e
+        except json.JSONDecodeError as e:
+            raise LlamaServerError(
+                f"completion unusable ({e}); finish_reason={choice.get('finish_reason')}"
+            ) from e

@@ -471,3 +471,348 @@ def test_motor_rail_does_not_inherit_the_logic_rail_refusal():
     ir.add(Component("U1", lib, "DRV8311H"))
     complete_known_device_pins(ir, symbols, ["+24V", "GND"])
     assert [n.name for n in ir.nets if any(r == "U1" and p == "8" for r, p in n.nodes)] == ["+24V"]
+
+
+# ---- deterministic closure of unused hub pins --------------------------------
+
+
+def _hub(n_pins=20, extra=()):
+    """A hub-sized symbol: 2 power pins, the rest generic signals."""
+    pins = [(1, "VDD", PinType.PWRIN), (2, "VSS", PinType.PWRIN)]
+    pins += [(i, f"P{i}", PinType.BIDIR) for i in range(3, n_pins + 1)]
+    pins += list(extra)
+    return _sym("MCU_Vendor:BIGCHIP", pins)
+
+
+def test_unused_signal_pins_of_a_hub_are_closed_but_power_pins_are_not():
+    """Per-pin accounting was 87% of a 132-pin block reply and exhausted the
+    output budget mid-JSON. Code closes those pins — except power pins, whose
+    absence is the failure this must never hide."""
+    from circuitgen.normalize import close_unused_hub_pins
+
+    sym = _hub(20)
+    ir = CircuitIR("hub")
+    ir.add(Component("U1", "MCU_Vendor:BIGCHIP", "BIGCHIP"))
+    ir.connect("SDA", ("U1", "3"))
+    ir.connect("SDA", ("U1", "4"))
+
+    notes = close_unused_hub_pins(ir, {"MCU_Vendor:BIGCHIP": sym})
+    closed = {p for r, p in ir.nc_pins if r == "U1"}
+    assert "1" not in closed and "2" not in closed, "power pins must stay open and loud"
+    assert "3" not in closed and "4" not in closed, "wired pins are untouched"
+    assert closed == {str(i) for i in range(5, 21)}
+    assert notes and "closed 16 unused pin(s) of U1" in notes[0]
+
+
+def test_unpowered_hub_still_fails_erc_and_compliance_after_closure():
+    from circuitgen.compliance import check_power_integrity
+    from circuitgen.erc import check_circuit
+    from circuitgen.normalize import close_unused_hub_pins
+
+    sym = _hub(20)
+    symbols = {"MCU_Vendor:BIGCHIP": sym}
+    ir = CircuitIR("hub")
+    ir.add(Component("U1", "MCU_Vendor:BIGCHIP", "BIGCHIP", "F:F"))
+    ir.connect("SDA", ("U1", "3"))
+    ir.connect("SDA", ("U1", "4"))
+    close_unused_hub_pins(ir, symbols)
+
+    erc = {i.rule for i in check_circuit(ir, symbols) if i.severity == "error"}
+    assert "unconnected_pin" in erc, "the omitted VDD/VSS must stay a loud ERC error"
+    issues, _checked = check_power_integrity(ir, symbols, limits=[])
+    assert {i.path for i in issues} == {"U1.1", "U1.2"}
+
+
+def test_small_parts_keep_their_dangling_pins_loud():
+    from circuitgen.normalize import close_unused_hub_pins
+
+    reg = _sym("Regulator_Linear:X", [
+        (1, "IN", PinType.PWRIN), (2, "GND", PinType.PWRIN),
+        (3, "OUT", PinType.PWROUT), (4, "FB", PinType.INPUT),
+    ])
+    ir = CircuitIR("reg")
+    ir.add(Component("U1", "Regulator_Linear:X", "X"))
+    ir.connect("+12V", ("U1", "1"))
+    assert close_unused_hub_pins(ir, {"Regulator_Linear:X": reg}) == []
+    assert ir.nc_pins == []
+
+
+def test_conceptual_boxes_are_never_auto_closed():
+    from circuitgen.normalize import close_unused_hub_pins
+
+    box = _sym("Conceptual:MY_RADIO", [(i, f"P{i}", PinType.PASSIVE) for i in range(1, 21)])
+    ir = CircuitIR("c")
+    ir.add(Component("MY_RADIO", "Conceptual:MY_RADIO", "MY_RADIO"))
+    assert close_unused_hub_pins(ir, {"Conceptual:MY_RADIO": box}) == []
+
+
+def test_hidden_pins_are_left_to_the_documented_nc_pass():
+    from circuitgen.normalize import close_unused_hub_pins
+
+    sym = _hub(20)
+    sym.pins[10].hidden = True
+    ir = CircuitIR("hub")
+    ir.add(Component("U1", "MCU_Vendor:BIGCHIP", "BIGCHIP"))
+    close_unused_hub_pins(ir, {"MCU_Vendor:BIGCHIP": sym})
+    assert (("U1", sym.pins[10].number)) not in ir.nc_pins
+
+
+# ---- generic power-pin completion (residual of the device table) -------------
+
+
+def test_vendor_suffixed_ground_pins_are_grounds_not_positive_supplies():
+    """VSSA and VSSX are grounds, and GROUND_NAMES matches canonical NET names
+    exactly. Without the prefix test they read as positive supplies and could
+    be tied to the logic rail — a dead short. Two distinct ground NAMES then
+    mean separate domains, so they are refused rather than merged."""
+    from circuitgen.netnames import is_ground_pin
+    from circuitgen.normalize import complete_generic_power_pins
+
+    assert is_ground_pin("VSSA") and is_ground_pin("VSSX") and is_ground_pin("PGND")
+    assert not is_ground_pin("VDD") and not is_ground_pin("VDDX")
+
+    sym = _sym("Vendor:CHIP", [
+        (1, "VDD", PinType.PWRIN), (2, "VSSA", PinType.PWRIN),
+        (3, "VSSX", PinType.PWRIN), (4, "IO", PinType.BIDIR),
+    ])
+    ir = CircuitIR("g")
+    ir.add(Component("U1", "Vendor:CHIP", "CHIP"))
+    notes = complete_generic_power_pins(ir, {"Vendor:CHIP": sym}, ["+3V3", "GND"])
+    assert ir.nets == []
+    assert any("separate ground domains" in n for n in notes)
+
+
+def test_one_ground_name_many_pins_is_a_stack_and_gets_wired():
+    from circuitgen.normalize import complete_generic_power_pins
+
+    sym = _sym("Vendor:CHIP", [
+        (1, "VSS", PinType.PWRIN), (2, "VSS", PinType.PWRIN),
+        (3, "VSS", PinType.PWRIN), (4, "IO", PinType.BIDIR),
+    ])
+    ir = CircuitIR("g")
+    ir.add(Component("U1", "Vendor:CHIP", "CHIP"))
+    notes = complete_generic_power_pins(ir, {"Vendor:CHIP": sym}, ["+3V3", "GND"])
+    assert {p for r, p in ir.nets[0].nodes} == {"1", "2", "3"}
+    assert ir.nets[0].name == "GND"
+    assert any("3 ground pin(s)" in n for n in notes)
+
+
+def test_a_part_with_two_positive_supply_names_is_left_loud():
+    """MC68HC912 has VDD and VDDX; an op-amp has V+ and V-. Tying either to the
+    logic rail would be a guess, and a wrong guess is destructive."""
+    from circuitgen.normalize import complete_generic_power_pins
+
+    opamp = _sym("Amplifier_Operational:X", [
+        (1, "V+", PinType.PWRIN), (2, "V-", PinType.PWRIN), (3, "OUT", PinType.OUTPUT),
+    ])
+    ir = CircuitIR("g")
+    ir.add(Component("U1", "Amplifier_Operational:X", "X"))
+    notes = complete_generic_power_pins(ir, {"Amplifier_Operational:X": opamp}, ["+3V3", "GND"])
+    assert ir.nets == []
+    assert any("ambiguous" in n for n in notes)
+
+
+def test_generic_completion_never_overrides_an_existing_connection():
+    from circuitgen.normalize import complete_generic_power_pins
+
+    sym = _sym("Vendor:CHIP", [(1, "VDD", PinType.PWRIN), (2, "VSS", PinType.PWRIN)])
+    ir = CircuitIR("g")
+    ir.add(Component("U1", "Vendor:CHIP", "CHIP"))
+    ir.connect("+5V", ("U1", "1"))
+    complete_generic_power_pins(ir, {"Vendor:CHIP": sym}, ["+3V3", "GND"])
+    on = {n.name for n in ir.nets if ("U1", "1") in n.nodes}
+    assert on == {"+5V"}, "an existing rail choice is not second-guessed"
+
+
+def test_no_safe_rail_leaves_supply_pins_unconnected_not_nc():
+    """A 24V-only board has no plausible logic rail. The pin must stay visibly
+    unconnected — marking it NC is what made an unpowered MCU score ERC 0."""
+    from circuitgen.normalize import complete_generic_power_pins
+
+    sym = _sym("Vendor:CHIP", [(1, "VDD", PinType.PWRIN), (2, "VSS", PinType.PWRIN)])
+    ir = CircuitIR("g")
+    ir.add(Component("U1", "Vendor:CHIP", "CHIP"))
+    ir.nc_pins.append(("U1", "1"))
+    notes = complete_generic_power_pins(ir, {"Vendor:CHIP": sym}, ["+24V", "GND"])
+    assert any("plausible logic supply" in n for n in notes)
+    assert ("U1", "1") not in ir.nc_pins, "a stale NC marker would hide the refusal"
+    assert not any(n.name not in ("GND",) and ("U1", "1") in n.nodes for n in ir.nets)
+
+
+def test_unresolvable_footprint_is_cleared_rather_than_blocking_the_build():
+    """A 7B wrote 'Connector:LEMO4:LEMO4_4P' — a name with two colons that
+    exists nowhere. That is a hard footprint_unknown error, so an otherwise
+    ERC-0, connectivity-clean board could never pass over a layout attribute."""
+    from circuitgen.fp_checks import assign_footprints, check_footprints
+    from circuitgen.partindex import PartIndex
+
+    parts = PartIndex()
+    if not parts.has_footprints():
+        pytest.skip("footprint index not built")
+    lib_id = "Connector:LEMO4"
+    sym = parts.load_symbols([lib_id])[lib_id]
+    ir = CircuitIR("fp")
+    ir.add(Component("J1", lib_id, "LEMO4", "Connector:LEMO4:LEMO4_4P"))
+    symbols = {lib_id: sym}
+
+    before = check_footprints(ir, symbols, parts)
+    assert [i.rule for i in before] == ["footprint_unknown"]
+
+    notes = assign_footprints(ir, symbols, parts)
+    assert ir.components["J1"].footprint == ""
+    assert any("cleared" in n for n in notes)
+    assert check_footprints(ir, symbols, parts) == []
+
+
+# ---- guards found by adversarial review (each has a reproduced counterexample)
+
+
+def test_strap_pins_are_never_auto_closed():
+    """An ESP32-C3 whose EN is closed is held in reset forever, and self-ERC,
+    compliance and kicad-cli all reported zero findings."""
+    from circuitgen.normalize import close_unused_hub_pins
+
+    pins = [(1, "EN", PinType.INPUT), (2, "VDD", PinType.PWRIN),
+            (3, "GND", PinType.PWRIN), (4, "NRST", PinType.INPUT),
+            (5, "BOOT0", PinType.INPUT), (6, "XIN", PinType.INPUT),
+            (7, "FB", PinType.INPUT), (8, "MODE", PinType.INPUT)]
+    pins += [(i, f"IO{i}", PinType.BIDIR) for i in range(9, 25)]
+    sym = _sym("Vendor:HUB", pins)
+    ir = CircuitIR("s")
+    ir.add(Component("U1", "Vendor:HUB", "HUB"))
+    close_unused_hub_pins(ir, {"Vendor:HUB": sym})
+    closed = {p for r, p in ir.nc_pins}
+    assert closed.isdisjoint({"1", "2", "3", "4", "5", "6", "7", "8"})
+    assert closed == {str(i) for i in range(9, 25)}
+
+
+def test_supply_pins_typed_passive_or_input_are_never_auto_closed():
+    """USB-C VBUS/GND are PASSIVE and a MAX310's V+/V-/GND are INPUT — the
+    electrical type does not identify a supply pin, the name does."""
+    from circuitgen.normalize import close_unused_hub_pins
+
+    pins = [(1, "VBUS", PinType.PASSIVE), (2, "GND", PinType.PASSIVE),
+            (3, "V+", PinType.INPUT), (4, "V-", PinType.INPUT),
+            (5, "CC1", PinType.PASSIVE)]
+    pins += [(i, f"D{i}", PinType.BIDIR) for i in range(6, 22)]
+    sym = _sym("Vendor:USBC", pins)
+    ir = CircuitIR("s")
+    ir.add(Component("J1", "Vendor:USBC", "USBC"))
+    close_unused_hub_pins(ir, {"Vendor:USBC": sym})
+    closed = {p for r, p in ir.nc_pins}
+    assert closed.isdisjoint({"1", "2", "3", "4", "5"})
+
+
+def test_an_entirely_unused_unit_is_left_open_and_reported():
+    """477 multi-unit hubs: silently closing an unused gate's three inputs
+    hides that the part should not be there."""
+    from circuitgen.normalize import close_unused_hub_pins
+
+    pins = [PinDef(str(i), f"A{i}", PinType.INPUT, 0, 0, 0, 2.54) for i in range(1, 9)]
+    pins += [PinDef(str(i), f"B{i}", PinType.INPUT, 0, 0, 0, 2.54) for i in range(9, 17)]
+    for p in pins[:8]:
+        p.unit = 1
+    for p in pins[8:]:
+        p.unit = 2
+    sym = SymbolDef("Vendor:DUALGATE", "", pins)
+    ir = CircuitIR("s")
+    ir.add(Component("U1", "Vendor:DUALGATE", "DUALGATE"))
+    ir.connect("N", ("U1", "1"))
+    notes = close_unused_hub_pins(ir, {"Vendor:DUALGATE": sym})
+    closed = {p for r, p in ir.nc_pins}
+    assert closed == {str(i) for i in range(2, 9)}, "the used unit is completed"
+    assert closed.isdisjoint({str(i) for i in range(9, 17)}), "the unused unit stays open"
+    assert any("entirely unused" in n for n in notes)
+
+
+def test_isolated_ground_domains_are_never_merged():
+    """ADuM1201 has GND1 and GND2; tying them destroys the isolation barrier
+    the part exists for. 3,950 catalog symbols have >1 distinct ground name."""
+    from circuitgen.normalize import complete_generic_power_pins
+
+    sym = _sym("Isolator:ADUM1201", [
+        (1, "VDD1", PinType.PWRIN), (2, "GND1", PinType.PWRIN),
+        (3, "VDD2", PinType.PWRIN), (4, "GND2", PinType.PWRIN),
+    ])
+    ir = CircuitIR("iso")
+    ir.add(Component("U1", "Isolator:ADUM1201", "ADUM1201"))
+    notes = complete_generic_power_pins(ir, {"Isolator:ADUM1201": sym}, ["+3V3", "GND"])
+    assert ir.nets == [], "no ground net was created"
+    assert any("separate ground domains" in n for n in notes)
+
+
+def test_unknown_part_supply_is_refused_without_a_datasheet_warrant():
+    """logic_rail returns the lowest rail <= 5.5 V, which is a coin flip for an
+    unknown part: a 5 V CPU lands on +3V3, a 3.3 V flash lands on +5V."""
+    from circuitgen.normalize import complete_generic_power_pins
+
+    sym = _sym("CPU_NXP_68000:MC68332", [
+        (1, "VDD", PinType.PWRIN), (2, "VDD", PinType.PWRIN),
+        (3, "VSS", PinType.PWRIN),
+    ])
+    ir = CircuitIR("cpu")
+    ir.add(Component("U1", "CPU_NXP_68000:MC68332", "MC68332"))
+    notes = complete_generic_power_pins(ir, {"CPU_NXP_68000:MC68332": sym}, ["+5V", "GND", "+3V3"])
+    on = {n.name for n in ir.nets if ("U1", "1") in n.nodes}
+    assert on == set(), "VDD must stay loud, not be guessed onto a rail"
+    assert any("no datasheet limits are recorded" in n for n in notes)
+    # grounds are unambiguous and still get wired
+    assert {n.name for n in ir.nets if ("U1", "3") in n.nodes} == {"GND"}
+
+
+def test_a_recorded_device_within_range_is_wired():
+    from circuitgen.normalize import complete_generic_power_pins
+
+    sym = _sym("MCU_ST_STM32G4:STM32G474RETx", [
+        (1, "VDD", PinType.PWRIN), (2, "VSS", PinType.PWRIN),
+    ])
+    ir = CircuitIR("ok")
+    ir.add(Component("U1", "MCU_ST_STM32G4:STM32G474RETx", "STM32G474RETx"))
+    notes = complete_generic_power_pins(ir, {"MCU_ST_STM32G4:STM32G474RETx": sym}, ["+3V3", "GND"])
+    assert {n.name for n in ir.nets if ("U1", "1") in n.nodes} == {"+3V3"}
+    assert any("datasheet range confirms it" in n for n in notes)
+
+
+def test_partially_wired_supplies_never_bridge_two_rails():
+    """Some VDD pins already on +5V and the rest sent to +3V3 would short the
+    rails through the die's supply bus."""
+    from circuitgen.normalize import complete_generic_power_pins
+
+    sym = _sym("Vendor:CHIP", [
+        (1, "VDD", PinType.PWRIN), (2, "VDD", PinType.PWRIN),
+        (3, "VDD", PinType.PWRIN), (4, "VSS", PinType.PWRIN),
+    ])
+    ir = CircuitIR("split")
+    ir.add(Component("U1", "Vendor:CHIP", "CHIP"))
+    ir.connect("+5V", ("U1", "1"))
+    ir.connect("+3V3", ("U1", "2"))
+    notes = complete_generic_power_pins(ir, {"Vendor:CHIP": sym}, ["+3V3", "+5V", "GND"])
+    assert {n.name for n in ir.nets if ("U1", "3") in n.nodes} == set()
+    assert any("already span" in n for n in notes)
+
+
+def test_remaining_supplies_join_the_rail_their_siblings_use():
+    from circuitgen.normalize import complete_generic_power_pins
+
+    sym = _sym("Vendor:CHIP", [
+        (1, "VDD", PinType.PWRIN), (2, "VDD", PinType.PWRIN),
+        (3, "VSS", PinType.PWRIN),
+    ])
+    ir = CircuitIR("join")
+    ir.add(Component("U1", "Vendor:CHIP", "CHIP"))
+    ir.connect("+5V", ("U1", "1"))
+    complete_generic_power_pins(ir, {"Vendor:CHIP": sym}, ["+3V3", "+5V", "GND"])
+    assert {n.name for n in ir.nets if ("U1", "2") in n.nodes} == {"+5V"}
+
+
+def test_a_refused_supply_pin_loses_a_stale_nc_marker():
+    """The pattern path blanket-NCs unbound hub pins; leaving the marker makes
+    the refusal silent, because erc.py skips NC pins."""
+    from circuitgen.normalize import complete_generic_power_pins
+
+    sym = _sym("Vendor:CHIP", [(1, "VDD", PinType.PWRIN), (2, "VSS", PinType.PWRIN)])
+    ir = CircuitIR("nc")
+    ir.add(Component("U1", "Vendor:CHIP", "CHIP"))
+    ir.nc_pins.extend([("U1", "1")])
+    complete_generic_power_pins(ir, {"Vendor:CHIP": sym}, ["+3V3", "GND"])
+    assert ("U1", "1") not in ir.nc_pins, "refusal must be visible to ERC"

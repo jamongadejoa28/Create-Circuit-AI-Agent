@@ -103,5 +103,16 @@ def assign_footprints(
                 continue
 
         if comp.footprint:
-            notes.append(f"{ref}: footprint {comp.footprint!r} unknown and no valid replacement found")
+            # An invented footprint is worse than none: a name that does not
+            # exist is a hard footprint_unknown error that blocks the build
+            # forever over a PCB-layout attribute, while an absent one is a
+            # footprint_missing warning the user can act on. Measured: a 7B
+            # wrote 'Connector:LEMO4:LEMO4_4P' for a symbol with no default
+            # footprint and no fp_filters, and an otherwise ERC-0,
+            # connectivity-clean board could never pass.
+            notes.append(
+                f"{ref}: footprint {comp.footprint!r} does not exist and no valid "
+                f"replacement was found — cleared, assign one before layout"
+            )
+            comp.footprint = ""
     return notes

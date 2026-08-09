@@ -123,6 +123,24 @@ CIRCUIT_IR = {
 }
 
 
+# Block synthesis cannot emit nc_pins at all. Listing the unused pins of a
+# 132-pin MCU was 87% of the reply and exhausted the output cap mid-JSON;
+# deterministic code (normalize.close_unused_hub_pins) closes them instead.
+# The prompt says so too, but a 7B ignores a negative instruction often
+# enough to matter — measured, the same request rambled to the full 4096
+# tokens on one draw and answered in 300 on the next. additionalProperties
+# is False, so removing the property makes the array ungrammatical rather
+# than merely discouraged.
+#
+# nodes.minItems stays at 1: a block's interface net legitimately has only
+# its own pin, and merge_dangling_interface_nets pairs it with the other
+# block's half afterwards.
+BLOCK_CIRCUIT_IR = {
+    **CIRCUIT_IR,
+    "properties": {k: v for k, v in CIRCUIT_IR["properties"].items() if k != "nc_pins"},
+}
+
+
 # Per-op variants: required fields are enforced per operation so the model
 # cannot emit e.g. a connect without a net (observed with the 7B model
 # under a permissive schema).

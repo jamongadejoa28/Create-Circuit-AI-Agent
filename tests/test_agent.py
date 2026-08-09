@@ -609,6 +609,55 @@ def test_board_scale_request_is_not_answered_by_one_pattern(agent_env):
     assert any("declined: the request also asks for" in n for n in log), log
 
 
+def test_block_synthesis_shrinks_the_request_after_a_truncation(agent_env):
+    """A truncated completion is not transient: re-sending it reproduces it.
+
+    Measured on unknown_module — the two recorded "attempts" were four
+    byte-identical 4096-token generations of the same doomed reply.
+    """
+    from circuitgen.llm_client import TruncatedCompletionError
+
+    parts, knowledge, tmp = agent_env
+
+    class Truncating:
+        def __init__(self):
+            self.prompts = []
+            self.budgets = []
+
+        def complete_json(self, messages, schema, **kw):
+            self.prompts.append(messages[-1]["content"])
+            self.budgets.append(kw.get("max_tokens"))
+            if len(self.prompts) == 1:
+                raise TruncatedCompletionError("truncated", partial_content="{")
+            return {
+                "name": "blk",
+                "components": [{"ref": "R1", "lib_id": "Device:R", "value": "10k"}],
+                "nets": [{"name": "N", "nodes": [{"ref": "R1", "pin": "1"},
+                                                 {"ref": "R1", "pin": "2"}]}],
+                "nc_pins": [],
+            }
+
+    llm = Truncating()
+    agent = Agent(llm, parts, knowledge, tmp / "trunc")
+    spec = {
+        "summary": "sensor block",
+        "power": {"rails": [{"name": "+3V3", "voltage": "3.3V"}, {"name": "GND", "voltage": "0V"}]},
+        "parts_needed": [{"role": "sensor", "search_query": "I2C temperature sensor"}],
+        "connections_intent": [],
+    }
+    block = {"id": "SENSOR", "roles": ["sensor"], "description": "sensor", "count": 1,
+             "interface_nets": [{"name": "SDA"}, {"name": "SCL"}]}
+    agent.synthesize_block(spec, block, [{"block": "OTHER#1", "net": "FOO"}], "blk")
+
+    assert len(llm.prompts) == 2, "the block must be retried"
+    assert len(llm.prompts[1]) < len(llm.prompts[0]), "attempt 2 must be smaller"
+    assert "KNOWLEDGE:" in llm.prompts[0] and "KNOWLEDGE:" not in llm.prompts[1]
+    # never dropped: the spec, the rules and the first candidate's pin table
+    for kept in ("SPEC:", "CANDIDATES:", "PIN_TABLES:", "Design ONLY this functional block"):
+        assert kept in llm.prompts[1]
+    assert all(b and b <= 4096 for b in llm.budgets)
+
+
 def test_header_roles_fall_back_to_generic_connectors(agent_env):
     parts, knowledge, tmp = agent_env
     agent = Agent(MockLLM(), parts, knowledge, tmp / "hdr")
@@ -749,3 +798,53 @@ def test_pattern_synthesis_builds_mcu_uart_debug(agent_env):
     assert any(r.startswith("J") for r, _p in tx)
     nrst = next(nodes for nodes in nets.values() if ("U1", "7") in nodes)
     assert any(r.startswith("SW") for r, _p in nrst)
+
+
+def test_ambiguous_supply_pin_name_expands_to_the_whole_stack(agent_env):
+    """MC68332 has 13 pins named VDD, so "connect this net to VDD" was
+    ambiguous, left unresolved, and reported as unknown_pin U1.VDD."""
+    parts, knowledge, tmp = agent_env
+    agent = Agent(MockLLM(), parts, knowledge, tmp / "expand")
+    ir = CircuitIR("stack")
+    ir.add(Component("U1", "MCU_ST_STM32G4:STM32G474RETx", "STM32G474RETx"))
+    ir.connect("+3V3", ("U1", "VDD"))
+    ir.connect("GND", ("U1", "VSS"))
+
+    notes = agent.resolve_pin_names(ir)
+    sym = agent._resolve_symbols(ir)["MCU_ST_STM32G4:STM32G474RETx"]
+    vdd = {p.number for p in sym.pins if p.name.upper() == "VDD"}
+    # KiCad types the hidden duplicates of a stack PASSIVE (VSS 31/47/63);
+    # only the visible supply pin is wired here, unify_stacked_pins joins
+    # the rest by coordinate afterwards
+    vss_visible = {
+        p.number for p in sym.pins
+        if p.name.upper() == "VSS" and not p.hidden
+    }
+    nets = {n.name: {p for r, p in n.nodes if r == "U1"} for n in ir.nets}
+    assert len(vdd) > 1, "fixture must actually have a stacked supply"
+    assert nets["+3V3"] == vdd
+    assert nets["GND"] == vss_visible and "VSS" not in nets["GND"]
+    assert any("stacked supply pin" in n for n in notes)
+
+
+def test_ambiguous_signal_pin_name_is_not_expanded(agent_env):
+    """Two signal pins sharing a name are not a stack — tying them together
+    would invent a connection the request never asked for."""
+    from circuitgen.ir import PinDef, SymbolDef
+    from circuitgen.pins import PinType
+
+    parts, knowledge, tmp = agent_env
+    agent = Agent(MockLLM(), parts, knowledge, tmp / "expand2")
+    sym = SymbolDef(
+        "Test:DUAL", "",
+        [PinDef("1", "A", PinType.PASSIVE, 0, 0, 0, 2.54),
+         PinDef("2", "A", PinType.PASSIVE, 0, 0, 0, 2.54),
+         PinDef("3", "K", PinType.PASSIVE, 0, 0, 0, 2.54)],
+    )
+    ir = CircuitIR("dual")
+    ir.add(Component("D1", "Test:DUAL", "DUAL"))
+    ir.connect("N1", ("D1", "A"))
+    agent._resolve_symbols = lambda _ir: {"Test:DUAL": sym}
+
+    agent.resolve_pin_names(ir)
+    assert [p for r, p in ir.nets[0].nodes] == ["A"], "left alone, so ERC stays loud"
