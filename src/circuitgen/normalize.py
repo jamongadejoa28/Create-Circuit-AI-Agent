@@ -21,6 +21,37 @@ _CS_NET_RE = re.compile(r"(^|_)(CS|SS|NSS|CSN)(_|$|\d)", re.IGNORECASE)
 
 
 
+
+_SI = {"p": 1e-12, "n": 1e-9, "u": 1e-6, "µ": 1e-6, "m": 1e-3,
+       "k": 1e3, "K": 1e3, "M": 1e6, "R": 1.0, "": 1.0}
+
+
+def component_value(text: str) -> float | None:
+    """A component value as a number, so 0.1uF and 100nF compare equal.
+
+    Presence tests that compared value STRINGS treated those two as different
+    parts and added a duplicate: a model that wrote 0.1uF got the datasheet's
+    100nF added on top. Handles 4k7/1R5 style notation as well as 4.7k.
+    """
+    t = (text or "").strip().replace("Ω", "").replace("ohm", "").replace("Ohm", "")
+    for suffix in ("F", "H", "f", "h"):
+        if t.endswith(suffix):
+            t = t[:-1]
+    m = re.fullmatch(r"(\d*\.?\d+)\s*([pnuµmkKMR]?)", t)
+    if m:
+        return float(m.group(1)) * _SI.get(m.group(2), 1.0)
+    m = re.fullmatch(r"(\d+)([pnuµmkKMR])(\d+)", t)  # 4k7, 1R5
+    if m:
+        return float(f"{m.group(1)}.{m.group(3)}") * _SI.get(m.group(2), 1.0)
+    return None
+
+
+def is_capacitor(lib_id: str) -> bool:
+    """Any KiCad capacitor symbol, not just the exact id a rule happens to add."""
+    name = lib_id.split(":")[-1].upper()
+    return name == "C" or name.startswith(("C_", "CP", "C-"))
+
+
 def move_pin(ir: CircuitIR, ref: str, pin: str, net_name: str) -> None:
     """Put a pin on `net_name`, removing it from wherever it was.
 
@@ -927,362 +958,6 @@ def ensure_relay_flyback(
     return notes
 
 
-def add_shared_spi_miso_series_resistors(
-    ir: CircuitIR, symbols: dict[str, SymbolDef]
-) -> list[str]:
-    """Isolate encoder MISO/DO outputs on a shared serial bus with 47R each.
-
-    Besides matching the requested series resistors, this prevents KiCad's
-    output-to-output ERC conflict while preserving the real tri-state bus
-    topology.
-    """
-    notes: list[str] = []
-    numeric = [int(m.group(1)) for r in ir.components if (m := re.fullmatch(r"R(\d+)", r))]
-    counter = max(numeric, default=0) + 1
-    for net in list(ir.nets):
-        if "MISO" not in net.name.upper():
-            continue
-        targets: list[tuple[str, str]] = []
-        # Some templates omit one repeated encoder's data output.  Attach
-        # all encoder-group DO/MISO outputs to the declared shared bus before
-        # inserting isolation resistors.
-        existing_nodes = {(r, p) for n in ir.nets for r, p in n.nodes}
-        for ref, comp in ir.components.items():
-            sym = symbols.get(comp.lib_id)
-            if sym is None or not comp.group.upper().startswith("ENC"):
-                continue
-            for pin in sym.pins:
-                if pin.name.upper() in {"MISO", "DO"} and (ref, pin.number) not in existing_nodes:
-                    net.nodes.append((ref, pin.number))
-        for ref, pin_no in list(net.nodes):
-            comp = ir.components.get(ref)
-            sym = symbols.get(comp.lib_id) if comp else None
-            if sym is None or not comp.group.upper().startswith("ENC"):
-                continue
-            try:
-                if sym.pin(pin_no).name.upper() in {"MISO", "DO"}:
-                    targets.append((ref, pin_no))
-            except KeyError:
-                continue
-        if len(targets) < 2:
-            continue
-        for ref, pin_no in targets:
-            rref = f"R{counter}"
-            counter += 1
-            group = ir.components[ref].group
-            ir.add(Component(rref, "Device:R", "47R", group=group))
-            net.nodes.remove((ref, pin_no))
-            net.nodes.append((rref, "2"))
-            ir.connect(f"{group or ref}_MISO_RAW", (ref, pin_no), (rref, "1"))
-            notes.append(f"added {rref} 47R series isolation for {ref} MISO")
-    return notes
-
-
-def ensure_drv8311_vm_decoupling(
-    ir: CircuitIR, symbols: dict[str, SymbolDef]
-) -> list[str]:
-    """Add the requested VM capacitor set inside every DRV8311 channel."""
-    notes: list[str] = []
-    numeric = [int(m.group(1)) for r in ir.components if (m := re.fullmatch(r"C(\d+)", r))]
-    counter = max(numeric, default=0) + 1
-
-    def pin_net(ref: str, pin: str) -> str | None:
-        return next((n.name for n in ir.nets if (ref, pin) in n.nodes), None)
-
-    for ref, comp in list(ir.components.items()):
-        if "DRV8311" not in comp.lib_id.upper():
-            continue
-        sym = symbols.get(comp.lib_id)
-        if sym is None:
-            continue
-        by_name = {p.name.upper(): p.number for p in sym.pins}
-        vm = pin_net(ref, by_name.get("VM", ""))
-        gnd_pin = by_name.get("PGND") or by_name.get("AGND")
-        gnd = pin_net(ref, gnd_pin or "")
-        if not vm or not gnd:
-            continue
-        existing = {
-            c.value.upper()
-            for c in ir.components.values()
-            if c.group == comp.group and c.lib_id == "Device:C"
-        }
-        for value in ("100nF", "1uF", "10uF", "220uF"):
-            if value.upper() in existing:
-                continue
-            cref = f"C{counter}"
-            counter += 1
-            ir.add(Component(cref, "Device:C", value, group=comp.group))
-            ir.connect(vm, (cref, "1"))
-            ir.connect(gnd, (cref, "2"))
-            notes.append(f"added {cref} {value} VM decoupling beside {ref}")
-    return notes
-
-
-def ensure_drv8311h_operating_network(
-    ir: CircuitIR, symbols: dict[str, SymbolDef], logic_rail: str = "+3V3"
-) -> list[str]:
-    """Complete the TI-documented DRV8311H 3x-PWM support network."""
-    notes: list[str] = []
-    counters: dict[str, int] = {}
-
-    def next_ref(prefix: str) -> str:
-        if prefix not in counters:
-            nums = [int(m.group(1)) for r in ir.components if (m := re.fullmatch(prefix + r"(\d+)", r))]
-            counters[prefix] = max(nums, default=0) + 1
-        ref = f"{prefix}{counters[prefix]}"
-        counters[prefix] += 1
-        return ref
-
-
-    drivers = [(r, c) for r, c in ir.components.items() if "DRV8311H" in c.lib_id.upper()]
-    for channel, (ref, comp) in enumerate(sorted(drivers), 1):
-        sym = symbols.get(comp.lib_id)
-        if sym is None:
-            continue
-        pins = {
-            p.name.upper().replace("~", "").replace("{", "").replace("}", ""): p.number
-            for p in sym.pins
-        }
-        vm_net = next((n.name for n in ir.nets if (ref, pins.get("VM", "")) in n.nodes), "+12V")
-
-        # MODE Hi-Z selects 3x PWM. Low-side inputs are ignored in this mode
-        # and held low; GAIN/SLEW use documented ground settings.
-        for name in ("INLA", "INLB", "INLC", "GAIN", "SLEW"):
-            if name in pins:
-                move_pin(ir, ref, pins[name], "GND")
-        if "MODE" in pins:
-            for net in ir.nets:
-                net.nodes = [node for node in net.nodes if node != (ref, pins["MODE"])]
-            if (ref, pins["MODE"]) not in ir.nc_pins:
-                ir.nc_pins.append((ref, pins["MODE"]))
-        if "SLEEP" in pins:
-            move_pin(ir, ref, pins["SLEEP"], logic_rail)
-
-        def add_part(lib_id: str, value: str, a: str, b: str, prefix: str) -> str:
-            part_ref = next_ref(prefix)
-            ir.add(Component(part_ref, lib_id, value, group=comp.group))
-            ir.connect(a, (part_ref, "1"))
-            ir.connect(b, (part_ref, "2"))
-            return part_ref
-
-        if "CP" in pins:
-            cp_net = f"M{channel}_CP"
-            move_pin(ir, ref, pins["CP"], cp_net)
-            c = add_part("Device:C", "100nF", cp_net, vm_net, "C")
-            notes.append(f"added {c} 100nF CP-to-VM for {ref}")
-        if "CSAREF" in pins:
-            csa_net = f"M{channel}_CSAREF"
-            move_pin(ir, ref, pins["CSAREF"], csa_net)
-            c = add_part("Device:C", "100nF", csa_net, "GND", "C")
-            notes.append(f"added {c} 100nF CSAREF bypass for {ref}")
-        if "AVDD" in pins:
-            avdd_net = f"M{channel}_AVDD"
-            move_pin(ir, ref, pins["AVDD"], avdd_net)
-            c = add_part("Device:C", "1uF", avdd_net, "GND", "C")
-            if "FAULT" in pins:
-                fault_net = f"M{channel}_FAULT"
-                move_pin(ir, ref, pins["FAULT"], fault_net)
-                r = add_part("Device:R", "5.1k", avdd_net, fault_net, "R")
-                notes.append(f"added {r} nFAULT pull-up for {ref}")
-
-        jref = next_ref("J")
-        ir.add(Component(jref, "Connector_Generic:Conn_01x03", f"MOTOR_{channel}", group=comp.group))
-        for index, out_name in enumerate(("OUTA", "OUTB", "OUTC"), 1):
-            if out_name in pins:
-                net_name = f"M{channel}_{out_name}"
-                move_pin(ir, ref, pins[out_name], net_name)
-                ir.connect(net_name, (jref, str(index)))
-        notes.append(f"added {jref} three-phase output connector for {ref}")
-
-    ir.nets = [n for n in ir.nets if n.nodes]
-    return notes
-
-
-def ensure_canfd_bus_protection(ir: CircuitIR) -> list[str]:
-    """Add CANH/CANL connector, selectable 120R termination and TVS parts."""
-    xcvr = next(
-        (r for r, c in ir.components.items() if "TJA1051" in c.lib_id.upper()), None
-    )
-    if xcvr is None:
-        return []
-    if any(c.value == "CAN_FD" for c in ir.components.values()):
-        return []
-    # the CAN pattern (or a previous round) may already protect the bus —
-    # a second termination/TVS set on fresh 'CANH'/'CANL' nets would be
-    # disconnected duplicates (measured: pattern + this rule collided)
-    xcvr_nets = {n.name for n in ir.nets if any(r == xcvr for r, _p in n.nodes)}
-    for r, c in ir.components.items():
-        if c.lib_id == "Device:D_TVS" or c.value == "120R":
-            comp_nets = {n.name for n in ir.nets if any(rr == r for rr, _p in n.nodes)}
-            if comp_nets & xcvr_nets:
-                return []
-    notes: list[str] = []
-
-    def next_ref(prefix: str) -> str:
-        nums = [int(m.group(1)) for r in ir.components if (m := re.fullmatch(prefix + r"(\d+)", r))]
-        return f"{prefix}{max(nums, default=0) + 1}"
-
-    jref = next_ref("J")
-    ir.add(Component(jref, "Connector_Generic:Conn_01x03", "CAN_FD", group="MCU"))
-    ir.connect("CANH", (jref, "1"))
-    ir.connect("CANL", (jref, "2"))
-    ir.connect("GND", (jref, "3"))
-
-    rref = next_ref("R")
-    ir.add(Component(rref, "Device:R", "120R", group="MCU"))
-    ir.connect("CANH", (rref, "1"))
-    ir.connect("CAN_TERM", (rref, "2"))
-    jp = next_ref("JP")
-    ir.add(Component(jp, "Jumper:Jumper_2_Open", "CAN_TERM_ENABLE", group="MCU"))
-    ir.connect("CAN_TERM", (jp, "1"))
-    ir.connect("CANL", (jp, "2"))
-
-    for net_name in ("CANH", "CANL"):
-        dref = next_ref("D")
-        ir.add(Component(dref, "Device:D_TVS", "CAN_ESD_TVS", group="MCU"))
-        ir.connect(net_name, (dref, "1"))
-        ir.connect("GND", (dref, "2"))
-    notes.append(f"added {jref} CAN-FD connector, selectable 120R termination and dual TVS")
-    return notes
-
-
-def apply_stm32g474ret6_foc_pinmap(
-    ir: CircuitIR, symbols: dict[str, SymbolDef]
-) -> list[str]:
-    """Wire the fixed, conflict-free 4-axis FOC map for STM32G474RETx.
-
-    HRTIM A-F provide twelve 3x-PWM outputs, twelve analog-capable GPIOs
-    receive SOA/B/C through 47R/1nF filters, SPI1 serves four encoders, and
-    FDCAN2 uses PB5/PB6 so PA11 remains available to HRTIM1_CHB2.
-    """
-    notes: list[str] = []
-    mcu_ref = next(
-        (r for r, c in ir.components.items() if "STM32G474RE" in c.lib_id.upper()),
-        None,
-    )
-    if mcu_ref is None:
-        return notes
-    mcu_sym = symbols.get(ir.components[mcu_ref].lib_id)
-    if mcu_sym is None:
-        return notes
-    # Gate on the DEVICE SET, not on prompt wording. The caller used to gate
-    # this by keyword, and "motor control" is a substring of "motor
-    # controller", so a plain G474 board got the full FOC allocation and was
-    # left with five orphan single-pin nets (SPI_SCK/MISO/MOSI, CAN_RX/TX)
-    # that the repair loop then chased. Only a board that actually carries
-    # motor hardware gets the motor pin map.
-    has_motor_hw = any(
-        any(k in c.lib_id.upper() for k in ("DRV83", "AS5048", "AS5045", "DRV8"))
-        for c in ir.components.values()
-    )
-    if not has_motor_hw:
-        notes.append(
-            f"{mcu_ref}: FOC pin map skipped — no motor driver or encoder on this board"
-        )
-        return notes
-    mcu_pins = {p.name.upper(): p.number for p in mcu_sym.pins}
-
-
-    def next_ref(prefix: str) -> str:
-        nums = [int(m.group(1)) for r in ir.components if (m := re.fullmatch(prefix + r"(\d+)", r))]
-        return f"{prefix}{max(nums, default=0) + 1}"
-
-    drivers = sorted(
-        (r for r, c in ir.components.items() if "DRV8311H" in c.lib_id.upper()),
-        key=lambda r: int(re.search(r"(\d+)$", r).group(1)) if re.search(r"(\d+)$", r) else r,
-    )
-    pwm_gpio = [
-        "PA8", "PA9", "PA10", "PA11", "PB12", "PB13",
-        "PB14", "PB15", "PC8", "PC9", "PC6", "PC7",
-    ]
-    adc_gpio = [
-        "PC0", "PC1", "PC2", "PC3", "PC4", "PC5",
-        "PA0", "PA1", "PA2", "PA3", "PB0", "PB1",
-    ]
-    pwm_index = adc_index = 0
-    for channel, ref in enumerate(drivers, 1):
-        sym = symbols.get(ir.components[ref].lib_id)
-        if sym is None:
-            continue
-        dpins = {
-            p.name.upper().replace("~", "").replace("{", "").replace("}", ""): p.number
-            for p in sym.pins
-        }
-        for phase, input_name in zip("ABC", ("INHA", "INHB", "INHC")):
-            if pwm_index >= len(pwm_gpio) or input_name not in dpins:
-                continue
-            net_name = f"PWM_{phase}{channel}"
-            gpio = pwm_gpio[pwm_index]
-            pwm_index += 1
-            move_pin(ir, ref, dpins[input_name], net_name)
-            move_pin(ir, mcu_ref, mcu_pins[gpio], net_name)
-            notes.append(f"{net_name}: {mcu_ref}.{gpio} -> {ref}.{input_name}")
-
-        for sense_name in ("SOA", "SOB", "SOC"):
-            if adc_index >= len(adc_gpio) or sense_name not in dpins:
-                continue
-            gpio = adc_gpio[adc_index]
-            adc_index += 1
-            raw = f"M{channel}_{sense_name}_RAW"
-            filtered = f"M{channel}_{sense_name}_ADC"
-            move_pin(ir, ref, dpins[sense_name], raw)
-            move_pin(ir, mcu_ref, mcu_pins[gpio], filtered)
-            existing_r = next(
-                (
-                    r for r, c in ir.components.items()
-                    if c.group == ir.components[ref].group and c.lib_id == "Device:R"
-                    and c.value.upper() == "47R"
-                    and {raw, filtered} <= {
-                        n.name for n in ir.nets if any(rr == r for rr, _ in n.nodes)
-                    }
-                ),
-                None,
-            )
-            if existing_r is None:
-                rref = next_ref("R")
-                ir.add(Component(rref, "Device:R", "47R", group=ir.components[ref].group))
-                ir.connect(raw, (rref, "1"))
-                ir.connect(filtered, (rref, "2"))
-                cref = next_ref("C")
-                ir.add(Component(cref, "Device:C", "1nF", group=ir.components[ref].group))
-                ir.connect(filtered, (cref, "1"))
-                ir.connect("GND", (cref, "2"))
-                notes.append(f"{filtered}: {sense_name} -> 47R/1nF -> {mcu_ref}.{gpio}")
-
-    # SPI1 AF5: PA5=SCK, PA6=MISO, PA7=MOSI.
-    for gpio, net_name in (("PA5", "SPI_SCK"), ("PA6", "SPI_MISO"), ("PA7", "SPI_MOSI")):
-        move_pin(ir, mcu_ref, mcu_pins[gpio], net_name)
-    encoders = sorted(
-        (r for r, c in ir.components.items() if c.group.upper().startswith("ENC")),
-        key=lambda r: int(re.search(r"(\d+)$", r).group(1)) if re.search(r"(\d+)$", r) else r,
-    )
-    cs_gpio = ["PB4", "PB7", "PB10", "PB11"]
-    for channel, (ref, gpio) in enumerate(zip(encoders, cs_gpio), 1):
-        sym = symbols.get(ir.components[ref].lib_id)
-        if sym is None:
-            continue
-        by_name = {
-            p.name.upper().replace("~", "").replace("{", "").replace("}", ""): p.number
-            for p in sym.pins
-        }
-        cs_pin = by_name.get("CS") or by_name.get("CSN")
-        clk_pin = by_name.get("CLK") or by_name.get("SCK")
-        mosi_pin = by_name.get("MOSI")
-        if cs_pin:
-            move_pin(ir, ref, cs_pin, f"ENC{channel}_CS")
-            move_pin(ir, mcu_ref, mcu_pins[gpio], f"ENC{channel}_CS")
-        if clk_pin:
-            move_pin(ir, ref, clk_pin, "SPI_SCK")
-        if mosi_pin:
-            move_pin(ir, ref, mosi_pin, "SPI_MOSI")
-
-    # FDCAN2 AF9 avoids the HRTIM output bank.
-    move_pin(ir, mcu_ref, mcu_pins["PB5"], "CAN_RX")
-    move_pin(ir, mcu_ref, mcu_pins["PB6"], "CAN_TX")
-    ir.nets = [n for n in ir.nets if n.nodes]
-    return notes
-
-
 def ensure_stm32g4_power_network(
     ir: CircuitIR, symbols: dict[str, SymbolDef], logic_rail: str = "+3V3"
 ) -> list[str]:
@@ -1329,9 +1004,13 @@ def ensure_stm32g4_power_network(
         caps in group "MCU" led to 1 added capacitor, the same caps in group
         "RESET" led to 5.
         """
+        want = component_value(value)
         count = 0
         for ref, comp in ir.components.items():
-            if comp.lib_id != "Device:C" or comp.value.upper() != value.upper():
+            if not is_capacitor(comp.lib_id):
+                continue
+            have = component_value(comp.value)
+            if want is None or have is None or abs(have - want) > want * 0.01:
                 continue
             touched = {n.name for n in ir.nets if any(r == ref for r, _ in n.nodes)}
             if {rail, "GND"} <= touched:

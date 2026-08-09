@@ -1798,14 +1798,9 @@ class Agent:
         the repair loop calls this again on its own output.
         """
         from .normalize import (
-            add_shared_spi_miso_series_resistors,
-            apply_stm32g474ret6_foc_pinmap,
             complete_generic_power_pins,
             complete_known_device_pins,
-            ensure_canfd_bus_protection,
             ensure_dc_power_entry,
-            ensure_drv8311_vm_decoupling,
-            ensure_drv8311h_operating_network,
             ensure_relay_flyback,
             ensure_stm32g4_power_network,
             ensure_stm32g4_system_support,
@@ -1846,12 +1841,6 @@ class Agent:
         if "+3V3" in rails:
             notes += ensure_stm32g4_power_network(ir, syms(), "+3V3")
             notes += ensure_stm32g4_system_support(ir, syms(), "+3V3")
-        notes += add_shared_spi_miso_series_resistors(ir, syms())
-        notes += ensure_drv8311_vm_decoupling(ir, syms())
-        notes += ensure_drv8311h_operating_network(ir, syms(), "+3V3")
-        # the FOC map gates itself on motor hardware being present
-        notes += apply_stm32g474ret6_foc_pinmap(ir, syms())
-        notes += ensure_canfd_bus_protection(ir)
         notes += mark_documented_no_connects(ir, syms())
         notes += ensure_relay_flyback(ir, syms())
         notes += self.resolve_pin_names(ir)
