@@ -12,6 +12,7 @@ from circuitgen.compliance import (
     check_compliance,
     check_power_integrity,
     check_requirements,
+    ensure_device_supply_rails,
     load_device_limits,
     part_present,
     requested_part_numbers,
@@ -91,12 +92,11 @@ def test_part_numbers_are_extracted_and_protocol_tokens_are_not():
     assert requested_part_numbers(prompt) == ["ESP32-C3", "BME280", "SHT30"]
 
 
-def test_part_numbers_come_from_the_spec_too():
-    spec = {"parts_needed": [
-        {"role": "mcu", "search_query": "STM32G474RET6"},
-        {"role": "r", "search_query": "resistor", "value": "10k"},
-    ]}
-    assert requested_part_numbers("MCU 보드", spec) == ["STM32G474RET6"]
+def test_only_the_prompt_can_create_a_requirement():
+    # measured: the prompt named no part, the 7B invented LM2596 as a spec
+    # value, and that vetoed a cited LDO pattern the prompt fitted exactly
+    assert requested_part_numbers("12V 입력에서 5V를 만드는 레귤레이터 회로") == []
+    assert requested_part_numbers("STM32G474RET6 보드") == ["STM32G474RET6"]
 
 
 def test_ordering_code_variants_satisfy_the_request():
@@ -111,9 +111,8 @@ def test_substituted_part_is_reported_missing_not_silently_accepted():
     ir = CircuitIR("sub")
     ir.add(Component("U1", STM32, "STM32G474RETx"))
     ir.add(Component("U2", "Sensor_Temperature:Si7050-A20", "Si7050"))
-    spec = {"parts_needed": [{"role": "sensor", "search_query": "BME280"}]}
     issues, requested, satisfied, missing = check_requirements(
-        spec, ir, "ESP32-C3에 BME280 센서를 붙여줘"
+        ir, "ESP32-C3에 BME280 센서를 붙여줘"
     )
     assert sorted(missing) == ["BME280", "ESP32-C3"]
     assert satisfied == []
@@ -124,7 +123,7 @@ def test_substituted_part_is_reported_missing_not_silently_accepted():
 def test_named_part_that_is_present_passes():
     ir = CircuitIR("ok")
     ir.add(Component("U1", STM32, "STM32G474RETx"))
-    _issues, _req, satisfied, missing = check_requirements({}, ir, "STM32G474RET6 보드")
+    _issues, _req, satisfied, missing = check_requirements(ir, "STM32G474RET6 보드")
     assert satisfied == ["STM32G474RET6"] and missing == []
 
 
@@ -185,18 +184,57 @@ def test_every_device_limit_carries_a_datasheet_citation():
 
 
 def test_compliance_report_combines_both_checks():
-    report = check_compliance(
-        {"parts_needed": [{"role": "sensor", "search_query": "BME280"}]},
-        mcu_board("+5V"),
-        SYMS,
-        "BME280 보드",
-    )
+    report = check_compliance(mcu_board("+5V"), SYMS, "BME280 보드")
     assert not report.ok
     assert report.missing_parts == ["BME280"]
     assert {i.rule for i in report.errors} == {
         "requested_part_missing", "supply_over_absolute_maximum"
     }
     assert report.as_dict()["ok"] is False
+
+
+# ---- rails the parts actually need ------------------------------------------
+
+
+def test_ground_only_requirement_gains_a_logic_rail_for_its_mcu():
+    """Measured on the bench: the I2C pattern supplied its own STM32 while the
+    extracted spec listed rails ``[GND]``, so every supply pass was skipped and
+    the board shipped with all MCU supply pins no-connect at ERC 0."""
+    spec = {"power": {"rails": [{"name": "GND", "voltage": "0V"}]}}
+    ir = CircuitIR("x")
+    ir.add(Component("U1", STM32, "STM32G474RETx"))
+    notes = ensure_device_supply_rails(spec, ir, load_device_limits())
+    assert [r["name"] for r in spec["power"]["rails"]] == ["GND", "+3V3"]
+    assert any("operates at 1.71–3.6 V" in n for n in notes)
+
+
+def test_five_volt_only_requirement_gains_a_rail_the_mcu_survives():
+    """The CAN board's spec listed only +5V, so the logic rail resolved to +5V
+    and VDD landed 1.0 V above the absolute maximum — ERC clean, part dead."""
+    spec = {"power": {"rails": [
+        {"name": "+5V", "voltage": "5V"}, {"name": "GND", "voltage": "0V"},
+    ]}}
+    ir = CircuitIR("x")
+    ir.add(Component("U1", STM32, "STM32G474RETx"))
+    ensure_device_supply_rails(spec, ir, load_device_limits())
+    assert [r["name"] for r in spec["power"]["rails"]] == ["+5V", "GND", "+3V3"]
+
+
+def test_a_usable_rail_is_left_alone():
+    spec = {"power": {"rails": [
+        {"name": "+3V3", "voltage": "3.3V"}, {"name": "GND", "voltage": "0V"},
+    ]}}
+    ir = CircuitIR("x")
+    ir.add(Component("U1", STM32, "STM32G474RETx"))
+    assert ensure_device_supply_rails(spec, ir, load_device_limits()) == []
+
+
+def test_devices_without_recorded_limits_do_not_invent_rails():
+    spec = {"power": {"rails": [{"name": "GND", "voltage": "0V"}]}}
+    ir = CircuitIR("x")
+    ir.add(Component("U1", "Some_Vendor:UNKNOWN123", "UNKNOWN123"))
+    assert ensure_device_supply_rails(spec, ir, load_device_limits()) == []
+    assert [r["name"] for r in spec["power"]["rails"]] == ["GND"]
 
 
 # ---- pattern scope ----------------------------------------------------------

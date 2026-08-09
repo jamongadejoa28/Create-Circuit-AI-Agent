@@ -148,10 +148,60 @@ bench_can/i2c/uart/relay/led/reg/opamp                             -> 그대로 
 
 ---
 
+---
+
+## 3-1. 벤치 재측정 (Qwen2.5-Coder-7B, seed 7, 1회)
+
+게이트를 켜고 8케이스를 다시 돌렸습니다(`out/bench_general/gate-v12`). 결과 **4/8**, 그리고 그 안에
+**감사 문서가 지목했던 죽은 보드 두 건이 정확히 재현**됐습니다.
+
+| 케이스 | 게이트가 잡은 것 |
+|---|---|
+| `sensor_i2c` | STM32G474 supply 핀 전부 미연결 (`power_pin_unpowered` ×6) — spec rails가 `[GND]` 뿐 |
+| `communication_can` | VDD/VDDA/VBAT가 **+5V** (`supply_over_absolute_maximum` ×6) — spec rails가 `[+5V, GND]` |
+| `power_regulator` | **제 변경의 오탐** — 아래 참조 |
+| `unknown_module` | 무관: MCU 블록이 `finish_reason=length`로 2회 실패 (기존 7B 한계) |
+
+### 오탐 수정 (A): 요구사항은 프롬프트에서만 나온다
+
+프롬프트는 부품을 지정하지 않았는데 7B가 spec `value`에 **LM2596**을 써넣었고, 그 발명품이
+인용된 LDO 패턴을 거부시켰습니다. 이름 지정 부품은 **프롬프트에서만** 읽도록 바꿨습니다.
+spec은 LLM의 의역이며, 모델이 지어낸 부품번호가 검증된 패턴을 이기는 건 정확히 거꾸로입니다.
+(서브시스템 게이트에 이미 적용했던 원칙과 동일합니다.)
+
+### 진짜 결함 수정 (B): 회로에 들어간 부품이 필요한 레일을 요구한다
+
+패턴은 **자기 MCU를 스스로 주입**하므로 추출된 spec에는 MCU 역할도, 로직 레일도 없을 수 있습니다.
+그런데 하위 전원 패스는 전부 `"+3V3" in rails`에 걸려 있어서, 레일이 없으면 통째로 건너뜁니다.
+그 결과가 위 두 보드입니다.
+
+`compliance.ensure_device_supply_rails(spec, ir)` — **회로에 실제로 들어간 부품**을 보고,
+데이터시트 동작 범위 안에 드는 레일이 하나도 없으면 표준 레일 중 가장 높은 것을 추가합니다.
+STM32G474(1.71–3.6 V) → `+3V3`. 기록된 한계가 없는 부품은 건드리지 않습니다.
+LLM 경로·블록 경로에도 같이 적용되도록 합성 직후 한 곳에서 호출합니다.
+
+### 재측정 결과 (`gate-v13`, seed 7)
+
+```
+passive_led / analog_opamp / power_regulator / sensor_i2c
+communication_can / driver_relay / debug_uart        -> 전부 done, ERC 0, compliance True
+unknown_module                                        -> functional-completeness (7B 컨텍스트 초과)
+
+release score: 7/8   (compliance 포함 기준)
+```
+
+숫자는 이전과 같은 7/8이지만 **의미가 다릅니다.** 이전 7/8에는 전원이 없는 MCU 보드와
+절대최대를 넘긴 보드가 "통과"로 들어 있었습니다. 지금은 두 보드 모두 MCU가 실제로 `+3V3`에
+물려 있고(IR에서 확인), 전압이 데이터시트 대비 검증된 상태로 통과합니다.
+
+고친 세 케이스는 **다른 시드(21)로 3회 반복 시 9/9** — 패턴 경로 결정성이 유지됩니다.
+
+---
+
 ## 4. 이번에 하지 않은 것 (의도적)
 
-- **live 벤치 재측정.** llama-server가 떠 있지 않아 8케이스 재실행을 못 했습니다.
-  게이트가 켜졌으므로 7/8은 더 이상 유효한 숫자가 아닙니다 — **재측정 전까지 어떤 점수도 인용하면 안 됩니다.**
+- **`unknown_module` 수정.** MCU 블록이 `finish_reason=length`로 죽습니다. 컨텍스트를 줄여 재시도하거나
+  실패를 명시적으로 처리하는 별도 작업이며, 이 게이트와 무관한 기존 한계입니다.
 - **패턴 lib_id 전면 해제(복구 큐 3번의 나머지).** 지금은 "이름을 부른 부품이 우선하고, 안 되면 거부"까지입니다.
   role이 토폴로지 + 핀 능력만 들고 부품은 요구사항에서 오는 구조는 별도 작업입니다.
 - **repair 루프의 completeness 우회(`completeness = [] if ctx.get("pattern")`).** 그대로 둡니다.

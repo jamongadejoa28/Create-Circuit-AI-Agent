@@ -92,22 +92,21 @@ def _norm(text: str) -> str:
     return re.sub(r"[^A-Z0-9]", "", text.upper())
 
 
-def requested_part_numbers(prompt: str, spec: dict | None = None) -> list[str]:
+def requested_part_numbers(prompt: str) -> list[str]:
     """Explicit part numbers the request names, in first-seen order.
 
-    Read from the prompt (user ground truth) and from spec search queries and
-    values, because the requirement extractor routinely moves a part number
-    out of the prose and into a role it then fails to place.
+    The PROMPT only. Reading the extracted spec as well looked reasonable —
+    the extractor does move part numbers out of the prose — but measured on
+    the bench it let the model's own inventions become requirements: a
+    "12V to 5V regulator" prompt named no part, the 7B wrote LM2596 into a
+    spec value, and that vetoed a cited LDO pattern the prompt was a perfect
+    fit for. A requirement is what the user asked for.
     """
     seen: dict[str, None] = {}
-    texts = [prompt or ""]
-    for part in (spec or {}).get("parts_needed", []):
-        texts += [str(part.get("search_query", "")), str(part.get("value", ""))]
-    for text in texts:
-        for token in _PART_TOKEN.findall(text):
-            if len(token) < _MIN_PART_LEN or _norm(token) in _NOT_A_PART:
-                continue
-            seen.setdefault(token, None)
+    for token in _PART_TOKEN.findall(prompt or ""):
+        if len(token) < _MIN_PART_LEN or _norm(token) in _NOT_A_PART:
+            continue
+        seen.setdefault(token, None)
     return list(seen)
 
 
@@ -132,10 +131,10 @@ def part_present(token: str, lib_id: str, value: str = "") -> bool:
 
 
 def check_requirements(
-    spec: dict, ir: CircuitIR, prompt: str = ""
+    ir: CircuitIR, prompt: str = ""
 ) -> tuple[list[ValidationIssue], list[str], list[str], list[str]]:
     """Every part number the request named must appear in the circuit."""
-    requested = requested_part_numbers(prompt, spec)
+    requested = requested_part_numbers(prompt)
     satisfied: list[str] = []
     missing: list[str] = []
     for token in requested:
@@ -282,14 +281,69 @@ def check_power_integrity(
     return issues, checked
 
 
+# Rails the pipeline knows how to create supply symbols for, highest first.
+_STANDARD_RAILS = ((5.0, "+5V", "5V"), (3.3, "+3V3", "3.3V"), (1.8, "+1V8", "1.8V"))
+
+
+def ensure_device_supply_rails(
+    spec: dict, ir: CircuitIR, limits: list[dict] | None = None
+) -> list[str]:
+    """Add a rail any device in the circuit can legally run on, if none exists.
+
+    A pattern brings its own MCU, so the extracted spec need not mention one:
+    the I2C sensor board came back with rails ``[GND]`` and the CAN board with
+    ``[+5V, GND]``. Every downstream supply pass is keyed on a logic rail
+    being present, so the first board left all STM32 supply pins no-connect
+    and the second tied VDD to +5V — 1.0 V above the part's absolute maximum.
+    Both passed KiCad ERC.
+
+    Only devices with recorded datasheet limits are treated; the rail chosen
+    is the highest standard rail inside the operating range.
+    """
+    limits = load_device_limits() if limits is None else limits
+    rails = spec.setdefault("power", {}).setdefault("rails", [])
+    notes: list[str] = []
+    for lib_id in sorted({c.lib_id for c in ir.components.values()}):
+        device = _limits_for(lib_id, limits)
+        if device is None:
+            continue
+        op_min, op_max = device.get("operating_min_v"), device.get("operating_max_v")
+        if op_max is None:
+            continue
+
+        def legal(volts: float | None) -> bool:
+            return (
+                volts is not None
+                and volts <= op_max
+                and (op_min is None or volts >= op_min)
+            )
+
+        if any(legal(supply_voltage(str(r.get("name", "")))) for r in rails):
+            continue
+        pick = next(
+            ((name, label) for volts, name, label in _STANDARD_RAILS if legal(volts)),
+            None,
+        )
+        if pick is None:
+            continue
+        name, label = pick
+        if any(str(r.get("name", "")).upper() == name for r in rails):
+            continue
+        rails.append({"name": name, "voltage": label})
+        notes.append(
+            f"added rail {name}: {lib_id} operates at {op_min}–{op_max} V and the "
+            f"requirement listed no supply it can use"
+        )
+    return notes
+
+
 def check_compliance(
-    spec: dict,
     ir: CircuitIR,
     symbols: dict[str, SymbolDef],
     prompt: str = "",
 ) -> ComplianceReport:
     """Requirement compliance + power integrity over the finished circuit."""
-    req_issues, requested, satisfied, missing = check_requirements(spec, ir, prompt)
+    req_issues, requested, satisfied, missing = check_requirements(ir, prompt)
     pwr_issues, checked = check_power_integrity(ir, symbols)
     return ComplianceReport(
         issues=req_issues + pwr_issues,

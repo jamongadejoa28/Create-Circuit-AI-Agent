@@ -22,7 +22,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
-from .compliance import ComplianceReport, check_compliance, requested_part_numbers
+from .compliance import (
+    ComplianceReport,
+    check_compliance,
+    ensure_device_supply_rails,
+    requested_part_numbers,
+)
 from .ir import CircuitIR, Component
 from .ir_json import apply_patch, ir_from_json
 from .knowledge import KnowledgeIndex
@@ -1511,6 +1516,11 @@ class Agent:
         res.log.extend(enforce_requested_stm32_variant(ir, prompt, self._resolve_symbols(ir)))
         res.log.extend(sanitize_known_device_nets(ir, self._resolve_symbols(ir)))
         res.log.extend(merge_dangling_interface_nets(ir))
+        # The parts that ended up in the circuit decide which rails it needs —
+        # a pattern supplies its own MCU, so the extracted requirement may
+        # list no logic rail at all, and every supply pass below is keyed on
+        # one existing.
+        res.log.extend(ensure_device_supply_rails(spec, ir))
         dc_rail = "+12V" if any(r.get("name") == "+12V" for r in spec.get("power", {}).get("rails", [])) else "+5V"
         res.log.extend(ensure_dc_power_entry(ir, dc_rail))
         res.log.extend(self.resolve_pin_names(ir))
@@ -1664,7 +1674,7 @@ class Agent:
         # was asked for or that it survives being powered on. Both checks
         # REPORT rather than abort: the schematic stays on disk, and the
         # caller is told exactly which requirement is unmet.
-        res.compliance = check_compliance(spec, ir, self._resolve_symbols(ir), prompt)
+        res.compliance = check_compliance(ir, self._resolve_symbols(ir), prompt)
         for issue in res.compliance.issues:
             res.log.append(f"compliance {issue.severity} {issue.rule}: {issue.message}")
         if res.compliance.missing_parts:
@@ -1848,7 +1858,7 @@ class Agent:
         # takes priority over the pattern's own lib_id, and a pattern that
         # cannot place one is answering a different request (measured:
         # "ESP32-C3 + BME280" produced STM32G474 + Si7050 at ERC 0).
-        named = requested_part_numbers(prompt, spec)
+        named = requested_part_numbers(prompt)
         named_lib_ids: dict[str, list[str]] = {}
         for token in named:
             named_lib_ids[token] = [
