@@ -17,9 +17,6 @@
     "esp32",
     "gpio"
   ],
-  "provides": [
-    "led"
-  ],
   "roles": {
     "SW": {
       "kind": "switch",

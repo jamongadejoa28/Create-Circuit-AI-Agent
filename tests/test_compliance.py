@@ -20,11 +20,6 @@ from circuitgen.compliance import (
 from circuitgen.erc import check_circuit
 from circuitgen.ir import CircuitIR, Component, PinDef, SymbolDef
 from circuitgen.normalize import ensure_pwr_flags
-from circuitgen.patterns import (
-    load_patterns,
-    out_of_scope_subsystems,
-    requested_subsystems,
-)
 from circuitgen.pins import PinType
 
 STM32 = "MCU_ST_STM32G4:STM32G474RETx"
@@ -85,11 +80,22 @@ def mcu_board(supply: str | None) -> CircuitIR:
 
 
 def test_part_numbers_are_extracted_and_protocol_tokens_are_not():
+    """A token is a part number when the CATALOG says so.
+
+    This used to be a denylist of protocol and package names (RS485, IP65,
+    USB20...), which is unbounded by construction and was written to stop
+    specific false positives rather than from anything true about part numbers.
+    """
+    from circuitgen.partindex import PartIndex
+
     prompt = (
         "ESP32-C3에 BME280과 SHT30을 연결. RS485(Modbus RTU), CAN-FD, 24V, "
         "0805 저항, PA15/PB9 핀, I2C1 버스, IP65 케이스"
     )
-    assert requested_part_numbers(prompt) == ["ESP32-C3", "BME280", "SHT30"]
+    parts = PartIndex()
+    assert requested_part_numbers(prompt, parts) == ["ESP32-C3", "BME280", "SHT30"]
+    # shape alone is not enough — RS485 looks like a part number and is not one
+    assert "RS485" in requested_part_numbers(prompt)
 
 
 def test_only_the_prompt_can_create_a_requirement():
@@ -235,31 +241,3 @@ def test_devices_without_recorded_limits_do_not_invent_rails():
     ir.add(Component("U1", "Some_Vendor:UNKNOWN123", "UNKNOWN123"))
     assert ensure_device_supply_rails(spec, ir, load_device_limits()) == []
     assert [r["name"] for r in spec["power"]["rails"]] == ["GND"]
-
-
-# ---- pattern scope ----------------------------------------------------------
-
-
-def test_multi_subsystem_board_is_not_answered_by_a_single_function_pattern():
-    patterns = load_patterns()
-    plc = (
-        "산업용 24V PLC 컨트롤러. STM32를 메인 MCU로 사용하며 Digital Input 16채널, "
-        "Relay Output 8채널, RS485, Ethernet을 포함한 회로도를 설계해주세요."
-    )
-    assert requested_subsystems(plc) >= {"relay", "rs485", "ethernet", "digital_io"}
-    uncovered = out_of_scope_subsystems(plc, patterns["relay_driver"])
-    assert uncovered == {"rs485", "ethernet", "digital_io"}
-
-
-def test_single_function_request_still_reaches_its_pattern():
-    patterns = load_patterns()
-    relay = "3.3V GPIO로 12V 릴레이를 구동하는 회로를 만들어줘. 트랜지스터와 플라이백 다이오드 포함"
-    assert out_of_scope_subsystems(relay, patterns["relay_driver"]) == set()
-    i2c = "MCU에 I2C 온도센서를 연결해줘. 풀업과 디커플링 포함"
-    assert out_of_scope_subsystems(i2c, patterns["i2c_temperature_sensor"]) == set()
-
-
-def test_subsystem_keywords_need_word_boundaries():
-    # "can" inside ordinary English, "ble" inside "assemble"
-    assert requested_subsystems("this can be assembled by hand") == set()
-    assert "can" in requested_subsystems("CAN-FD 통신 인터페이스")

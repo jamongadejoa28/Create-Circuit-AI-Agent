@@ -7,10 +7,6 @@
     "i2c 온도",
     "i2c 센서"
   ],
-  "provides": [
-    "i2c",
-    "temperature_sensor"
-  ],
   "roles": {
     "MCU": {
       "kind": "microcontroller",

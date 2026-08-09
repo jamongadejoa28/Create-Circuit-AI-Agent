@@ -16,9 +16,6 @@ Pattern JSON (data/patterns/*.json):
                 two-pin passives may omit pins (defaults to "1"/"2")
                 allow_unbound_pins may be true for hub devices (MCUs) whose
                 remaining pins are deliberately completed/NC'd downstream
-  provides      functional subsystems this pattern implements (see
-                SUBSYSTEM_KEYWORDS); a board request naming subsystems the
-                pattern lacks must not be answered by it
   ports         external net names, order = naming priority (VIN, VOUT, ...)
   topology      [[endpoint, endpoint], ...]; endpoint = "ROLE.PINKEY" | port
   params        param -> formula string (documentation, not evaluated)
@@ -148,88 +145,6 @@ def match_patterns(text: str, patterns: dict[str, dict]) -> list[dict]:
         if any(k.lower() in low for k in p.get("apply_when", []))
         and not any(k.lower() in low for k in p.get("apply_unless", []))
     ]
-
-
-# Functional subsystems a request can ask for.  A pattern implements ONE
-# function; a board request names several, and answering "Ethernet + RS485 +
-# CAN-FD + SD card" with an eight-part CAN fragment is a silent scope
-# failure (measured on testprompt boards 1, 6 and 11).  Keywords are matched
-# against the USER PROMPT only — the extracted spec is an LLM paraphrase
-# whose incidental wording would make this gate flap run to run.
-SUBSYSTEM_KEYWORDS: dict[str, tuple[str, ...]] = {
-    "ethernet": ("ethernet", "이더넷", "rj45", "rmii"),
-    "rs485": ("rs485", "rs-485", "rs422", "rs-422", "modbus"),
-    "rs232": ("rs232", "rs-232"),
-    "usb": ("usb",),
-    "sdcard": ("sd카드", "sd 카드", "sd card", "sdcard", "microsd", "micro sd", "tf카드"),
-    "can": ("can-fd", "canfd", "can fd", "can bus", "canbus", "can 통신",
-            "can통신", "can transceiver", "can 인터페이스", "can 트랜시버"),
-    "i2c": ("i2c", "i²c", "iic"),
-    "spi": ("spi",),
-    "uart": ("uart", "시리얼 통신"),
-    "wireless": ("wifi", "wi-fi", "bluetooth", "ble", "lora", "zigbee", "무선"),
-    "motor": ("모터", "motor", "bldc", "foc", "stepper", "스테퍼", "servo", "서보"),
-    "relay": ("relay", "릴레이"),
-    "digital_io": ("digital input", "digital output", "디지털 입력", "디지털 출력",
-                   "디지털 인풋", "digital i/o"),
-    "analog_input": ("adc", "아날로그 입력", "analog input", "4-20ma", "0-10v"),
-    "dac": ("dac",),
-    "display": ("lcd", "oled", "display", "디스플레이", "tft"),
-    "battery": ("battery", "배터리", "bms", "cell voltage", "셀 밸런싱", "충전기",
-                "charger", "li-ion", "리튬"),
-    "temperature_sensor": ("온도 센서", "온도센서", "temperature sensor",
-                           "temperature monitoring", "thermistor", "서미스터", "ntc"),
-    "power_supply": ("regulator", "레귤레이터", "전원부", "dc-dc", "dcdc", "buck",
-                     "boost", "ldo", "smps", "power supply"),
-    "debug": ("swd", "jtag", "디버그", "debug header", "디버깅"),
-    "audio": ("audio", "오디오", "i2s"),
-    "rtc": ("rtc", "실시간 시계"),
-    "encoder": ("encoder", "엔코더"),
-    "led": ("led", "발광 다이오드"),
-}
-
-# ASCII keywords need a word boundary ("can" inside "canonical", "ble" inside
-# "assemble"); Korean keywords have no ASCII word characters around them.
-_ASCII_KEYWORD = re.compile(r"^[a-z0-9 ./-]+$")
-
-
-def requested_subsystems(text: str) -> set[str]:
-    """Functional subsystems named in a request."""
-    low = text.lower()
-    found: set[str] = set()
-    for name, keywords in SUBSYSTEM_KEYWORDS.items():
-        for kw in keywords:
-            if _ASCII_KEYWORD.match(kw):
-                if re.search(rf"(?<![a-z0-9]){re.escape(kw)}(?![a-z0-9])", low):
-                    found.add(name)
-                    break
-            elif kw in low:
-                found.add(name)
-                break
-    return found
-
-
-def pattern_subsystems(pattern: dict) -> set[str]:
-    """Subsystems a pattern implements: its declared `provides`, else inferred
-    from its own trigger keywords."""
-    declared = pattern.get("provides")
-    if declared:
-        return set(declared)
-    return requested_subsystems(" ".join(pattern.get("apply_when", [])))
-
-
-def out_of_scope_subsystems(text: str, pattern: dict) -> set[str]:
-    """Subsystems the request names that this pattern does not implement.
-
-    Only meaningful for multi-subsystem requests: a single-subsystem request
-    that matched a pattern's keywords is the case patterns exist for, and
-    demanding an exact vocabulary match there would reject working boards
-    over a missing synonym.
-    """
-    wanted = requested_subsystems(text)
-    if len(wanted) < 2:
-        return set()
-    return wanted - pattern_subsystems(pattern)
 
 
 def bind_role_pins(pattern: dict, role: str, sym: SymbolDef) -> dict[str, str] | None:

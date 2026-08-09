@@ -18,9 +18,6 @@
     "모터",
     "motor"
   ],
-  "provides": [
-    "can"
-  ],
   "roles": {
     "MCU": {
       "kind": "microcontroller",

@@ -16,10 +16,6 @@
     "모터",
     "motor"
   ],
-  "provides": [
-    "uart",
-    "debug"
-  ],
   "roles": {
     "MCU": {
       "kind": "microcontroller",

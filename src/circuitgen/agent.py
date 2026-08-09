@@ -44,7 +44,7 @@ from .llm_client import (
     output_budget,
 )
 from .pipeline import PipelineResult, generate
-from .schemas import BLOCK_CIRCUIT_IR, BLOCK_PLAN, CIRCUIT_IR, REPAIR_PATCH, REQUIREMENT_SPEC
+from .schemas import BLOCK_PLAN, CIRCUIT_IR, REPAIR_PATCH, REQUIREMENT_SPEC
 from .netnames import GROUND_NAMES, supply_voltage
 
 MAX_REPAIRS = 3
@@ -862,7 +862,7 @@ class Agent:
             prev_total = estimated_prompt + budget
             return self.llm.complete_json(
                 [{"role": "system", "content": _SYSTEM}, {"role": "user", "content": content}],
-                schema=BLOCK_CIRCUIT_IR,
+                schema=CIRCUIT_IR,
                 max_tokens=budget,
             )
 
@@ -1704,7 +1704,6 @@ class Agent:
             complete_known_device_pins,
             ensure_drv8311_vm_decoupling,
             ensure_drv8311h_operating_network,
-            close_unused_hub_pins,
             ensure_canfd_bus_protection,
             ensure_stm32g4_power_network,
             ensure_stm32g4_system_support,
@@ -1739,13 +1738,6 @@ class Agent:
         res.log.extend(self.resolve_pin_names(ir))
         res.log.extend(unify_stacked_pins(ir, self._resolve_symbols(ir)))
         res.log.extend(self._ensure_pullups(ir, spec))
-        # Every path, not just the block path: a flat-path run left the 104
-        # unused signal pins of a 132-pin MCU merely unconnected and scored
-        # ERC 175, where the same board on the block path scored 0. Runs after
-        # unify_stacked_pins on purpose — closing first lets a stack join a net
-        # while still marked NC, which KiCad reports as nc_marked_but_connected.
-        auto_nc = close_unused_hub_pins(ir, self._resolve_symbols(ir))
-        res.log.extend(auto_nc)
         res.log.extend(self._fix_footprints(ir))
 
         res.stage = "pipeline"
@@ -1840,9 +1832,6 @@ class Agent:
             res.log.extend(mark_documented_no_connects(ir, self._resolve_symbols(ir)))
             res.log.extend(ensure_relay_flyback(ir, self._resolve_symbols(ir)))
             res.log.extend(unify_stacked_pins(ir, self._resolve_symbols(ir)))
-            round_nc = close_unused_hub_pins(ir, self._resolve_symbols(ir))
-            auto_nc.extend(round_nc)
-            res.log.extend(round_nc)
             res.log.extend(self._fix_footprints(ir))
             pr = self._generate(ir, name)
             res.pipeline = pr
@@ -1854,7 +1843,9 @@ class Agent:
         res.auto_connections = diff_connections(
             synth_nets, connection_set(ir), synth_nc, nc_set(ir)
         )
-        res.compliance = check_compliance(ir, self._resolve_symbols(ir), prompt)
+        res.compliance = check_compliance(
+            ir, self._resolve_symbols(ir), prompt, self.parts, spec
+        )
         for issue in res.compliance.issues:
             res.log.append(f"compliance {issue.severity} {issue.rule}: {issue.message}")
         if res.compliance.missing_parts:
@@ -1873,11 +1864,6 @@ class Agent:
 
         rec.set("ir", ir_to_json(ir))
         rec.set("compliance", res.compliance.as_dict())
-        # Auto-closed pins are invisible to ERC by construction, so the audit
-        # record names every one of them. The name deny-list in
-        # close_unused_hub_pins is necessarily incomplete; this is how a
-        # reviewer finds out what it decided.
-        rec.set("auto_nc", auto_nc)
         rec.set("auto_connections", res.auto_connections)
         rec.set("knowledge_trace", self._knowledge_trace)
         rec.set("repairs", res.repairs)
@@ -2003,7 +1989,6 @@ class Agent:
             instantiate_pattern,
             load_patterns,
             match_patterns,
-            out_of_scope_subsystems,
             verify_pattern_instance,
         )
 
@@ -2025,25 +2010,11 @@ class Agent:
             f"{pattern['source']['section']})"
         )
 
-        # A pattern implements ONE function. Three of the user's 18 board
-        # prompts matched a single keyword and had the entire board replaced
-        # by an eight-part fragment: "Ethernet + RS485 + CAN-FD + SD card"
-        # came back as a CAN transceiver. Scope is judged on the PROMPT —
-        # the extracted spec is a paraphrase whose wording varies per run.
-        uncovered = out_of_scope_subsystems(prompt, pattern)
-        if uncovered:
-            log.append(
-                f"pattern {pattern['id']} declined: the request also asks for "
-                f"{', '.join(sorted(uncovered))}, which this pattern does not "
-                f"implement — a fragment must not answer a whole board"
-            )
-            return None
-
         # Parts the user named by number are non-negotiable: binding them
         # takes priority over the pattern's own lib_id, and a pattern that
         # cannot place one is answering a different request (measured:
         # "ESP32-C3 + BME280" produced STM32G474 + Si7050 at ERC 0).
-        named = requested_part_numbers(prompt)
+        named = requested_part_numbers(prompt, self.parts)
         named_lib_ids: dict[str, list[str]] = {}
         for token in named:
             named_lib_ids[token] = [

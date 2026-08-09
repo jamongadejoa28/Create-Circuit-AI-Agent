@@ -27,11 +27,10 @@ module exists to expose.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 
+from .compliance import role_fulfilment
 from .ir import CircuitIR, SymbolDef
-from .netnames import is_ground
 
 Connection = tuple[str, str, str]  # (net, ref, pin)
 
@@ -78,107 +77,6 @@ class RunMetrics:
             "auto_by_component": self.auto_by_component,
             "auto_samples": self.auto_samples,
         }
-
-
-def _tokens(text: str) -> set[str]:
-    return {t for t in re.split(r"[^A-Za-z0-9]+", (text or "").upper()) if len(t) > 2}
-
-
-_GENERIC_ROLE_WORDS = {
-    "THE", "AND", "FOR", "WITH", "PART", "PARTS", "COMPONENT", "COMPONENTS",
-    "REQUIREMENT", "CONNECTION", "CIRCUIT", "MODULE",
-}
-
-# A functional kind -> the KiCad reference prefix that realises it. The
-# direction doc (§7.3) asks for role names to carry a functional taxonomy
-# instead of being free strings; this is the measurement-side half of that.
-# A generic passive cannot be matched by name — "Device:R" carries no token
-# longer than one character — so the kind is what identifies it.
-_KIND_REF_PREFIX = {
-    "resistor": "R", "resistors": "R", "pullup": "R", "pull-up": "R",
-    "pulldown": "R", "pull-down": "R", "divider": "R",
-    "capacitor": "C", "capacitors": "C", "decoupling": "C", "bypass": "C",
-    "inductor": "L", "ferrite": "FB", "bead": "FB",
-    "diode": "D", "led": "D", "tvs": "D", "zener": "D", "flyback": "D",
-    "switch": "SW", "button": "SW", "pushbutton": "SW",
-    "connector": "J", "header": "J", "socket": "J", "terminal": "J",
-    "transistor": "Q", "mosfet": "Q", "bjt": "Q", "npn": "Q", "pnp": "Q",
-    "relay": "K", "crystal": "Y", "oscillator": "Y", "resonator": "Y",
-    "fuse": "F", "jumper": "JP", "polyfuse": "F",
-}
-
-
-def _ref_prefix(ref: str) -> str:
-    match = re.match(r"^#?([A-Za-z]+)", ref)
-    return match.group(1).upper() if match else ""
-
-
-def _kinds(text: str) -> set[str]:
-    words = re.split(r"[^A-Za-z-]+", (text or "").lower())
-    return {_KIND_REF_PREFIX[w] for w in words if w in _KIND_REF_PREFIX}
-
-
-def _token_hit(wanted: set[str], have: set[str]) -> bool:
-    """Part numbers are single tokens that rarely match exactly: a request for
-    STM32 is answered by STM32G474RETx. Substring either way, min 3 chars."""
-    for w in wanted:
-        for h in have:
-            if len(w) >= 3 and len(h) >= 3 and (w in h or h in w):
-                return True
-    return False
-
-
-def role_fulfilment(
-    spec: dict, ir: CircuitIR, symbols: dict[str, SymbolDef], candidates: dict | None = None
-) -> tuple[int, int, list[str], dict[str, int]]:
-    """How many requested roles are represented by a real component.
-
-    Matching is deliberately generous — a role name is an LLM paraphrase, so a
-    strict test would measure the extractor's vocabulary rather than the board.
-    A role counts as present when any component's lib_id or value shares a
-    token with the role text or its search query, or when one of the candidate
-    lib_ids offered for that role is in the circuit. Being generous keeps this
-    honest as a FLOOR: a role reported missing really is missing.
-    """
-    candidates = candidates or {}
-    physical = {
-        ref: comp for ref, comp in ir.components.items()
-        if not ref.startswith("#")
-        and not (symbols.get(comp.lib_id) and symbols[comp.lib_id].is_power)
-    }
-    comp_tokens = {
-        ref: _tokens(comp.lib_id.split(":")[-1]) | _tokens(comp.value)
-        for ref, comp in physical.items()
-    }
-    lib_ids = {c.lib_id for c in physical.values()}
-
-    total = 0
-    present = 0
-    missing: list[str] = []
-    shortfall: dict[str, int] = {}
-    for part in spec.get("parts_needed", []):
-        role = str(part.get("role", ""))
-        query = str(part.get("search_query", "")).replace("__conceptual__", "")
-        wanted = (_tokens(role) | _tokens(query)) - _GENERIC_ROLE_WORDS
-        kinds = _kinds(role) | _kinds(query)
-        total += 1
-        matches = [ref for ref, toks in comp_tokens.items() if _token_hit(wanted, toks)]
-        if not matches and kinds:
-            matches = [ref for ref in physical if _ref_prefix(ref) in kinds]
-        if not matches:
-            offered = {h.get("lib_id") for h in candidates.get(role, []) if h.get("lib_id")}
-            if offered & lib_ids:
-                matches = [
-                    ref for ref, comp in physical.items() if comp.lib_id in offered
-                ]
-        if matches:
-            present += 1
-            want_qty = max(1, int(part.get("quantity", 1) or 1))
-            if len(matches) < want_qty:
-                shortfall[role] = want_qty - len(matches)
-        else:
-            missing.append(role)
-    return total, present, missing, shortfall
 
 
 def diff_connections(

@@ -7,7 +7,6 @@
     "하이패스",
     "고역통과"
   ],
-  "provides": [],
   "roles": {
     "C": {
       "kind": "capacitor",

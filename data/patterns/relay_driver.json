@@ -5,9 +5,6 @@
     "relay",
     "릴레이"
   ],
-  "provides": [
-    "relay"
-  ],
   "roles": {
     "Q": {
       "kind": "transistor",

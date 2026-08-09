@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import json
 import re
-from functools import lru_cache
-from pathlib import Path
 
 from .ir import CircuitIR, Component, SymbolDef
 from .netnames import (
@@ -13,7 +10,6 @@ from .netnames import (
     UNAMBIGUOUS_SUPPLY_NAMES,
     is_ground,
     is_ground_pin,
-    is_supply_pin,
     logic_rail,
     supply_voltage,
 )
@@ -856,123 +852,6 @@ def _wire_supply_group(
 
 
 HUB_PIN_THRESHOLD = 16  # same "this is a hub device" line wire_mcu_interfaces uses
-
-PIN_POLICY_PATH = Path(__file__).resolve().parents[2] / "data" / "pin_policy.json"
-
-
-@lru_cache(maxsize=1)
-def _never_auto_close() -> frozenset[str]:
-    """Pin names deterministic code must never no-connect (data/pin_policy.json).
-
-    Policy, not net-name classification, so it lives in data with the
-    counterexample that put each entry there. Supply and ground pins are not
-    listed: netnames.is_supply_pin / is_ground_pin recognise those including
-    vendor suffixes.
-    """
-    try:
-        data = json.loads(PIN_POLICY_PATH.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return frozenset()
-    return frozenset(
-        name.strip().upper()
-        for group in data.get("never_auto_close", [])
-        for name in group.get("names", [])
-    )
-
-
-def _must_stay_open(name: str) -> bool:
-    """True for a pin whose absence is a defect, not a design choice."""
-    clean = (name or "").strip().upper().replace("~", "").replace("{", "").replace("}", "")
-    if not clean:
-        return False
-    return clean in _never_auto_close() or is_ground_pin(clean) or is_supply_pin(clean)
-
-
-def close_unused_hub_pins(
-    ir: CircuitIR, symbols: dict[str, SymbolDef]
-) -> list[str]:
-    """No-connect the leftover signal pins of large ICs, deterministically.
-
-    The block prompt used to require the model to place every pin of every
-    component in a net or in nc_pins. For a 132-pin MCU that accounting is
-    87% of the reply — measured 2,674 of a 4,096-token cap — so the model
-    ran out of budget mid-JSON and the block was never produced. Python
-    already knows which pins are unwired; the model should spend its budget
-    on the circuit.
-
-    Deliberately narrow, because closing a pin makes it invisible to ERC. An
-    adversarial review found four ways a blanket version turns a dead board
-    green, so each of these gates has a measured counterexample behind it:
-
-    - power pins are NEVER closed, by TYPE and by NAME. Type alone is not
-      enough: USB-C VBUS/GND are PASSIVE and a MAX310's V+/V-/GND are INPUT.
-      Blanket closure took an STM32G474 with every supply omitted from 59 ERC
-      errors to 2.
-    - function-critical pins are never closed (_NEVER_AUTO_CLOSE). An
-      ESP32-C3 whose EN was closed reached pipeline.ok=True with zero findings
-      from self-ERC, compliance AND kicad-cli — a board held in reset forever.
-    - a unit whose every pin would be closed is skipped and logged: an unused
-      74LS139 half with three floating inputs is a design defect, not a
-      formality (477 multi-unit hubs in the catalog).
-    - only symbols at/above HUB_PIN_THRESHOLD pins, and never a Conceptual box.
-      The size threshold is a weak filter on its own — 82 switching regulators
-      with an FB pin clear it — which is why the name gates exist.
-
-    Must run AFTER wire_mcu_interfaces — closing pins first takes the free-GPIO
-    pool to zero and strands every interface net as a single-pin net.
-    """
-    notes: list[str] = []
-    wired = {(ref, str(pin)) for net in ir.nets for ref, pin in net.nodes}
-    closed = {(ref, str(pin)) for ref, pin in ir.nc_pins}
-    for ref, comp in sorted(ir.components.items()):
-        sym = symbols.get(comp.lib_id)
-        if sym is None or sym.is_power or ref.startswith("#"):
-            continue
-        if comp.lib_id.startswith("Conceptual:") or len(sym.pins) < HUB_PIN_THRESHOLD:
-            continue
-
-        by_unit: dict[int, list] = {}
-        for pin in sym.pins:
-            by_unit.setdefault(getattr(pin, "unit", 0) or 0, []).append(pin)
-
-        added: list[str] = []
-        for unit, pins in sorted(by_unit.items()):
-            candidates = []
-            protected = False
-            for pin in pins:
-                node = (ref, pin.number)
-                if node in wired:
-                    protected = True  # this unit is in use
-                    continue
-                if node in closed or pin.hidden:
-                    continue
-                if pin.etype in (PinType.PWRIN, PinType.PWROUT) or _must_stay_open(pin.name):
-                    protected = True
-                    continue
-                candidates.append(pin)
-            if not candidates:
-                continue
-            if not protected and len(by_unit) > 1:
-                # nothing in this unit is wired and nothing in it is protected:
-                # the whole gate is unused, and silently closing its inputs
-                # would hide that
-                notes.append(
-                    f"{ref} ({comp.lib_id}) unit {unit} is entirely unused — left "
-                    f"open rather than closed; remove the part or use the unit"
-                )
-                continue
-            for pin in candidates:
-                ir.nc_pins.append((ref, pin.number))
-                closed.add((ref, pin.number))
-                added.append(pin.number)
-        if added:
-            notes.append(
-                f"closed {len(added)} unused pin(s) of {ref} ({comp.lib_id}) as NC: "
-                + ", ".join(added[:12])
-                + ("..." if len(added) > 12 else "")
-            )
-    return notes
-
 
 def ensure_relay_flyback(
     ir: CircuitIR, symbols: dict[str, SymbolDef]
