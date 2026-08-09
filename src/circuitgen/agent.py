@@ -569,6 +569,17 @@ class Agent:
         a clearly labelled conceptual box is safer and more useful to an
         engineer than a fabricated exact implementation.
         """
+        # The agent declares its own operating scope when extracting the
+        # requirement: "max 24VDC / 3A, no AC mains", and a request that needs
+        # mains is refused outright as out_of_scope. So a mains AC/DC converter
+        # can never be a valid candidate for a request that got this far.
+        # Detected by KiCad's own library taxonomy, not by a name guess.
+        # Measured: a "3.3V single supply" MCU board selected
+        # Converter_ACDC:HS-40003 and its AC/L pin ended up on a signal net.
+        hits = [
+            hit for hit in hits
+            if not str(hit.get("lib_id", "")).startswith("Converter_ACDC:")
+        ]
         intent = " ".join(
             str(need.get(k, "")) for k in ("role", "search_query", "value")
         ).lower()

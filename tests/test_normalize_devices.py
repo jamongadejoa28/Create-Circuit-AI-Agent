@@ -256,13 +256,19 @@ def test_stm32g4_power_network_adds_per_vdd_and_analog_decoupling():
     ir.add(Component("U1", lid, "STM32G474", group="MCU"))
     ir.connect("+3V3", ("U1", "16"), ("U1", "32"), ("U1", "28"), ("U1", "29"))
     ir.connect("GND", ("U1", "15"), ("U1", "27"))
-    notes = ensure_stm32g4_power_network(ir, symbols)
-    caps = [c for c in ir.components.values() if c.lib_id == "Device:C"]
-    assert [c.value for c in caps].count("100nF") == 3  # two VDD + one VDDA
-    assert {c.value for c in caps} >= {"10uF", "1uF"}
-    assert any(c.lib_id == "Device:FerriteBead" for c in ir.components.values())
-    analog = next(n for n in ir.nets if n.name == "MCU_VDDA")
-    assert {("U1", "28"), ("U1", "29")} <= set(analog.nodes)
+    ensure_stm32g4_power_network(ir, symbols)
+    caps = [c.value for c in ir.components.values() if c.lib_id == "Device:C"]
+    # Figure 16 with two VDD pins: 2 x 100nF (VDD) + 1 x 100nF (VREF+),
+    # 1 x 4.7uF bulk, 10nF + 1uF (VDDA), 1uF (VREF+). The previous expectation
+    # here (10uF bulk, 100nF on VDDA) came from an AN5093 citation that is not
+    # in this repository and disagrees with the datasheet that is.
+    assert caps.count("100nF") == 3
+    assert caps.count("4.7uF") == 1 and caps.count("10nF") == 1
+    assert caps.count("1uF") == 2
+    assert not any(c.lib_id == "Device:FerriteBead" for c in ir.components.values())
+    on_rail = {n.name for n in ir.nets for r, p in n.nodes
+               if r == "U1" and p in {"28", "29"}}
+    assert on_rail == {"+3V3"}, "3.11.1: VDDA belongs on the VDD rail"
 
 
 def test_stm32g4_system_aliases_create_reset_boot_and_swd_support():
@@ -674,3 +680,48 @@ def test_a_refused_supply_pin_loses_a_stale_nc_marker():
     ir.nc_pins.extend([("U1", "1")])
     complete_generic_power_pins(ir, {"Vendor:CHIP": sym}, ["+3V3", "GND"])
     assert ("U1", "1") not in ir.nc_pins, "refusal must be visible to ERC"
+
+
+def test_stm32g4_decoupling_matches_the_datasheet_figure():
+    """DS12288 Rev 6 §5.1.6 Figure 16 (DS_stm32g474ve.pdf, pdf page 80):
+
+        VDD/VSS    n x 100 nF + 1 x 4.7 uF
+        VDDA/VSSA  10 nF + 1 uF
+        VREF+      100 nF + 1 uF
+
+    §5.3.19 states decoupling "must be performed as shown in Figure 16", so
+    these are not judgement calls. STM32G474RETx (LQFP64) has four VDD pins.
+    """
+    from collections import Counter
+
+    from circuitgen.normalize import ensure_stm32g4_power_network
+    from circuitgen.symbols import load_symbols
+
+    lid = "MCU_ST_STM32G4:STM32G474RETx"
+    symbols = load_symbols([lid])
+    ir = CircuitIR("g4")
+    ir.add(Component("U1", lid, "STM32G474RET6", group="MCU"))
+    ir.connect("+3V3", ("U1", "16"))
+
+    notes = ensure_stm32g4_power_network(ir, symbols, "+3V3")
+    caps = Counter(c.value for c in ir.components.values() if c.lib_id == "Device:C")
+    assert dict(caps) == {"100nF": 5, "4.7uF": 1, "10nF": 1, "1uF": 2}
+
+    sym = symbols[lid]
+    def nets_of(pin_name):
+        pins = {p.number for p in sym.pins if p.name.upper() == pin_name}
+        return {n.name for n in ir.nets for r, pn in n.nodes if r == "U1" and pn in pins}
+
+    # 3.11.1: VDDA "should preferably be connected to VDD when these
+    # peripherals are not used"
+    assert nets_of("VDD") == nets_of("VDDA") == nets_of("VREF+") == {"+3V3"}
+    assert nets_of("VSS") == nets_of("VSSA") == {"GND"}
+
+    # 3.13: HSI16 can drive the PLL to 170 MHz, so a crystal is optional and
+    # the answer belongs in the record rather than in a silently added part
+    assert any("no external crystal" in n for n in notes)
+    assert not any("Crystal" in c.lib_id for c in ir.components.values())
+
+    before = len(ir.components)
+    ensure_stm32g4_power_network(ir, symbols, "+3V3")
+    assert len(ir.components) == before, "the pass must be idempotent"

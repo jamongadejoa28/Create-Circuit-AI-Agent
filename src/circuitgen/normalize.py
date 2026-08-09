@@ -1259,21 +1259,33 @@ def apply_stm32g474ret6_foc_pinmap(
 def ensure_stm32g4_power_network(
     ir: CircuitIR, symbols: dict[str, SymbolDef], logic_rail: str = "+3V3"
 ) -> list[str]:
-    """Build the datasheet-backed STM32G4 supply decoupling network.
+    """Build the STM32G4 supply network exactly as its datasheet specifies.
 
-    AN5093 recommends 100 nF per VDD/VSS pair plus about 10 uF for the
-    device, and 100 nF + 1 uF on VDDA/VSSA.  The analog domain is fed
-    through a ferrite bead.  Reset/BOOT are deliberately not synthesized:
-    the current KiCad STM32G474RETx symbol exposes neither pin, so inventing
-    pin numbers would be less safe than reporting that catalog defect.
+    Source: STM32G474xB/xC/xE datasheet DS12288 Rev 6 (DS_stm32g474ve.pdf in
+    this repository), section 5.1.6 "Power supply scheme", Figure 16, pdf page
+    index 80 / printed 81. The datasheet does not leave this to judgement —
+    section 5.3.19 states "Power supply decoupling must be performed as shown
+    in Figure 16", and Figure 16 gives:
+
+        VDD/VSS     n x 100 nF + 1 x 4.7 uF   (n = number of VDD pins)
+        VDDA/VSSA   10 nF + 1 uF
+        VREF+       100 nF + 1 uF
+
+    with the caution that "each power supply pair (VDD/VSS, VDDA/VSSA etc.)
+    must be decoupled with filtering ceramic capacitors as shown above".
+
+    VDDA goes to the same rail as VDD: section 3.11.1 says VDDA "should
+    preferably be connected to VDD when these peripherals are not used". The
+    earlier version of this pass fed VDDA through a ferrite bead and cited
+    AN5093 for 10 uF and 100 nF values — that document is not in this
+    repository, so the citation could not be checked, and the two values it
+    was credited with disagree with Figure 16.
     """
     notes: list[str] = []
     if not any(n.name == logic_rail for n in ir.nets):
         return notes
     numeric_c = [int(m.group(1)) for r in ir.components if (m := re.fullmatch(r"C(\d+)", r))]
     c_counter = max(numeric_c, default=0) + 1
-    numeric_fb = [int(m.group(1)) for r in ir.components if (m := re.fullmatch(r"FB(\d+)", r))]
-    fb_counter = max(numeric_fb, default=0) + 1
 
     def net_for(ref: str, pin: str) -> str | None:
         return next((n.name for n in ir.nets if (ref, pin) in n.nodes), None)
@@ -1318,34 +1330,40 @@ def ensure_stm32g4_power_network(
             if p.name.upper() in {"VSS", "VSSA"}:
                 move(ref, p.number, "GND")
 
-        digital_have = cap_count(group, logic_rail, "100nF")
-        for _ in range(max(0, len(vdd_pins) - digital_have)):
-            add_cap(group, logic_rail, "100nF")
-        if cap_count(group, logic_rail, "10uF") == 0:
-            add_cap(group, logic_rail, "10uF")
+        # VDDA and VREF+ join the digital rail (3.11.1: VDDA "should
+        # preferably be connected to VDD when these peripherals are not used")
+        analog = [p for p in sym.pins if p.name.upper() in {"VDDA", "VREF+"}]
+        for p in analog:
+            move(ref, p.number, logic_rail)
 
-        analog_pins = [p for p in sym.pins if p.name.upper() in {"VDDA", "VREF+"}]
-        if analog_pins:
-            analog_rail = f"{group}_VDDA"
-            for p in analog_pins:
-                move(ref, p.number, analog_rail)
-            bead_exists = any(
-                c.group == group and c.lib_id == "Device:FerriteBead"
-                and {logic_rail, analog_rail} <= {
-                    n.name for n in ir.nets if any(r == rref for r, _ in n.nodes)
-                }
-                for rref, c in ir.components.items()
-            )
-            if not bead_exists:
-                fbref = f"FB{fb_counter}"
-                fb_counter += 1
-                ir.add(Component(fbref, "Device:FerriteBead", "600R@100MHz", group=group))
-                ir.connect(logic_rail, (fbref, "1"))
-                ir.connect(analog_rail, (fbref, "2"))
-                notes.append(f"added {fbref} ferrite isolation for {analog_rail}")
-            for value in ("100nF", "1uF"):
-                if cap_count(group, analog_rail, value) == 0:
-                    add_cap(group, analog_rail, value)
+        # Figure 16 specifies a capacitor per supply PAIR, so the requirement
+        # is a count per value, not "one somewhere on the rail": n x 100 nF for
+        # the VDD pins plus one more for VREF+, one 4.7 uF bulk, and the
+        # analog pair's own 10 nF / 1 uF.
+        required: dict[str, int] = {}
+        required["100nF"] = len(vdd_pins)
+        required["4.7uF"] = 1
+        for p in analog:
+            if p.name.upper() == "VDDA":
+                required["10nF"] = required.get("10nF", 0) + 1
+                required["1uF"] = required.get("1uF", 0) + 1
+            else:  # VREF+
+                required["100nF"] = required.get("100nF", 0) + 1
+                required["1uF"] = required.get("1uF", 0) + 1
+        for value, want in sorted(required.items()):
+            for _ in range(max(0, want - cap_count(group, logic_rail, value))):
+                add_cap(group, logic_rail, value)
+
+        # The user's question "do I need an external crystal?" has a datasheet
+        # answer, and it belongs in the record rather than in a silently added
+        # part: section 3.13 lists HSI16, a 16 MHz internal RC that can feed
+        # the PLL to 170 MHz, as one of three SYSCLK sources. An HSE crystal
+        # is optional and only needed when the application needs its accuracy.
+        notes.append(
+            f"{ref}: no external crystal added — DS12288 3.13 lists HSI16 "
+            f"(16 MHz internal RC) as a SYSCLK source that can drive the PLL to "
+            f"170 MHz; fit an HSE crystal only if the application needs its accuracy"
+        )
     ir.nets = [n for n in ir.nets if n.nodes]
     return notes
 

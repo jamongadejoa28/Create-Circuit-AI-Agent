@@ -769,3 +769,20 @@ def test_ambiguous_signal_pin_name_is_not_expanded(agent_env):
 
     agent.resolve_pin_names(ir)
     assert [p for r, p in ir.nets[0].nodes] == ["A"], "left alone, so ERC stays loud"
+
+
+def test_mains_acdc_converters_are_outside_the_declared_scope():
+    """extract_requirements declares "max 24VDC / 3A, no AC mains" and refuses
+    a request that needs mains outright, so a mains converter can never be a
+    valid candidate for a request that got past that gate.
+
+    Measured: a "3.3V 단일 전원" MCU board selected Converter_ACDC:HS-40003,
+    whose AC/L pin then sat on a signal net.
+    """
+    need = {"role": "power_supply", "search_query": "3.3V power supply"}
+    hits = [
+        {"lib_id": "Converter_ACDC:HS-40003", "description": "AC/DC converter 3.3V"},
+        {"lib_id": "Regulator_Linear:AMS1117-3.3", "description": "3.3V LDO"},
+    ]
+    kept = Agent._filter_incompatible_candidates(need, hits)
+    assert [h["lib_id"] for h in kept] == ["Regulator_Linear:AMS1117-3.3"]
