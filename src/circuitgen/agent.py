@@ -251,7 +251,11 @@ class Agent:
                         "'push button switch'); colors/specifics belong in value or "
                         "connections_intent, not in the query.\n"
                         "Power symbols and PWR_FLAGs are added automatically later; "
-                        "do not list them as parts_needed.\n\n"
+                        "do not list them as parts_needed.\n"
+                        "A SIGNAL is a net, not a part to buy. TX, RX, SDA, SCL, CANH, "
+                        "an interrupt line, a chip select: these go in `signals`, never "
+                        "in parts_needed. parts_needed is only for physical devices "
+                        "that appear in a bill of materials.\n\n"
                         "Every parts_needed item must include quantity. Preserve explicit "
                         "counts such as four motors AND four encoders; use quantity=1 when "
                         "no count is stated. Give every item a UNIQUE role id — protection "
@@ -272,37 +276,33 @@ class Agent:
         self._ensure_logic_rail(spec)
         return spec
 
-    # A search query that names a terminal rather than a device. Measured on
-    # unknown_module: "TX, RX 핀을 개념 심볼로 표시" produced roles tx_pin and
-    # rx_pin with search_query "pin", which survived the pseudo-part filter,
-    # became two blocks, and were answered with two diodes.
-    _PIN_QUERIES = frozenset({
-        "pin", "pins", "핀", "signal", "signals", "net", "nets", "wire", "wires",
-        "connection", "connections", "terminal", "terminals",
-    })
-
     @staticmethod
     def _remove_connection_pseudo_parts(spec: dict) -> None:
-        """Connections are nets, not physical BOM roles."""
-        removed = []
-        kept = []
+        """A role that names a declared SIGNAL is a net, not a BOM item.
+
+        This used to be a pair of word lists — "concept symbol" phrasings plus
+        thirteen terms for a terminal ("pin", "핀", "wire", ...) — written to
+        stop specific requests from materialising a diode where TX belonged.
+        The spec now carries `signals` separately, because in a schematic a net
+        and a component are different objects, so the requirement itself says
+        which is which and no vocabulary is needed.
+        """
+        declared = {
+            str(sig.get("name", "")).strip().upper()
+            for sig in spec.get("signals", [])
+            if sig.get("name")
+        }
+        if not declared:
+            return
+        removed, kept = [], []
         for part in spec.get("parts_needed", []):
-            text = f"{part.get('role', '')} {part.get('search_query', '')}".lower()
-            query = str(part.get("search_query", "")).strip().lower()
-            pseudo = (
-                (
-                    any(phrase in text for phrase in ("concept symbol", "conceptual symbol"))
-                    and any(word in text for word in ("connection", "power", "gnd", "tx", "rx"))
-                )
-                or str(part.get("role", "")).strip().lower() in {"gpio", "gpio_input", "gpio_signal"}
-                # the requirement asks for a terminal, not a part to buy
-                or query in Agent._PIN_QUERIES
-            )
-            (removed if pseudo else kept).append(part)
+            text = f"{part.get('role', '')} {part.get('search_query', '')}".upper()
+            words = set(re.split(r"[^A-Z0-9]+", text)) - {""}
+            (removed if words & declared else kept).append(part)
         spec["parts_needed"] = kept
-        if removed:
+        for part in removed:
             spec.setdefault("connections_intent", []).append(
-                "Treat TX/RX/power/GND connection roles as nets, not separate components"
+                f"{part.get('role')} is a signal on this board, not a separate component"
             )
 
     @staticmethod

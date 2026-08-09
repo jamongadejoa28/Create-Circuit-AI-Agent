@@ -461,9 +461,15 @@ def check_compliance(
     # is not wrong because of what the prompt SAYS, it is wrong because most of
     # what was asked for is absent, and that is measurable on the finished board.
     role_total, role_present, role_missing, shortfall = role_fulfilment(spec or {}, ir, symbols)
+    # WARNING, not error: parts_needed is the extractor's paraphrase and
+    # contains its inventions — a "12V to 5V regulator" prompt that names no
+    # resistor still produced a `resistor` role. Failing the board for that
+    # would make a model invention a requirement, which is the rule already
+    # settled for part numbers. What the USER named is checked above, from the
+    # prompt; this is a loud report on what the pipeline dropped.
     role_issues = [
         _issue(
-            "requested_role_missing", "error", f"requirement:{role}",
+            "requested_role_missing", "warning", f"requirement:{role}",
             f"the requirement asks for {role!r} and no component in the circuit "
             f"answers it",
         )

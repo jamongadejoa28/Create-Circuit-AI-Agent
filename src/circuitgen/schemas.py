@@ -50,6 +50,25 @@ REQUIREMENT_SPEC = {
                 },
             },
         },
+        "signals": {
+            "type": "array",
+            "maxItems": 12,
+            "items": {
+                "type": "object",
+                "required": ["name"],
+                "additionalProperties": False,
+                "properties": {
+                    "name": {"type": "string", "maxLength": 24,
+                             "description": "net name, e.g. TX, RX, SDA, SCL, CANH"},
+                    "purpose": {"type": "string", "maxLength": 80},
+                },
+            },
+            "description": (
+                "Interface SIGNALS the board must expose. A signal is a net, not a "
+                "part to buy: TX, RX, SDA, an interrupt line and a chip select all "
+                "belong here and NEVER in parts_needed."
+            ),
+        },
         "connections_intent": {
             "type": "array",
             "items": {"type": "string", "maxLength": 140},

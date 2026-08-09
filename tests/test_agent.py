@@ -243,13 +243,30 @@ def test_simple_regulator_ranking_prefers_three_pin_complete_device():
     assert not any(p["type"] == "INPUT" for p in pins)
 
 
-def test_connection_pseudo_parts_are_nets_not_bom_items():
-    spec = {"parts_needed": [
-        {"role": "radio", "search_query": "module"},
-        {"role": "TX_CONNECTION", "search_query": "concept symbol"},
-        {"role": "GND_CONNECTION", "search_query": "concept symbol"},
-        {"role": "gpio", "search_query": "LED"},
-    ], "connections_intent": []}
+def test_a_role_that_names_a_declared_signal_is_a_net_not_a_bom_item():
+    """In a schematic a net and a component are different objects, so the spec
+    declares signals separately and the requirement itself says which is which.
+
+    This replaced two word lists — "concept symbol" phrasings and thirteen
+    terms for a terminal — that existed because "TX, RX 핀" produced roles
+    tx_pin/rx_pin and the pipeline answered them with two diodes.
+    """
+    spec = {
+        "signals": [{"name": "TX"}, {"name": "RX"}],
+        "parts_needed": [
+            {"role": "radio", "search_query": "module"},
+            {"role": "tx_pin", "search_query": "pin"},
+            {"role": "rx_pin", "search_query": "pin"},
+        ],
+        "connections_intent": [],
+    }
+    Agent._remove_connection_pseudo_parts(spec)
+    assert [p["role"] for p in spec["parts_needed"]] == ["radio"]
+    assert len(spec["connections_intent"]) == 2
+
+
+def test_parts_survive_when_the_requirement_declares_no_signals():
+    spec = {"parts_needed": [{"role": "radio", "search_query": "module"}]}
     Agent._remove_connection_pseudo_parts(spec)
     assert [p["role"] for p in spec["parts_needed"]] == ["radio"]
 
@@ -277,22 +294,6 @@ def test_conceptual_module_named_in_the_query_is_not_duplicated_into_a_second_ro
     )
     assert [p["role"] for p in spec["parts_needed"]] == ["custom_radio_module", "mcu"]
     assert spec["parts_needed"][0]["search_query"] == "__conceptual__MY_CUSTOM_RADIO"
-
-
-def test_pin_roles_are_connections_not_components():
-    """"TX, RX 핀" produced roles tx_pin/rx_pin with search_query "pin"; they
-    survived as BOM roles, became their own blocks, and were answered with two
-    diodes."""
-    spec = {"parts_needed": [
-        {"role": "tx_pin", "search_query": "pin"},
-        {"role": "rx_pin", "search_query": "핀"},
-        {"role": "reset_pin", "search_query": "push button switch"},
-        {"role": "mcu", "search_query": "MCU"},
-    ], "connections_intent": []}
-    Agent._remove_connection_pseudo_parts(spec)
-    # a role NAMED after a pin but asking for a real device stays
-    assert [p["role"] for p in spec["parts_needed"]] == ["reset_pin", "mcu"]
-    assert spec["connections_intent"]
 
 
 def test_i2c_capability_filter_rejects_analog_temperature_sensor():
