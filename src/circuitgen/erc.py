@@ -48,7 +48,7 @@ def _power_symbol_values(ir: CircuitIR, symbols: dict[str, SymbolDef], net) -> s
     return vals
 
 
-def _net_kind(ir: CircuitIR, symbols: dict[str, SymbolDef], net) -> str:
+def net_kind(ir: CircuitIR, symbols: dict[str, SymbolDef], net) -> str:
     """'gnd' | 'power' | 'signal' for extended-rule purposes."""
     vals = _power_symbol_values(ir, symbols, net)
     if vals & GROUND_NAMES or net.name in GROUND_NAMES:
@@ -72,7 +72,7 @@ def _check_extended(
     omissions are warnings the agent repair loop can act on.
     """
     issues: list[ValidationIssue] = []
-    net_kinds = {net.name: _net_kind(ir, symbols, net) for net in ir.nets}
+    net_kinds = {net.name: net_kind(ir, symbols, net) for net in ir.nets}
     nets_by_name = {net.name: net for net in ir.nets}
 
     # -- shorted power rails: two different supply symbols on one net --

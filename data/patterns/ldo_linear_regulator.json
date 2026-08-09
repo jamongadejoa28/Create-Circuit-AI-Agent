@@ -7,6 +7,9 @@
     "voltage regulator",
     "레귤레이터"
   ],
+  "provides": [
+    "power_supply"
+  ],
   "roles": {
     "REG": {
       "kind": "regulator",

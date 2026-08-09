@@ -110,6 +110,8 @@ def main() -> int:
             "visual_issues": len(res.pipeline.visual_issues) if res.pipeline else None,
             "draft_visible": bool(res.pipeline and res.pipeline.sch_path),
             "repair_ops": len(res.repairs),
+            "compliance_ok": bool(res.compliance and res.compliance.ok),
+            "compliance": res.compliance.as_dict() if res.compliance else None,
             "seconds": round(dt, 1),
         }
         if ir:

@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
+from .compliance import ComplianceReport, check_compliance, requested_part_numbers
 from .ir import CircuitIR, Component
 from .ir_json import apply_patch, ir_from_json
 from .knowledge import KnowledgeIndex
@@ -64,6 +65,9 @@ class AgentResult:
     refusal: str | None = None
     log: list[str] = field(default_factory=list)
     block_plan: list[dict] | None = None
+    # "is this the circuit that was requested, and can it be powered on?"
+    # — questions ERC cannot answer; None only if no circuit was produced
+    compliance: "ComplianceReport | None" = None
 
 
 _SYSTEM = (
@@ -1656,12 +1660,29 @@ class Agent:
             pr = self._generate(ir, name)
             res.pipeline = pr
 
-        res.ok = pr.ok
-        res.stage = "done" if pr.ok else res.stage
+        # ERC proves the wiring is legal, not that this is the circuit that
+        # was asked for or that it survives being powered on. Both checks
+        # REPORT rather than abort: the schematic stays on disk, and the
+        # caller is told exactly which requirement is unmet.
+        res.compliance = check_compliance(spec, ir, self._resolve_symbols(ir), prompt)
+        for issue in res.compliance.issues:
+            res.log.append(f"compliance {issue.severity} {issue.rule}: {issue.message}")
+        if res.compliance.missing_parts:
+            res.log.append(
+                "requested parts absent from the circuit: "
+                + ", ".join(res.compliance.missing_parts)
+            )
+
+        res.ok = pr.ok and res.compliance.ok
+        if res.ok:
+            res.stage = "done"
+        elif pr.ok:
+            res.stage = "requirement-mismatch"
 
         from .ir_json import ir_to_json
 
         rec.set("ir", ir_to_json(ir))
+        rec.set("compliance", res.compliance.as_dict())
         rec.set("knowledge_trace", self._knowledge_trace)
         rec.set("repairs", res.repairs)
         rec.set("log", res.log)
@@ -1670,6 +1691,7 @@ class Agent:
             {
                 "ok": res.ok,
                 "stage": res.stage,
+                "compliance_ok": res.compliance.ok,
                 "kicad_erc_violations": (
                     len(pr.kicad_erc.violations) if pr.kicad_erc else None
                 ),
@@ -1778,6 +1800,7 @@ class Agent:
         must confirm the result. ANY failure returns None — the normal LLM
         path takes over, never an abort.
         """
+        from .compliance import part_present
         from .contracts import infer_contracts, validate_contracts
         from .patterns import (
             PatternBinding,
@@ -1785,6 +1808,7 @@ class Agent:
             instantiate_pattern,
             load_patterns,
             match_patterns,
+            out_of_scope_subsystems,
             verify_pattern_instance,
         )
 
@@ -1806,6 +1830,34 @@ class Agent:
             f"{pattern['source']['section']})"
         )
 
+        # A pattern implements ONE function. Three of the user's 18 board
+        # prompts matched a single keyword and had the entire board replaced
+        # by an eight-part fragment: "Ethernet + RS485 + CAN-FD + SD card"
+        # came back as a CAN transceiver. Scope is judged on the PROMPT —
+        # the extracted spec is a paraphrase whose wording varies per run.
+        uncovered = out_of_scope_subsystems(prompt, pattern)
+        if uncovered:
+            log.append(
+                f"pattern {pattern['id']} declined: the request also asks for "
+                f"{', '.join(sorted(uncovered))}, which this pattern does not "
+                f"implement — a fragment must not answer a whole board"
+            )
+            return None
+
+        # Parts the user named by number are non-negotiable: binding them
+        # takes priority over the pattern's own lib_id, and a pattern that
+        # cannot place one is answering a different request (measured:
+        # "ESP32-C3 + BME280" produced STM32G474 + Si7050 at ERC 0).
+        named = requested_part_numbers(prompt, spec)
+        named_lib_ids: dict[str, list[str]] = {}
+        for token in named:
+            named_lib_ids[token] = [
+                h["lib_id"]
+                for h in self.parts.search_parts(token, 8)
+                if part_present(token, h["lib_id"])
+            ]
+        preferred = [lid for lids in named_lib_ids.values() for lid in lids]
+
         binding = PatternBinding()
         prefix_of = {"resistor": "R", "capacitor": "C", "inductor": "L",
                      "ferrite_bead": "FB", "diode": "D", "led": "D",
@@ -1826,6 +1878,9 @@ class Agent:
                 # AMS1117 by bm25 and left FB/~SHDN dangling
                 hits.sort(key=lambda h: h.get("pins") or 99)
                 cands = [h["lib_id"] for h in hits]
+            # a named part that fits this role outranks both the pattern's
+            # own lib_id and the search ranking
+            cands = list(dict.fromkeys(preferred + cands))
             bound = None
             for lid in cands:
                 try:
@@ -1851,6 +1906,17 @@ class Agent:
                 return None
             binding.lib_ids[role], binding.pins[role] = bound
             log.append(f"pattern bind: {role} -> {bound[0]}")
+
+        unplaced = [
+            token for token in named
+            if not any(part_present(token, lid) for lid in binding.lib_ids.values())
+        ]
+        if unplaced:
+            log.append(
+                f"pattern {pattern['id']} declined: no role can hold requested part(s) "
+                f"{', '.join(unplaced)} — LLM fallback rather than a silent substitute"
+            )
+            return None
 
         rails = [r.get("name") for r in spec.get("power", {}).get("rails", [])]
         supplies = [r for r in rails if r and r.upper() not in ("GND", "0V", "VSS")]

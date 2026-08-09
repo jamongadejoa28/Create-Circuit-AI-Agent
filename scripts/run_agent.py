@@ -62,6 +62,21 @@ def main() -> int:
         print(f"visual QA issues: {len(res.pipeline.visual_issues)}")
         for e in res.pipeline.errors:
             print(f"pipeline error: {e}")
+    if res.compliance:
+        # ERC says the wiring is legal; this says whether it is the circuit
+        # that was asked for and whether it can be powered on. The schematic
+        # above exists either way — read this before using it.
+        rep = res.compliance
+        print(f"requirement compliance: {'ok' if rep.ok else 'FAILED'}")
+        if rep.requested_parts:
+            print(f"  parts requested by name: {', '.join(rep.requested_parts)}")
+        if rep.missing_parts:
+            print(f"  MISSING from the circuit: {', '.join(rep.missing_parts)}")
+        for issue in rep.issues:
+            print(f"  {issue.severity}: {issue.path}: {issue.message}")
+        if rep.checked_devices:
+            print(f"  supply voltages verified against datasheet limits for: "
+                  f"{', '.join(rep.checked_devices)}")
     return 0 if res.ok else 1
 
 

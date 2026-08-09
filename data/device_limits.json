@@ -1,0 +1,40 @@
+{
+  "_note": [
+    "Supply-voltage limits per device family, used by compliance.check_power_integrity.",
+    "Every number here must be read out of the datasheet in this repository and",
+    "cited below — an invented absolute maximum is worse than no entry, because",
+    "the checker would report a verdict nobody verified.",
+    "Devices with no entry get the structural checks only (a supply pin must",
+    "reach a supply net), which need no per-device data:",
+    "STM32G474 datasheet DS12288 Rev 6, Table 14 footnote 1 — 'All main power",
+    "(VDD, VDDA, VBAT) and ground (VSS, VSSA) pins must always be connected to",
+    "the external power supply, in the permitted range.'"
+  ],
+  "devices": [
+    {
+      "match": "MCU_ST_STM32G4:STM32G474",
+      "supply_pin_prefixes": ["VDD", "VBAT", "VREF+"],
+      "operating_min_v": 1.71,
+      "operating_max_v": 3.6,
+      "absolute_max_v": 4.0,
+      "source": {
+        "document": "STM32G474xB STM32G474xC STM32G474xE datasheet, DS12288 Rev 6",
+        "file": "DS_stm32g474ve.pdf",
+        "claims": [
+          {
+            "table": "Table 14. Voltage characteristics",
+            "pdf_page_index": 81,
+            "printed_page": "82/236",
+            "text": "VDD - VSS external main supply voltage (including VDD, VDDA, VBAT and VREF+): min -0.3 V, max 4.0 V"
+          },
+          {
+            "table": "Table 17. General operating conditions",
+            "pdf_page_index": 83,
+            "printed_page": "84/236",
+            "text": "VDD standard operating voltage: min 1.71 V, max 3.6 V"
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -500,6 +500,80 @@ def test_pattern_synthesis_builds_complete_i2c_mcu_sensor_bus(agent_env):
         )
 
 
+I2C_SPEC = {
+    "summary": "MCU with I2C temperature sensor",
+    "power": {"rails": [
+        {"name": "+3V3", "voltage": "3.3V"},
+        {"name": "GND", "voltage": "0V"},
+    ]},
+    "parts_needed": [
+        {"role": "microcontroller", "search_query": "STM32 microcontroller"},
+        {"role": "I2C temperature sensor", "search_query": "I2C temperature sensor"},
+        {"role": "SDA pull-up", "search_query": "resistor", "value": "10k"},
+        {"role": "SCL pull-up", "search_query": "resistor", "value": "10k"},
+        {"role": "sensor decoupling", "search_query": "capacitor", "value": "100nF"},
+    ],
+    "connections_intent": ["I2C SDA/SCL with pull-ups and local decoupling"],
+}
+
+
+def test_pattern_refuses_to_substitute_a_part_the_user_named(agent_env):
+    """A named part the pattern cannot hold must fall back, not be swapped.
+
+    Measured before this gate: 'ESP32-C3 + BME280' came back as
+    STM32G474 + Si7050 at ERC 0, reported as success.
+    """
+    parts, knowledge, tmp = agent_env
+    agent = Agent(MockLLM(), parts, knowledge, tmp / "named-part")
+    spec = {**I2C_SPEC, "parts_needed": [
+        *I2C_SPEC["parts_needed"][:1],
+        {"role": "sensor", "search_query": "TMP100"},
+        *I2C_SPEC["parts_needed"][2:],
+    ]}
+    log: list[str] = []
+    out = agent._pattern_synthesis(
+        "MCU에 TMP100 I2C 온도센서를 연결해줘. 풀업과 디커플링 포함", spec, "named", log
+    )
+    assert out is None
+    assert any("declined: no role can hold requested part(s) TMP100" in n for n in log), log
+
+
+def test_pattern_binds_the_named_part_instead_of_its_default(agent_env):
+    parts, knowledge, tmp = agent_env
+    llm = MockLLM(spec={**I2C_SPEC, "parts_needed": [
+        *I2C_SPEC["parts_needed"][:1],
+        {"role": "sensor", "search_query": "Si7051"},
+        *I2C_SPEC["parts_needed"][2:],
+    ]})
+    agent = Agent(llm, parts, knowledge, tmp / "named-part-ok")
+    res = agent.run(
+        "MCU에 Si7051 I2C 온도센서를 연결해줘. 풀업과 디커플링 포함", name="agent_si7051"
+    )
+    assert any("pattern synthesis: i2c_temperature_sensor" in n for n in res.log), res.log
+    # the pattern pins Si7050-A20; the request named Si7051 and wins
+    assert any("Si7051" in c.lib_id for c in res.ir.components.values())
+    assert not any("Si7050" in c.lib_id for c in res.ir.components.values())
+    assert res.ok, (res.stage, res.log[-8:])
+    assert "Si7051" in res.compliance.satisfied_parts
+    assert res.compliance.missing_parts == [] and res.compliance.ok
+
+
+def test_board_scale_request_is_not_answered_by_one_pattern(agent_env):
+    parts, knowledge, tmp = agent_env
+    agent = Agent(MockLLM(), parts, knowledge, tmp / "board-scope")
+    log: list[str] = []
+    out = agent._pattern_synthesis(
+        "산업용 24V PLC 컨트롤러를 제작하려고 합니다. STM32를 메인 MCU로 사용하며 "
+        "Digital Input 16채널, Relay Output 8채널, RS485, Ethernet을 포함한 회로도를 "
+        "설계해주세요.",
+        {"summary": "PLC", "power": {"rails": []}, "parts_needed": []},
+        "plc",
+        log,
+    )
+    assert out is None
+    assert any("declined: the request also asks for" in n for n in log), log
+
+
 def test_header_roles_fall_back_to_generic_connectors(agent_env):
     parts, knowledge, tmp = agent_env
     agent = Agent(MockLLM(), parts, knowledge, tmp / "hdr")

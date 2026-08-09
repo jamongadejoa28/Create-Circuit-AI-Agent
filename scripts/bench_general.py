@@ -83,14 +83,25 @@ def main() -> int:
                 "topology": topology,
                 "contracts": contracts,
                 "contract_ok": all(contracts.values()),
+                # ERC-clean boards shipped here with an unpowered MCU and with
+                # VDD above the part's absolute maximum; a score that ignores
+                # this measures drawing, not designing
+                "compliance_ok": bool(res.compliance and res.compliance.ok),
+                "compliance": res.compliance.as_dict() if res.compliance else None,
                 "seconds": round(time.monotonic() - started, 1),
             }
             rows.append(row)
             with results.open("a", encoding="utf-8") as out:
                 out.write(json.dumps(row, ensure_ascii=False) + "\n")
-            print(f"{case['id']} r{repeat}: stage={res.stage} pipeline={row['pipeline_ok']} contracts={contracts}")
+            print(
+                f"{case['id']} r{repeat}: stage={res.stage} pipeline={row['pipeline_ok']} "
+                f"compliance={row['compliance_ok']} contracts={contracts}"
+            )
 
-    passed = sum(r["pipeline_ok"] and r["functional_complete"] and r["contract_ok"] for r in rows)
+    passed = sum(
+        r["pipeline_ok"] and r["functional_complete"] and r["contract_ok"] and r["compliance_ok"]
+        for r in rows
+    )
     print(f"\nrelease score: {passed}/{len(rows)} | results: {results}")
     return 0 if passed == len(rows) else 2
 

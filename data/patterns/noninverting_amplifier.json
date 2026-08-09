@@ -7,6 +7,7 @@
     "비반전 증폭",
     "비반전"
   ],
+  "provides": [],
   "roles": {
     "AMP": {
       "kind": "amplifier",

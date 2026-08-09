@@ -8,6 +8,7 @@
     "로우패스",
     "저역통과"
   ],
+  "provides": [],
   "roles": {
     "R": {
       "kind": "resistor",
