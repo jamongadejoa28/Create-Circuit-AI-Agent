@@ -449,6 +449,7 @@ def check_compliance(
     prompt: str = "",
     parts=None,
     spec: dict | None = None,
+    candidates: dict | None = None,
 ) -> ComplianceReport:
     """Requirement compliance + power integrity over the finished circuit."""
     req_issues, requested, satisfied, missing = check_requirements(ir, prompt, parts)
@@ -460,7 +461,7 @@ def check_compliance(
     # board prompts from being answered by an eight-part fragment: the fragment
     # is not wrong because of what the prompt SAYS, it is wrong because most of
     # what was asked for is absent, and that is measurable on the finished board.
-    role_total, role_present, role_missing, shortfall = role_fulfilment(spec or {}, ir, symbols)
+    role_total, role_present, role_missing, shortfall = role_fulfilment(spec or {}, ir, symbols, candidates)
     # WARNING, not error: parts_needed is the extractor's paraphrase and
     # contains its inventions — a "12V to 5V regulator" prompt that names no
     # resistor still produced a `resistor` role. Failing the board for that

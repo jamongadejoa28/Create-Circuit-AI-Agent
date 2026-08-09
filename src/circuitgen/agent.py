@@ -272,7 +272,6 @@ class Agent:
         self._remove_connection_pseudo_parts(spec)
         self._preserve_explicit_conceptual_parts(prompt, spec)
         self._ensure_named_parts(prompt, spec)
-        self._ensure_domain_roles(prompt, spec)
         self._ensure_logic_rail(spec)
         return spec
 
@@ -361,41 +360,6 @@ class Agent:
             if name.upper() not in existing:
                 rails.append({"name": name, "voltage": f"{raw}V"})
                 existing.add(name.upper())
-
-    @staticmethod
-    def _ensure_domain_roles(prompt: str, spec: dict) -> None:
-        """Restore safety-critical functional roles omitted by extraction.
-
-        A board03 run reached 11 ERC violations only because the 4-axis BLDC
-        request contained no motor-driver role at all.  Low ERC is not useful
-        when a required power stage is absent.
-        """
-        import re as _re
-
-        text = prompt.lower()
-        parts = spec.setdefault("parts_needed", [])
-        if "bldc" in text or "foc" in text:
-            has_driver = any(
-                any(k in f"{p.get('role', '')} {p.get('search_query', '')}".lower()
-                    for k in ("bldc motor driver", "brushless motor driver", "three phase motor driver"))
-                for p in parts
-            )
-            if not has_driver:
-                counts = [
-                    int(m.group(1))
-                    for pattern in (
-                        r"(\d+)\s*축", r"(\d+)\s*[- ]?axis", r"(\d+)\s*(?:개(?:의)?\s*)?bldc",
-                        r"(\d+)\s+bldc\s+motors?",
-                    )
-                    for m in _re.finditer(pattern, text)
-                ]
-                quantity = max(counts, default=1)
-                parts.append(
-                    {"role": "bldc_motor_driver", "search_query": "BLDC motor driver", "quantity": quantity}
-                )
-                spec.setdefault("connections_intent", []).append(
-                    f"Use {quantity} independent three-phase BLDC motor-driver channels"
-                )
 
     @staticmethod
     def _ensure_logic_rail(spec: dict) -> None:
@@ -1433,7 +1397,7 @@ class Agent:
                 "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
                 "source_sha256": sha256_tree(project / "src"),
                 "testprompt_sha256": sha256_file(project / "testprompt.md"),
-                "generation_defaults": {"temperature": 0.2, "seed": getattr(self.llm, "extra_payload", {}).get("seed")},
+                "generation_defaults": {"temperature": 0.0, "seed": getattr(self.llm, "extra_payload", {}).get("seed")},
             },
         )
 
@@ -1844,7 +1808,8 @@ class Agent:
             synth_nets, connection_set(ir), synth_nc, nc_set(ir)
         )
         res.compliance = check_compliance(
-            ir, self._resolve_symbols(ir), prompt, self.parts, spec
+            ir, self._resolve_symbols(ir), prompt, self.parts, spec,
+            ctx.get("candidates"),
         )
         for issue in res.compliance.issues:
             res.log.append(f"compliance {issue.severity} {issue.rule}: {issue.message}")

@@ -147,10 +147,17 @@ class LlamaClient:
         self,
         messages: list[dict],
         schema: dict,
-        temperature: float = 0.2,
+        temperature: float = 0.0,
         max_tokens: int = 2048,
     ) -> dict:
-        """Chat completion whose reply is forced to match `schema`."""
+        """Chat completion whose reply is forced to match `schema`.
+
+        Greedy by default. The server's own default (0.8) never applied: this
+        request sets temperature explicitly, so changing it server-side has no
+        effect on the agent. Sampling buys nothing here — every reply is
+        grammar-constrained structured data, and the variance it does buy is
+        the "content roulette" the bench keeps measuring as run-to-run spread.
+        """
         payload = {
             "messages": messages,
             "temperature": temperature,

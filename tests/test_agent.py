@@ -64,21 +64,6 @@ def test_explicit_input_and_output_voltage_rails_survive_extractor_omission():
     assert [r["name"] for r in spec["power"]["rails"]] == ["+12V", "GND", "+5V", "+3V3"]
 
 
-def test_bldc_requirement_restores_missing_driver_count_from_axes():
-    spec = {
-        "parts_needed": [
-            {"role": "controller", "search_query": "STM32G474", "quantity": 1},
-            {"role": "encoder", "search_query": "SPI encoder", "quantity": 4},
-        ],
-        "connections_intent": [],
-    }
-    Agent._ensure_domain_roles("STM32G474 기반 4축 BLDC FOC 보드", spec)
-    drivers = [p for p in spec["parts_needed"] if p["role"] == "bldc_motor_driver"]
-    assert drivers == [{"role": "bldc_motor_driver", "search_query": "BLDC motor driver", "quantity": 4}]
-    Agent._ensure_domain_roles("STM32G474 기반 4축 BLDC FOC 보드", spec)
-    assert sum(p["role"] == "bldc_motor_driver" for p in spec["parts_needed"]) == 1
-
-
 SPEC = {
     "summary": "5V push button lights an LED through a resistor",
     "power": {"rails": [{"name": "+5V", "voltage": "5V"}, {"name": "GND", "voltage": "0V"}]},
