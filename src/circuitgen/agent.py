@@ -45,7 +45,7 @@ from .llm_client import (
 )
 from .pipeline import PipelineResult, generate
 from .schemas import BLOCK_PLAN, CIRCUIT_IR, REPAIR_PATCH, REQUIREMENT_SPEC
-from .netnames import GROUND_NAMES, supply_voltage
+from .netnames import GROUND_NAMES, logic_rail, supply_voltage
 
 MAX_REPAIRS = 3
 _MAX_TRIM_LEVEL = 2  # block-prompt trim: 0 full, 1 no KNOWLEDGE, 2 first candidate only
@@ -1611,6 +1611,7 @@ class Agent:
         rec.set("block_plan", res.block_plan)
         from .normalize import (
             ensure_dc_power_entry,
+            ensure_i2c_pullups,
             enforce_requested_stm32_variant,
             merge_dangling_interface_nets,
             normalize_common_symbol_aliases,
@@ -1775,6 +1776,7 @@ class Agent:
             complete_generic_power_pins,
             complete_known_device_pins,
             ensure_dc_power_entry,
+            ensure_i2c_pullups,
             ensure_relay_flyback,
             ensure_stm32g4_power_network,
             enforce_requested_stm32_variant,
@@ -1817,6 +1819,9 @@ class Agent:
         notes += ensure_relay_flyback(ir, syms())
         notes += self.resolve_pin_names(ir)
         notes += unify_stacked_pins(ir, syms())
+        logic = logic_rail(rails)
+        if logic:
+            notes += ensure_i2c_pullups(ir, syms(), logic)
         notes += self._fix_footprints(ir)
         return notes
 

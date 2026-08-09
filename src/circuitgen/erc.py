@@ -61,6 +61,51 @@ def net_kind(ir: CircuitIR, symbols: dict[str, SymbolDef], net) -> str:
     return "signal"
 
 
+
+def two_pin_bridges(
+    ir: CircuitIR, symbols: dict[str, SymbolDef], prefix: str, net_name: str
+) -> list[str]:
+    """Nets bridged to `net_name` through a 2-pin part with that ref prefix."""
+    pin_net = {
+        (ref, str(pin)): net.name for net in ir.nets for ref, pin in net.nodes
+    }
+    bridged: list[str] = []
+    for ref, comp in ir.components.items():
+        sym = symbols.get(comp.lib_id)
+        if sym is None or sym.reference_prefix != prefix or len(sym.pins) != 2:
+            continue
+        nets = {pin_net.get((ref, p.number)) for p in sym.pins}
+        if net_name in nets:
+            bridged.extend(n for n in nets if n and n != net_name)
+    return bridged
+
+
+def is_i2c_net(ir: CircuitIR, symbols: dict[str, SymbolDef], net) -> bool:
+    """One definition of "this net is an I2C bus line".
+
+    Used by the checker that reports a missing pull-up and by the pass that
+    adds one, so the two can never disagree about which nets are a bus.
+
+    Dedicated I2C pins carry SDA/SCL names (sensors, EEPROMs); MCU GPIO pins
+    usually do not (ESP32: IO21/IO22), so a net NAMED SDA/SCL counts as
+    equally strong intent.
+    """
+    if net.name.upper() in ("SDA", "SCL"):
+        return True
+    for ref, pin_no in net.nodes:
+        comp = ir.components.get(ref)
+        sym = symbols.get(comp.lib_id) if comp else None
+        if sym is None:
+            continue
+        try:
+            name = (sym.pin(str(pin_no)).name or "").upper()
+        except KeyError:
+            continue
+        if name in ("SDA", "SCL") or name.endswith(("/SDA", "/SCL")):
+            return True
+    return False
+
+
 def _check_extended(
     ir: CircuitIR, symbols: dict[str, SymbolDef]
 ) -> list[ValidationIssue]:
@@ -90,16 +135,7 @@ def _check_extended(
             pin_net[(ref, str(pin_no))] = net.name
 
     def _two_pin_bridges(prefix: str, net_name: str) -> list[str]:
-        """Nets bridged to net_name through a 2-pin part with ref prefix."""
-        bridged = []
-        for ref, comp in ir.components.items():
-            sym = symbols.get(comp.lib_id)
-            if sym is None or sym.reference_prefix != prefix or len(sym.pins) != 2:
-                continue
-            nets = {pin_net.get((ref, p.number)) for p in sym.pins}
-            if net_name in nets:
-                bridged.extend(n for n in nets if n and n != net_name)
-        return bridged
+        return two_pin_bridges(ir, symbols, prefix, net_name)
 
     # -- decoupling per IC power pin (knowledge: decoupling-cap-per-ic) --
     for ref, comp in ir.components.items():
@@ -125,19 +161,7 @@ def _check_extended(
 
     # -- I2C pull-ups (knowledge: pullup-resistor-sizing) --
     for net in ir.nets:
-        pin_names = {
-            (symbols[ir.components[r].lib_id].pin(str(p)).name or "").upper()
-            for r, p in net.nodes
-            if r in ir.components and ir.components[r].lib_id in symbols
-            and _pin_type(ir, symbols, r, str(p)) is not None
-        }
-        # Dedicated I2C pins carry SDA/SCL names (sensors, EEPROMs); MCU GPIO
-        # pins usually don't (ESP32: IO21/IO22), so a net NAMED SDA/SCL is
-        # treated as equally strong intent.
-        named_i2c = net.name.upper() in ("SDA", "SCL")
-        if not named_i2c and not any(
-            n in ("SDA", "SCL") or n.endswith("/SDA") or n.endswith("/SCL") for n in pin_names
-        ):
+        if not is_i2c_net(ir, symbols, net):
             continue
         has_pullup = any(
             net_kinds.get(other) == "power"

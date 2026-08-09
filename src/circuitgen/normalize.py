@@ -444,6 +444,57 @@ def ensure_dc_power_entry(ir: CircuitIR, output_rail: str = "+12V") -> list[str]
     return notes
 
 
+
+# PEFI 4th ed. 12.6.9 "Pullup and Pulldown Resistors" (pdf page index 1246,
+# knowledge id pullup-resistor-sizing): 10 kOhm is the typical value, subject
+# to two checks — small enough that R*IIH does not sag the input below VIH,min,
+# large enough that grounding the pin does not waste power.
+I2C_PULLUP_VALUE = "10k"
+
+
+def ensure_i2c_pullups(
+    ir: CircuitIR, symbols: dict[str, SymbolDef], rail: str
+) -> list[str]:
+    """Give every I2C bus line a pull-up to `rail`.
+
+    I2C is open-drain, and an open-drain output has no high-side device: a
+    valid HIGH exists ONLY through an external pull-up to the supply (Floyd,
+    Digital Fundamentals 11ed, 15-2/15-3, pdf page index 872 — knowledge id
+    open-collector-open-drain-external-pullup-rule). Without it the bus never
+    releases high and nothing on it works, whatever ERC says about the wiring.
+
+    Presence is judged on TOPOLOGY: any resistor already bridging the bus line
+    and a supply net counts, whatever its value, symbol variant or block
+    group. The pass this replaces keyed on labels, so it added a second set
+    whenever the rail was renamed and left the first one on the dead rail.
+    """
+    from .erc import is_i2c_net, net_kind, two_pin_bridges
+
+    if not any(n.name == rail for n in ir.nets):
+        return []
+    refs = RefAllocator(ir)
+    notes: list[str] = []
+    for net in list(ir.nets):
+        if not is_i2c_net(ir, symbols, net):
+            continue
+        bridged = two_pin_bridges(ir, symbols, "R", net.name)
+        if any(
+            net_kind(ir, symbols, other) == "power"
+            for name in bridged
+            for other in ir.nets if other.name == name
+        ):
+            continue  # already pulled up to a supply
+        ref = refs.take("R")
+        ir.add(Component(ref, "Device:R", I2C_PULLUP_VALUE))
+        ir.connect(net.name, (ref, "1"))
+        ir.connect(rail, (ref, "2"))
+        notes.append(
+            f"added {ref} {I2C_PULLUP_VALUE} pull-up on I2C line {net.name} to "
+            f"{rail}: the bus is open-drain and has no high-side driver"
+        )
+    return notes
+
+
 def ensure_pwr_flags(
     ir: CircuitIR, symbols: dict[str, SymbolDef], only_nets: set[str] | None = None
 ) -> list[str]:

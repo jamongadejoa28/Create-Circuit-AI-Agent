@@ -572,3 +572,76 @@ def test_stm32g4_decoupling_matches_the_datasheet_figure():
     before = len(ir.components)
     ensure_stm32g4_power_network(ir, symbols, "+3V3")
     assert len(ir.components) == before, "the pass must be idempotent"
+
+
+def test_i2c_pullups_are_added_once_and_only_when_missing():
+    """I2C is open-drain: an open-drain output has no high-side device, so a
+    valid HIGH exists only through an external pull-up to the supply (Floyd,
+    Digital Fundamentals 11ed 15-2/15-3, pdf page 872). 10k is the typical
+    value (PEFI 12.6.9, pdf page 1246).
+
+    Presence is judged on topology, not on labels. The pass this replaced
+    keyed on the rail name, so renaming the rail left the old set behind and
+    added a second one.
+    """
+    from circuitgen.normalize import ensure_i2c_pullups
+    from circuitgen.symbols import load_symbols
+
+    sensor, res = "Sensor_Temperature:TMP100", "Device:R"
+    symbols = load_symbols([sensor, res, "power:+3V3", "power:VCC"])
+
+    def board(pullup_rail=None):
+        ir = CircuitIR("i2c")
+        ir.add(Component("U1", sensor, "TMP100"))
+        ir.add(Component("#PWR01", "power:+3V3", "+3V3"))
+        ir.connect("+3V3", ("#PWR01", "1"))
+        ir.connect("SDA", ("U1", "6"))
+        ir.connect("SCL", ("U1", "1"))
+        if pullup_rail:
+            ir.add(Component("#PWR02", f"power:{pullup_rail}", pullup_rail))
+            ir.connect(pullup_rail, ("#PWR02", "1"))
+            for i, line in enumerate(("SDA", "SCL"), 1):
+                ir.add(Component(f"R{i}", res, "4.7k"))
+                ir.connect(line, (f"R{i}", "1"))
+                ir.connect(pullup_rail, (f"R{i}", "2"))
+        return ir
+
+    bare = board()
+    assert len(ensure_i2c_pullups(bare, symbols, "+3V3")) == 2
+    values = [c.value for c in bare.components.values() if c.lib_id == res]
+    assert values == ["10k", "10k"]
+    assert ensure_i2c_pullups(bare, symbols, "+3V3") == [], "must be idempotent"
+
+    # the model's own choice of value is respected, not doubled
+    already = board("+3V3")
+    assert ensure_i2c_pullups(already, symbols, "+3V3") == []
+
+    # and a pull-up to a DIFFERENT real supply still counts as a pull-up
+    other_rail = board("VCC")
+    assert ensure_i2c_pullups(other_rail, symbols, "+3V3") == []
+
+
+def test_the_checker_and_the_fixer_share_one_definition_of_an_i2c_net():
+    """If they disagreed, ERC would demand a pull-up the fixer never adds."""
+    from circuitgen.erc import is_i2c_net
+    from circuitgen.normalize import ensure_i2c_pullups
+    from circuitgen.symbols import load_symbols
+
+    sensor = "Sensor_Temperature:TMP100"
+    symbols = load_symbols([sensor, "Device:R", "power:+3V3"])
+    ir = CircuitIR("i2c")
+    ir.add(Component("U1", sensor, "TMP100"))
+    ir.add(Component("#PWR01", "power:+3V3", "+3V3"))
+    ir.connect("+3V3", ("#PWR01", "1"))
+    ir.connect("BUS_A", ("U1", "6"))          # SDA pin, non-obvious net name
+    ir.connect("UNRELATED", ("U1", "3"))      # ADD1, not a bus line
+
+    buses = {n.name for n in ir.nets if is_i2c_net(ir, symbols, n)}
+    assert buses == {"BUS_A"}
+    ensure_i2c_pullups(ir, symbols, "+3V3")
+    pulled = {
+        n.name for n in ir.nets
+        for r, _p in n.nodes
+        if ir.components.get(r) and ir.components[r].lib_id == "Device:R"
+    }
+    assert "BUS_A" in pulled and "UNRELATED" not in pulled
