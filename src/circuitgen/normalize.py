@@ -20,6 +20,43 @@ PWR_FLAG_LIB_ID = "power:PWR_FLAG"
 _CS_NET_RE = re.compile(r"(^|_)(CS|SS|NSS|CSN)(_|$|\d)", re.IGNORECASE)
 
 
+
+def move_pin(ir: CircuitIR, ref: str, pin: str, net_name: str) -> None:
+    """Put a pin on `net_name`, removing it from wherever it was.
+
+    Four byte-equivalent copies of this lived inside individual device rules.
+    """
+    for net in ir.nets:
+        net.nodes = [node for node in net.nodes if node != (ref, pin)]
+    ir.connect(net_name, (ref, pin))
+    ir.nc_pins = [node for node in ir.nc_pins if node != (ref, pin)]
+
+
+class RefAllocator:
+    """Hands out unused reference designators and remembers what it gave.
+
+    Six copies of this existed in three variants. Two of them rescanned
+    ir.components on every call, so allocating twice before the first component
+    was added returned the SAME ref — the caller then silently overwrote its
+    own part. Allocating from a remembered counter cannot do that.
+    """
+
+    def __init__(self, ir: CircuitIR):
+        self._ir = ir
+        self._next: dict[str, int] = {}
+
+    def take(self, prefix: str) -> str:
+        if prefix not in self._next:
+            used = [
+                int(m.group(1)) for r in self._ir.components
+                if (m := re.fullmatch(prefix + r"(\d+)", r))
+            ]
+            self._next[prefix] = max(used, default=0) + 1
+        ref = f"{prefix}{self._next[prefix]}"
+        self._next[prefix] += 1
+        return ref
+
+
 def normalize_common_symbol_aliases(ir: CircuitIR) -> list[str]:
     """Replace vendor-library aliases with loadable KiCad primitives.
 
@@ -996,11 +1033,6 @@ def ensure_drv8311h_operating_network(
         counters[prefix] += 1
         return ref
 
-    def move(ref: str, pin: str, net_name: str) -> None:
-        for net in ir.nets:
-            net.nodes = [node for node in net.nodes if node != (ref, pin)]
-        ir.connect(net_name, (ref, pin))
-        ir.nc_pins = [node for node in ir.nc_pins if node != (ref, pin)]
 
     drivers = [(r, c) for r, c in ir.components.items() if "DRV8311H" in c.lib_id.upper()]
     for channel, (ref, comp) in enumerate(sorted(drivers), 1):
@@ -1017,14 +1049,14 @@ def ensure_drv8311h_operating_network(
         # and held low; GAIN/SLEW use documented ground settings.
         for name in ("INLA", "INLB", "INLC", "GAIN", "SLEW"):
             if name in pins:
-                move(ref, pins[name], "GND")
+                move_pin(ir, ref, pins[name], "GND")
         if "MODE" in pins:
             for net in ir.nets:
                 net.nodes = [node for node in net.nodes if node != (ref, pins["MODE"])]
             if (ref, pins["MODE"]) not in ir.nc_pins:
                 ir.nc_pins.append((ref, pins["MODE"]))
         if "SLEEP" in pins:
-            move(ref, pins["SLEEP"], logic_rail)
+            move_pin(ir, ref, pins["SLEEP"], logic_rail)
 
         def add_part(lib_id: str, value: str, a: str, b: str, prefix: str) -> str:
             part_ref = next_ref(prefix)
@@ -1035,21 +1067,21 @@ def ensure_drv8311h_operating_network(
 
         if "CP" in pins:
             cp_net = f"M{channel}_CP"
-            move(ref, pins["CP"], cp_net)
+            move_pin(ir, ref, pins["CP"], cp_net)
             c = add_part("Device:C", "100nF", cp_net, vm_net, "C")
             notes.append(f"added {c} 100nF CP-to-VM for {ref}")
         if "CSAREF" in pins:
             csa_net = f"M{channel}_CSAREF"
-            move(ref, pins["CSAREF"], csa_net)
+            move_pin(ir, ref, pins["CSAREF"], csa_net)
             c = add_part("Device:C", "100nF", csa_net, "GND", "C")
             notes.append(f"added {c} 100nF CSAREF bypass for {ref}")
         if "AVDD" in pins:
             avdd_net = f"M{channel}_AVDD"
-            move(ref, pins["AVDD"], avdd_net)
+            move_pin(ir, ref, pins["AVDD"], avdd_net)
             c = add_part("Device:C", "1uF", avdd_net, "GND", "C")
             if "FAULT" in pins:
                 fault_net = f"M{channel}_FAULT"
-                move(ref, pins["FAULT"], fault_net)
+                move_pin(ir, ref, pins["FAULT"], fault_net)
                 r = add_part("Device:R", "5.1k", avdd_net, fault_net, "R")
                 notes.append(f"added {r} nFAULT pull-up for {ref}")
 
@@ -1058,7 +1090,7 @@ def ensure_drv8311h_operating_network(
         for index, out_name in enumerate(("OUTA", "OUTB", "OUTC"), 1):
             if out_name in pins:
                 net_name = f"M{channel}_{out_name}"
-                move(ref, pins[out_name], net_name)
+                move_pin(ir, ref, pins[out_name], net_name)
                 ir.connect(net_name, (jref, str(index)))
         notes.append(f"added {jref} three-phase output connector for {ref}")
 
@@ -1150,11 +1182,6 @@ def apply_stm32g474ret6_foc_pinmap(
         return notes
     mcu_pins = {p.name.upper(): p.number for p in mcu_sym.pins}
 
-    def move(ref: str, pin: str, net_name: str) -> None:
-        for net in ir.nets:
-            net.nodes = [node for node in net.nodes if node != (ref, pin)]
-        ir.connect(net_name, (ref, pin))
-        ir.nc_pins = [node for node in ir.nc_pins if node != (ref, pin)]
 
     def next_ref(prefix: str) -> str:
         nums = [int(m.group(1)) for r in ir.components if (m := re.fullmatch(prefix + r"(\d+)", r))]
@@ -1187,8 +1214,8 @@ def apply_stm32g474ret6_foc_pinmap(
             net_name = f"PWM_{phase}{channel}"
             gpio = pwm_gpio[pwm_index]
             pwm_index += 1
-            move(ref, dpins[input_name], net_name)
-            move(mcu_ref, mcu_pins[gpio], net_name)
+            move_pin(ir, ref, dpins[input_name], net_name)
+            move_pin(ir, mcu_ref, mcu_pins[gpio], net_name)
             notes.append(f"{net_name}: {mcu_ref}.{gpio} -> {ref}.{input_name}")
 
         for sense_name in ("SOA", "SOB", "SOC"):
@@ -1198,8 +1225,8 @@ def apply_stm32g474ret6_foc_pinmap(
             adc_index += 1
             raw = f"M{channel}_{sense_name}_RAW"
             filtered = f"M{channel}_{sense_name}_ADC"
-            move(ref, dpins[sense_name], raw)
-            move(mcu_ref, mcu_pins[gpio], filtered)
+            move_pin(ir, ref, dpins[sense_name], raw)
+            move_pin(ir, mcu_ref, mcu_pins[gpio], filtered)
             existing_r = next(
                 (
                     r for r, c in ir.components.items()
@@ -1224,7 +1251,7 @@ def apply_stm32g474ret6_foc_pinmap(
 
     # SPI1 AF5: PA5=SCK, PA6=MISO, PA7=MOSI.
     for gpio, net_name in (("PA5", "SPI_SCK"), ("PA6", "SPI_MISO"), ("PA7", "SPI_MOSI")):
-        move(mcu_ref, mcu_pins[gpio], net_name)
+        move_pin(ir, mcu_ref, mcu_pins[gpio], net_name)
     encoders = sorted(
         (r for r, c in ir.components.items() if c.group.upper().startswith("ENC")),
         key=lambda r: int(re.search(r"(\d+)$", r).group(1)) if re.search(r"(\d+)$", r) else r,
@@ -1242,16 +1269,16 @@ def apply_stm32g474ret6_foc_pinmap(
         clk_pin = by_name.get("CLK") or by_name.get("SCK")
         mosi_pin = by_name.get("MOSI")
         if cs_pin:
-            move(ref, cs_pin, f"ENC{channel}_CS")
-            move(mcu_ref, mcu_pins[gpio], f"ENC{channel}_CS")
+            move_pin(ir, ref, cs_pin, f"ENC{channel}_CS")
+            move_pin(ir, mcu_ref, mcu_pins[gpio], f"ENC{channel}_CS")
         if clk_pin:
-            move(ref, clk_pin, "SPI_SCK")
+            move_pin(ir, ref, clk_pin, "SPI_SCK")
         if mosi_pin:
-            move(ref, mosi_pin, "SPI_MOSI")
+            move_pin(ir, ref, mosi_pin, "SPI_MOSI")
 
     # FDCAN2 AF9 avoids the HRTIM output bank.
-    move(mcu_ref, mcu_pins["PB5"], "CAN_RX")
-    move(mcu_ref, mcu_pins["PB6"], "CAN_TX")
+    move_pin(ir, mcu_ref, mcu_pins["PB5"], "CAN_RX")
+    move_pin(ir, mcu_ref, mcu_pins["PB6"], "CAN_TX")
     ir.nets = [n for n in ir.nets if n.nodes]
     return notes
 
@@ -1290,24 +1317,28 @@ def ensure_stm32g4_power_network(
     def net_for(ref: str, pin: str) -> str | None:
         return next((n.name for n in ir.nets if (ref, pin) in n.nodes), None)
 
-    def move(ref: str, pin: str, target: str) -> None:
-        for net in ir.nets:
-            net.nodes = [node for node in net.nodes if node != (ref, pin)]
-        ir.connect(target, (ref, pin))
-        if (ref, pin) in ir.nc_pins:
-            ir.nc_pins.remove((ref, pin))
 
-    def cap_count(group: str, rail: str, value: str) -> int:
+    def cap_count(rail: str, value: str) -> int:
+        """Capacitors of `value` already bridging `rail` and GND.
+
+        Counted as an ELECTRICAL fact. The previous version also required
+        comp.group to match the MCU's block, which is a label: block
+        decomposition puts the model's own decoupling into whatever block it
+        was drawn in, so the check missed it and this pass added a full second
+        set. Reproduced on identical circuits differing only in that label —
+        caps in group "MCU" led to 1 added capacitor, the same caps in group
+        "RESET" led to 5.
+        """
         count = 0
         for ref, comp in ir.components.items():
-            if comp.group != group or comp.lib_id != "Device:C" or comp.value.upper() != value.upper():
+            if comp.lib_id != "Device:C" or comp.value.upper() != value.upper():
                 continue
             touched = {n.name for n in ir.nets if any(r == ref for r, _ in n.nodes)}
             if {rail, "GND"} <= touched:
                 count += 1
         return count
 
-    def add_cap(group: str, rail: str, value: str) -> None:
+    def add_cap(rail: str, value: str) -> None:
         nonlocal c_counter
         ref = f"C{c_counter}"
         c_counter += 1
@@ -1325,16 +1356,16 @@ def ensure_stm32g4_power_network(
         group = comp.group or "MCU"
         vdd_pins = [p for p in sym.pins if p.name.upper() == "VDD"]
         for p in vdd_pins:
-            move(ref, p.number, logic_rail)
+            move_pin(ir, ref, p.number, logic_rail)
         for p in sym.pins:
             if p.name.upper() in {"VSS", "VSSA"}:
-                move(ref, p.number, "GND")
+                move_pin(ir, ref, p.number, "GND")
 
         # VDDA and VREF+ join the digital rail (3.11.1: VDDA "should
         # preferably be connected to VDD when these peripherals are not used")
         analog = [p for p in sym.pins if p.name.upper() in {"VDDA", "VREF+"}]
         for p in analog:
-            move(ref, p.number, logic_rail)
+            move_pin(ir, ref, p.number, logic_rail)
 
         # Figure 16 specifies a capacitor per supply PAIR, so the requirement
         # is a count per value, not "one somewhere on the rail": n x 100 nF for
@@ -1351,8 +1382,8 @@ def ensure_stm32g4_power_network(
                 required["100nF"] = required.get("100nF", 0) + 1
                 required["1uF"] = required.get("1uF", 0) + 1
         for value, want in sorted(required.items()):
-            for _ in range(max(0, want - cap_count(group, logic_rail, value))):
-                add_cap(group, logic_rail, value)
+            for _ in range(max(0, want - cap_count(logic_rail, value))):
+                add_cap(logic_rail, value)
 
         # The user's question "do I need an external crystal?" has a datasheet
         # answer, and it belongs in the record rather than in a silently added
@@ -1389,11 +1420,6 @@ def ensure_stm32g4_system_support(
         counters[prefix] += 1
         return ref
 
-    def move(ref: str, pin: str, target: str) -> None:
-        for net in ir.nets:
-            net.nodes = [node for node in net.nodes if node != (ref, pin)]
-        ir.connect(target, (ref, pin))
-        ir.nc_pins = [node for node in ir.nc_pins if node != (ref, pin)]
 
     def move_with_companions(ref: str, pin: str, target: str) -> None:
         """Rename the pin's whole net onto the canonical name.
@@ -1404,7 +1430,7 @@ def ensure_stm32g4_system_support(
         the UART pattern's reset button stranded on MCU_NRST)."""
         old = next((n for n in ir.nets if (ref, pin) in n.nodes), None)
         if old is None or old.name == target:
-            move(ref, pin, target)
+            move_pin(ir, ref, pin, target)
             return
         nodes = list(old.nodes)
         old.nodes = []

@@ -13,7 +13,8 @@ from circuitgen.kicad_cli import KICAD_CLI, export_netlist, run_erc
 from circuitgen.netlist import compare_connectivity
 from circuitgen.patterns import (
     PATTERN_DIR,
-    bind_pattern,
+    PatternBinding,
+    bind_role_pins,
     instantiate_pattern,
     load_patterns,
     match_patterns,
@@ -71,6 +72,28 @@ def test_match_patterns_by_keyword():
     assert [p["id"] for p in match_patterns(
         "MCU에 I2C 온도센서를 연결해줘. 풀업과 디커플링 포함", patterns
     )] == ["i2c_temperature_sensor"]
+
+
+def bind_pattern(pattern, role_symbols):
+    """Test fixture: bind every role at once.
+
+    Production binds one role at a time (agent._pattern_synthesis calls
+    bind_role_pins per role while it searches for a symbol that fits), so this
+    all-at-once wrapper lived in patterns.py without a caller. It is a test
+    convenience, so it lives with the tests.
+    """
+    binding, errors = PatternBinding(), []
+    for role in pattern["roles"]:
+        if role not in role_symbols:
+            errors.append(f"role {role}: no symbol supplied")
+            continue
+        lib_id, sym = role_symbols[role]
+        pins = bind_role_pins(pattern, role, sym)
+        if pins is None:
+            errors.append(f"role {role}: pins unresolved on {lib_id}")
+            continue
+        binding.lib_ids[role], binding.pins[role] = lib_id, pins
+    return (None, errors) if errors else (binding, [])
 
 
 @oracle

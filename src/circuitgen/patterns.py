@@ -182,26 +182,6 @@ def bind_role_pins(pattern: dict, role: str, sym: SymbolDef) -> dict[str, str] |
     return pin_map
 
 
-def bind_pattern(
-    pattern: dict, role_symbols: dict[str, tuple[str, SymbolDef]]
-) -> tuple[PatternBinding | None, list[str]]:
-    """Resolve every role onto the given symbols; all-or-nothing."""
-    binding = PatternBinding()
-    errors: list[str] = []
-    for role in pattern["roles"]:
-        if role not in role_symbols:
-            errors.append(f"role {role}: no symbol supplied")
-            continue
-        lib_id, sym = role_symbols[role]
-        pin_map = bind_role_pins(pattern, role, sym)
-        if pin_map is None:
-            errors.append(f"role {role}: pins unresolved on {lib_id}")
-            continue
-        binding.lib_ids[role] = lib_id
-        binding.pins[role] = pin_map
-    return (None, errors) if errors else (binding, [])
-
-
 def _net_groups(pattern: dict) -> list[list]:
     """Union-find the topology edges into net groups of parsed endpoints."""
     parent: dict[str, str] = {}

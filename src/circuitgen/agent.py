@@ -1649,72 +1649,7 @@ class Agent:
         # phrase themselves, not what they connected.
         synth_nets = connection_set(ir)
         synth_nc = nc_set(ir)
-        res.log.extend(normalize_common_symbol_aliases(ir))
-        res.log.extend(enforce_requested_stm32_variant(ir, prompt, self._resolve_symbols(ir)))
-        res.log.extend(sanitize_known_device_nets(ir, self._resolve_symbols(ir)))
-        res.log.extend(merge_dangling_interface_nets(ir))
-        # The parts that ended up in the circuit decide which rails it needs —
-        # a pattern supplies its own MCU, so the extracted requirement may
-        # list no logic rail at all, and every supply pass below is keyed on
-        # one existing.
-        res.log.extend(ensure_device_supply_rails(spec, ir))
-        dc_rail = "+12V" if any(r.get("name") == "+12V" for r in spec.get("power", {}).get("rails", [])) else "+5V"
-        res.log.extend(ensure_dc_power_entry(ir, dc_rail))
-        res.log.extend(self.resolve_pin_names(ir))
-        res.log.extend(self.attach_power_symbols(ir, spec))
-        res.log.extend(self._ensure_pullups(ir, spec))
-        res.log.extend(self._fix_footprints(ir))
-
-        # A missing rail net usually means the model mis-named the supply
-        # net (VCC vs +3V3). Reconcile DETERMINISTICALLY by alias rename —
-        # an LLM repair here once fabricated replacement components over
-        # the whole merged board (it saw an empty slice and empty
-        # candidates and invented lib_ids), so no model call is allowed.
-        res.log.extend(_reconcile_rails(ir, spec))
-        res.log.extend(self.attach_power_symbols(ir, spec))
-        from .normalize import (
-            add_shared_spi_miso_series_resistors,
-            apply_stm32g474ret6_foc_pinmap,
-            complete_generic_power_pins,
-            complete_known_device_pins,
-            ensure_drv8311_vm_decoupling,
-            ensure_drv8311h_operating_network,
-            ensure_canfd_bus_protection,
-            ensure_stm32g4_power_network,
-            ensure_stm32g4_system_support,
-            mark_documented_no_connects,
-            ensure_relay_flyback,
-            unify_stacked_pins,
-        )
-
-        symbols = self._resolve_symbols(ir)
-        rails = [r["name"] for r in spec.get("power", {}).get("rails", [])]
-        res.log.extend(complete_known_device_pins(ir, symbols, rails))
-        # the residual of that device table: supply pins on parts nobody wrote
-        # a rule for. A 7B left 28 of a 132-pin MCU's supply pins dangling.
-        res.log.extend(complete_generic_power_pins(ir, symbols, rails))
-        if "+3V3" in rails:
-            res.log.extend(ensure_stm32g4_power_network(ir, symbols, "+3V3"))
-            res.log.extend(ensure_stm32g4_system_support(ir, symbols, "+3V3"))
-        res.log.extend(add_shared_spi_miso_series_resistors(ir, symbols))
-        res.log.extend(ensure_drv8311_vm_decoupling(ir, symbols))
-        res.log.extend(ensure_drv8311h_operating_network(ir, symbols, "+3V3"))
-        # Re-resolve because the operating pass introduced R/C/connectors;
-        # the FOC map itself only needs the MCU/driver/encoder definitions.
-        # The FOC pin map gates itself on the presence of motor hardware
-        # (see normalize.apply_stm32g474ret6_foc_pinmap); a prompt-keyword
-        # gate here was a second, weaker copy of that decision and fired on
-        # unrelated boards because "motor control" is a substring of
-        # "motor controller".
-        res.log.extend(apply_stm32g474ret6_foc_pinmap(ir, self._resolve_symbols(ir)))
-        res.log.extend(ensure_canfd_bus_protection(ir))
-        res.log.extend(mark_documented_no_connects(ir, self._resolve_symbols(ir)))
-        res.log.extend(ensure_relay_flyback(ir, self._resolve_symbols(ir)))
-        res.log.extend(self.resolve_pin_names(ir))
-        res.log.extend(unify_stacked_pins(ir, self._resolve_symbols(ir)))
-        res.log.extend(self._ensure_pullups(ir, spec))
-        res.log.extend(self._fix_footprints(ir))
-
+        res.log.extend(self._normalize(ir, spec, prompt))
         res.stage = "pipeline"
         pr = self._generate(ir, name)
         res.pipeline = pr
@@ -1797,17 +1732,7 @@ class Agent:
                 break
             # patches may use pin names, introduce new lib_ids, invalid
             # footprints, or rail nets that still need their supply symbol
-            res.log.extend(normalize_common_symbol_aliases(ir))
-            res.log.extend(enforce_requested_stm32_variant(ir, prompt, self._resolve_symbols(ir)))
-            res.log.extend(sanitize_known_device_nets(ir, self._resolve_symbols(ir)))
-            res.log.extend(ensure_dc_power_entry(ir, dc_rail))
-            res.log.extend(self.resolve_pin_names(ir))
-            res.log.extend(self.attach_power_symbols(ir, spec))
-            res.log.extend(self._ensure_pullups(ir, spec))
-            res.log.extend(mark_documented_no_connects(ir, self._resolve_symbols(ir)))
-            res.log.extend(ensure_relay_flyback(ir, self._resolve_symbols(ir)))
-            res.log.extend(unify_stacked_pins(ir, self._resolve_symbols(ir)))
-            res.log.extend(self._fix_footprints(ir))
+            res.log.extend(self._normalize(ir, spec, prompt))
             pr = self._generate(ir, name)
             res.pipeline = pr
 
@@ -1861,6 +1786,79 @@ class Agent:
         rec.event("finished", ok=res.ok, stage=res.stage)
         rec.save()
         return res
+
+    def _normalize(self, ir: CircuitIR, spec: dict, prompt: str) -> list[str]:
+        """The deterministic normalization sequence. ONE of them.
+
+        There used to be two: thirty-one passes after synthesis and twelve
+        after each repair round, so a repaired circuit was normalized by a
+        different rule set than a freshly synthesized one — nineteen passes
+        simply did not run on repaired boards. Every pass here is therefore
+        required to be idempotent, which is a property worth having anyway:
+        the repair loop calls this again on its own output.
+        """
+        from .normalize import (
+            add_shared_spi_miso_series_resistors,
+            apply_stm32g474ret6_foc_pinmap,
+            complete_generic_power_pins,
+            complete_known_device_pins,
+            ensure_canfd_bus_protection,
+            ensure_dc_power_entry,
+            ensure_drv8311_vm_decoupling,
+            ensure_drv8311h_operating_network,
+            ensure_relay_flyback,
+            ensure_stm32g4_power_network,
+            ensure_stm32g4_system_support,
+            enforce_requested_stm32_variant,
+            mark_documented_no_connects,
+            merge_dangling_interface_nets,
+            normalize_common_symbol_aliases,
+            sanitize_known_device_nets,
+            unify_stacked_pins,
+        )
+
+        notes: list[str] = []
+        syms = lambda: self._resolve_symbols(ir)  # noqa: E731 — re-resolved after each add
+        rails = [r["name"] for r in spec.get("power", {}).get("rails", [])]
+        dc_rail = "+12V" if "+12V" in rails else "+5V"
+
+        notes += normalize_common_symbol_aliases(ir)
+        notes += enforce_requested_stm32_variant(ir, prompt, syms())
+        notes += sanitize_known_device_nets(ir, syms())
+        notes += merge_dangling_interface_nets(ir)
+        # the parts that ended up in the circuit decide which rails it needs:
+        # a pattern supplies its own MCU, so the requirement may list no logic
+        # rail at all and every supply pass below is keyed on one existing
+        notes += ensure_device_supply_rails(spec, ir)
+        notes += ensure_dc_power_entry(ir, dc_rail)
+        notes += self.resolve_pin_names(ir)
+        notes += self.attach_power_symbols(ir, spec)
+        # a missing rail net usually means a mis-named supply (VCC vs +3V3);
+        # reconcile by deterministic alias rename, never by a model call
+        notes += _reconcile_rails(ir, spec)
+        notes += self.attach_power_symbols(ir, spec)
+
+        rails = [r["name"] for r in spec.get("power", {}).get("rails", [])]
+        notes += complete_known_device_pins(ir, syms(), rails)
+        # the residual of that device table: supply pins on parts nobody wrote
+        # a rule for. A 7B left 28 of a 132-pin MCU's supply pins dangling.
+        notes += complete_generic_power_pins(ir, syms(), rails)
+        if "+3V3" in rails:
+            notes += ensure_stm32g4_power_network(ir, syms(), "+3V3")
+            notes += ensure_stm32g4_system_support(ir, syms(), "+3V3")
+        notes += add_shared_spi_miso_series_resistors(ir, syms())
+        notes += ensure_drv8311_vm_decoupling(ir, syms())
+        notes += ensure_drv8311h_operating_network(ir, syms(), "+3V3")
+        # the FOC map gates itself on motor hardware being present
+        notes += apply_stm32g474ret6_foc_pinmap(ir, syms())
+        notes += ensure_canfd_bus_protection(ir)
+        notes += mark_documented_no_connects(ir, syms())
+        notes += ensure_relay_flyback(ir, syms())
+        notes += self.resolve_pin_names(ir)
+        notes += unify_stacked_pins(ir, syms())
+        notes += self._ensure_pullups(ir, spec)
+        notes += self._fix_footprints(ir)
+        return notes
 
     def _ensure_conceptual_devices(
         self,

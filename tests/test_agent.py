@@ -786,3 +786,37 @@ def test_mains_acdc_converters_are_outside_the_declared_scope():
     ]
     kept = Agent._filter_incompatible_candidates(need, hits)
     assert [h["lib_id"] for h in kept] == ["Regulator_Linear:AMS1117-3.3"]
+
+
+def test_the_normalization_sequence_is_one_sequence_and_is_idempotent(agent_env):
+    """There used to be two: 31 passes after synthesis and 12 after each repair
+    round, so a repaired board was normalized by a different rule set — 19
+    passes never ran on repaired circuits. Merging them is only safe if every
+    pass is idempotent, so that is asserted here rather than assumed.
+    """
+    from collections import Counter
+
+    parts, knowledge, tmp = agent_env
+    agent = Agent(MockLLM(), parts, knowledge, tmp / "idem")
+    lid = "MCU_ST_STM32G4:STM32G474RETx"
+    spec = {
+        "power": {"rails": [{"name": "+3V3", "voltage": "3.3V"},
+                            {"name": "GND", "voltage": "0V"}]},
+        "parts_needed": [{"role": "mcu", "search_query": "STM32G474RET6"}],
+    }
+    ir = CircuitIR("idem")
+    ir.add(Component("U1", lid, "STM32G474RET6", group="MCU"))
+    ir.connect("+3V3", ("U1", "16"))
+    ir.connect("GND", ("U1", "15"))
+
+    def snapshot():
+        return (
+            len(ir.components), len(ir.nets), len(ir.nc_pins),
+            dict(Counter(c.value for c in ir.components.values() if c.lib_id == "Device:C")),
+        )
+
+    agent._normalize(ir, spec, "STM32G474RET6 최소 회로")
+    first = snapshot()
+    agent._normalize(ir, spec, "STM32G474RET6 최소 회로")
+    agent._normalize(ir, spec, "STM32G474RET6 최소 회로")
+    assert snapshot() == first, "running the sequence again must change nothing"
