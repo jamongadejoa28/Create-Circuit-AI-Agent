@@ -1,10 +1,114 @@
 [
-  {"id":"passive_led","domain":"passive","prompt":"5V 전원에서 스위치로 켜는 LED 회로를 만들어줘. 전류 제한 저항 포함"},
-  {"id":"analog_opamp","domain":"analog","prompt":"단일 전원 비반전 op-amp 증폭 회로를 만들어줘. 입력 바이어스와 피드백 저항 포함","topology":["amplifier_feedback"]},
-  {"id":"power_regulator","domain":"power","prompt":"12V 입력에서 5V를 만드는 레귤레이터 회로를 만들어줘. 입력과 출력 바이패스 포함","topology":["regulator_input_output_bypass"]},
-  {"id":"sensor_i2c","domain":"sensor_bus","prompt":"MCU에 I2C 온도센서를 연결해줘. 풀업과 디커플링 포함"},
-  {"id":"communication_can","domain":"communication","prompt":"MCU용 CAN 인터페이스를 만들어줘. 트랜시버, 종단 선택, TVS와 커넥터 포함"},
-  {"id":"driver_relay","domain":"driver","prompt":"3.3V GPIO로 12V 릴레이를 구동하는 회로를 만들어줘. 트랜지스터와 플라이백 다이오드 포함"},
-  {"id":"debug_uart","domain":"digital_control","prompt":"범용 MCU 최소 회로와 UART 디버그 헤더, 리셋, 디커플링을 포함해줘"},
-  {"id":"unknown_module","domain":"catalog_fallback","prompt":"카탈로그에 없는 MY_CUSTOM_RADIO 모듈을 MCU에 연결해줘. 전원, GND, TX, RX 핀을 개념 심볼로 표시"}
+  {
+    "id": "passive_led",
+    "domain": "passive",
+    "selected_parts": [
+      "SW_Push"
+    ],
+    "unknown_to_user": [
+      "current-limiting resistor value",
+      "where the resistor goes"
+    ],
+    "prompt": "5V 전원으로 동작하는 상태 표시 LED 회로가 필요합니다. 부품은 Device:LED(녹색, 순방향 전압 2.0V, 정격 20mA)와 Switch:SW_Push 택트 스위치로 이미 선정했습니다. 전류 제한 저항이 필요하다는 것까지는 알아냈는데 몇 옴을 써야 하는지, 회로 어느 위치에 넣어야 하는지는 모릅니다. 스위치를 누르면 LED가 켜지도록 PCB 발주용 회로도를 작성해주세요.",
+    "topology": []
+  },
+  {
+    "id": "analog_opamp",
+    "domain": "analog",
+    "selected_parts": [
+      "MCP6001"
+    ],
+    "unknown_to_user": [
+      "feedback resistor ratio",
+      "single-supply input bias network"
+    ],
+    "prompt": "센서 출력을 증폭하는 비반전 증폭 회로가 필요합니다. 연산증폭기는 MCP6001로 선정했고 전원은 3.3V 단일 전원만 있습니다. 센서 출력 0~0.3V를 0~3.0V 범위로 약 10배 증폭하려고 합니다. 피드백 저항을 몇 옴씩 써야 10배가 되는지, 단일 전원에서 입력 바이어스를 어떻게 잡아야 하는지 모릅니다. 회로도로 설계해주세요.",
+    "topology": [
+      "amplifier_feedback"
+    ]
+  },
+  {
+    "id": "power_regulator",
+    "domain": "power",
+    "selected_parts": [
+      "LM2937"
+    ],
+    "unknown_to_user": [
+      "input/output capacitor values"
+    ],
+    "prompt": "12V 어댑터를 입력받아 5V를 만드는 전원부가 필요합니다. 레귤레이터는 LM2937로 선정했습니다. 데이터시트에 입력과 출력에 커패시터가 필요하다고 적혀 있는데 각각 몇 uF를 써야 하는지, 어디에 붙여야 하는지 모릅니다. 5V에서 최대 500mA를 쓸 예정입니다. 회로도를 작성해주세요.",
+    "topology": [
+      "regulator_input_output_bypass"
+    ]
+  },
+  {
+    "id": "sensor_i2c",
+    "domain": "sensor_bus",
+    "selected_parts": [
+      "STM32G474RET6",
+      "TMP100"
+    ],
+    "unknown_to_user": [
+      "pull-up resistor value and placement",
+      "decoupling capacitor value"
+    ],
+    "prompt": "STM32G474RET6에 온도센서 TMP100을 I2C로 연결하려고 합니다. 두 부품 모두 3.3V로 동작합니다. I2C 버스에는 풀업 저항이 필요하다고 들었는데 몇 k옴을 어느 선에 붙여야 하는지 모르고, 센서 바로 옆에 넣는 디커플링 커패시터도 용량을 모릅니다. PCB 발주용 회로도를 작성해주세요.",
+    "topology": []
+  },
+  {
+    "id": "digital_control",
+    "domain": "digital_control",
+    "selected_parts": [
+      "STM32G474RET6"
+    ],
+    "unknown_to_user": [
+      "how many decoupling capacitors and what value",
+      "whether an external crystal is needed",
+      "reset and BOOT0 termination"
+    ],
+    "prompt": "STM32G474RET6 최소 동작 회로를 PCB 발주 가능한 수준으로 작성해주세요. 전원은 3.3V 단일 전원이고 펌웨어는 SWD로 올릴 예정입니다. 전원핀마다 디커플링 커패시터가 필요하다고 들었는데 몇 개를 몇 uF로 넣어야 하는지 모릅니다. 외부 크리스탈을 꼭 달아야 하는지도 판단이 안 되고, 리셋 회로와 BOOT0 핀을 어떻게 처리해야 하는지도 모릅니다.",
+    "topology": []
+  },
+  {
+    "id": "communication_can",
+    "domain": "communication",
+    "selected_parts": [
+      "STM32G474RET6",
+      "TJA1051T"
+    ],
+    "unknown_to_user": [
+      "bus termination value and placement",
+      "transceiver S pin handling"
+    ],
+    "prompt": "STM32G474RET6와 CAN 트랜시버 TJA1051T로 CAN 노드를 만들려고 합니다. 트랜시버는 5V, MCU는 3.3V로 동작합니다. CAN 버스에 종단 저항이 필요하다고 하는데 몇 옴을 어디에 넣어야 하는지 모르고, TJA1051T의 S핀을 어떻게 처리해야 정상 모드로 동작하는지도 모릅니다. 외부 배선용 커넥터까지 포함해서 회로도를 작성해주세요.",
+    "topology": []
+  },
+  {
+    "id": "driver_relay",
+    "domain": "driver",
+    "selected_parts": [
+      "G5V-1",
+      "BC337",
+      "1N4148"
+    ],
+    "unknown_to_user": [
+      "base resistor value",
+      "flyback diode orientation and placement"
+    ],
+    "prompt": "MCU의 3.3V GPIO 하나로 12V 릴레이 Relay:G5V-1을 켜고 꺼야 합니다. 스위칭 소자는 BC337, 다이오드는 1N4148로 선정했습니다. 베이스 저항을 몇 옴으로 해야 릴레이가 확실히 붙는지 모르고, 다이오드를 어느 방향으로 어디에 넣어야 하는지도 모릅니다. 회로도를 작성해주세요.",
+    "topology": []
+  },
+  {
+    "id": "unknown_module",
+    "domain": "catalog_fallback",
+    "selected_parts": [
+      "STM32G474RET6"
+    ],
+    "unknown_to_user": [
+      "module supply decoupling",
+      "how to represent an off-catalog part"
+    ],
+    "prompt": "KiCad 라이브러리에 없는 커스텀 무선 모듈 MY_CUSTOM_RADIO를 STM32G474RET6에 연결하려고 합니다. 모듈은 3.3V로 동작하고 UART TX/RX 두 선으로 통신합니다. 모듈은 라이브러리에 없으니 개념 심볼로 표시해주시고, MCU와의 UART 연결과 모듈 전원부 디커플링을 포함해 회로도를 작성해주세요.",
+    "topology": []
+  }
 ]

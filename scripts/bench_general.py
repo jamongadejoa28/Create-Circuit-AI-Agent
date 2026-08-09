@@ -21,6 +21,7 @@ from circuitgen.agent import Agent
 from circuitgen.knowledge import KnowledgeIndex
 from circuitgen.llm_client import LlamaClient
 from circuitgen.partindex import PartIndex
+from circuitgen.compliance import part_present
 from circuitgen.evalmetrics import measure_run, summarize
 from circuitgen.topology import analyze_topology
 
@@ -80,6 +81,18 @@ def main() -> int:
             contracts = _contract_results(required, topology)
             symbols = agent._resolve_symbols(res.ir) if res.ir else {}
             metrics = measure_run(res.spec or {}, res.ir, symbols, res.auto_connections)
+            # The product assumption is that the user arrives having ALREADY
+            # chosen the parts and needs the design. So the first thing to
+            # measure is whether the parts they named survive into the board.
+            # Checked against the case's own list, independently of the
+            # prompt regex that compliance uses.
+            selected = case.get("selected_parts", [])
+            in_board = [
+                name for name in selected
+                if res.ir and any(
+                    part_present(name, c.lib_id, c.value) for c in res.ir.components.values()
+                )
+            ]
             pr = res.pipeline
             row = {
                 "label": args.label,
@@ -113,6 +126,10 @@ def main() -> int:
                 "contracts": contracts,
                 "contract_required": required,
                 "contract_ok": all(contracts.values()),
+                "selected_parts": selected,
+                "selected_parts_in_board": in_board,
+                "selected_parts_missing": [n for n in selected if n not in in_board],
+                "unknown_to_user": case.get("unknown_to_user", []),
                 "compliance_ok": bool(res.compliance and res.compliance.ok),
                 "compliance": res.compliance.as_dict() if res.compliance else None,
                 "seconds": round(time.monotonic() - started, 1),
@@ -125,7 +142,8 @@ def main() -> int:
                 f"erc={row['kicad_violations']} self={row['self_erc_errors']} "
                 f"conn={row['connectivity_ok']} roles={metrics.role_fulfilment} "
                 f"wired={row['wiring'].get('wired_ratio')} vis={row['visual_issues']} "
-                f"auto={metrics.auto_connections}/{metrics.auto_no_connects}nc compliance={row['compliance_ok']}"
+                f"auto={metrics.auto_connections}/{metrics.auto_no_connects}nc "
+                f"parts={len(in_board)}/{len(selected)} compliance={row['compliance_ok']}"
             )
 
     passed = sum(

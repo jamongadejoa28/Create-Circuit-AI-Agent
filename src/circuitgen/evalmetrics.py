@@ -164,6 +164,10 @@ def summarize(rows: list[dict]) -> dict:
             "self_erc_errors": spread([r.get("self_erc_errors") for r in group]),
             "connectivity_ok": sum(1 for r in group if r.get("connectivity_ok")),
             "compliance_ok": sum(1 for r in group if r.get("compliance_ok")),
+            # the parts the USER had already chosen, and whether they survived
+            "selected_parts_missing": sorted(
+                {n for r in group for n in (r.get("selected_parts_missing") or [])}
+            ),
             "role_fulfilment": spread([
                 (r.get("metrics") or {}).get("role_fulfilment") for r in group
             ]),

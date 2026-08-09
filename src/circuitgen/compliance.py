@@ -33,15 +33,17 @@ from .pins import PinType
 
 DEVICE_LIMITS_PATH = Path(__file__).resolve().parents[2] / "data" / "device_limits.json"
 
-# A part number: a short letter prefix, at least two digits, then optional
-# suffix — BME280, SHT30, LM358, RP2040, ESP32-C3, STM32G474RET6.  Five
-# characters minimum, so pin names (PA15), bus indices (I2C1, USART1) and
-# bare numbers (24V, 0805) cannot qualify.  agent._ensure_named_parts uses a
-# stricter regex that misses BME280 entirely; this one is the reference.
+# Shape only: an alphanumeric token, four characters or more, containing at
+# least one letter and one digit. Deliberately loose, because the CATALOG
+# decides what is real (see requested_part_numbers) and shape assumptions are
+# where this went wrong: requiring a letter prefix missed 1N4148, 2N3904 and
+# 74HC00, and requiring two consecutive digits missed G5V-1 — all parts a user
+# routinely selects. A colon is allowed so a library id (Device:LED) works too,
+# since a prepared user may paste one.
 _PART_TOKEN = re.compile(
-    r"(?<![A-Za-z0-9])[A-Za-z]{1,6}[0-9]{2,}(?:[A-Za-z0-9-]*[A-Za-z0-9])?(?![A-Za-z0-9])"
+    r"(?<![A-Za-z0-9:_])[A-Za-z0-9][A-Za-z0-9:_-]{2,}[A-Za-z0-9](?![A-Za-z0-9])"
 )
-_MIN_PART_LEN = 5
+_MIN_PART_LEN = 4
 
 
 
@@ -110,6 +112,15 @@ def requested_part_numbers(prompt: str, parts=None) -> list[str]:
     seen: dict[str, None] = {}
     for token in _PART_TOKEN.findall(prompt or ""):
         if len(token) < _MIN_PART_LEN:
+            continue
+        if ":" in token:
+            # a library id the user pasted; the catalog indexes the symbol name
+            token = token.split(":")[-1]
+            if len(token) < _MIN_PART_LEN:
+                continue
+        elif not (any(c.isalpha() for c in token) and any(c.isdigit() for c in token)):
+            # otherwise a part number needs both letters and digits, or it is
+            # an ordinary word
             continue
         if parts is not None and not any(
             part_present(token, hit["lib_id"]) for hit in parts.search_parts(token, 5)
