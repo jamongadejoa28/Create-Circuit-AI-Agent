@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Run the cross-domain release suite and score functional topology.
+"""Run the cross-domain release suite and MEASURE it, per circuit family.
+
+The direction doc (§6) asks for eight separate measurements per family, not one
+boolean: role/quantity fulfilment, required topology, self+KiCad ERC, netlist
+round-trip, real-wire vs label-fallback ratio, visual QA, unwarranted automatic
+connections, and the variance across repeats. A single ERC-shaped pass/fail
+cannot say WHICH family fails or why, and optimising against it is how special
+cases accumulate.
 
 Usage:
   PYTHONPATH=src .venv/bin/python scripts/bench_general.py --label baseline --seed 100
@@ -14,6 +21,7 @@ from circuitgen.agent import Agent
 from circuitgen.knowledge import KnowledgeIndex
 from circuitgen.llm_client import LlamaClient
 from circuitgen.partindex import PartIndex
+from circuitgen.evalmetrics import measure_run, summarize
 from circuitgen.topology import analyze_topology
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -68,7 +76,11 @@ def main() -> int:
                 "amplifier_total": 0, "amplifier_with_feedback": 0,
                 "regulator_total": 0, "regulator_with_bypass": 0, "details": [],
             }
-            contracts = _contract_results(case.get("topology", []), topology)
+            required = case.get("topology", [])
+            contracts = _contract_results(required, topology)
+            symbols = agent._resolve_symbols(res.ir) if res.ir else {}
+            metrics = measure_run(res.spec or {}, res.ir, symbols, res.log)
+            pr = res.pipeline
             row = {
                 "label": args.label,
                 "id": case["id"],
@@ -76,16 +88,31 @@ def main() -> int:
                 "repeat": repeat,
                 "seed": seed,
                 "stage": res.stage,
-                "pipeline_ok": bool(res.pipeline and res.pipeline.ok),
-                "draft_visible": bool(res.pipeline and res.pipeline.sch_path),
-                "kicad_violations": len(res.pipeline.kicad_erc.violations) if res.pipeline and res.pipeline.kicad_erc else None,
-                "functional_complete": res.stage not in {"functional-completeness", "functional-topology"},
+                "pipeline_ok": bool(pr and pr.ok),
+                "draft_visible": bool(pr and pr.sch_path),
+                # -- direction doc §6: eight measurements, kept separate --
+                # 3. self ERC and KiCad ERC, counted apart
+                "kicad_violations": len(pr.kicad_erc.violations) if pr and pr.kicad_erc else None,
+                "self_erc_errors": (
+                    sum(1 for i in pr.self_erc if i.severity == "error") if pr else None
+                ),
+                "self_erc_warnings": (
+                    sum(1 for i in pr.self_erc if i.severity == "warning") if pr else None
+                ),
+                # 4. netlist round-trip, no longer hidden inside pipeline_ok
+                "connectivity_ok": bool(pr and pr.connectivity_ok),
+                # 5. real wire vs label fallback
+                "wiring": (pr.route_metrics if pr else {}) or {},
+                # 6. visual QA and sheet-boundary violations
+                "visual_issues": len(pr.visual_issues) if pr else None,
+                # 1. requested roles/quantities, and 7. unwarranted auto-connections
+                "metrics": metrics.as_dict(),
+                # 2. required topology — note this list is EMPTY for six of the
+                # eight cases, so contract_ok is vacuously true for them
                 "topology": topology,
                 "contracts": contracts,
+                "contract_required": required,
                 "contract_ok": all(contracts.values()),
-                # ERC-clean boards shipped here with an unpowered MCU and with
-                # VDD above the part's absolute maximum; a score that ignores
-                # this measures drawing, not designing
                 "compliance_ok": bool(res.compliance and res.compliance.ok),
                 "compliance": res.compliance.as_dict() if res.compliance else None,
                 "seconds": round(time.monotonic() - started, 1),
@@ -94,15 +121,27 @@ def main() -> int:
             with results.open("a", encoding="utf-8") as out:
                 out.write(json.dumps(row, ensure_ascii=False) + "\n")
             print(
-                f"{case['id']} r{repeat}: stage={res.stage} pipeline={row['pipeline_ok']} "
-                f"compliance={row['compliance_ok']} contracts={contracts}"
+                f"{case['id']:18} r{repeat}: stage={res.stage:<22} "
+                f"erc={row['kicad_violations']} self={row['self_erc_errors']} "
+                f"conn={row['connectivity_ok']} roles={metrics.role_fulfilment} "
+                f"wired={row['wiring'].get('wired_ratio')} vis={row['visual_issues']} "
+                f"auto={metrics.auto_connections} compliance={row['compliance_ok']}"
             )
 
     passed = sum(
-        r["pipeline_ok"] and r["functional_complete"] and r["contract_ok"] and r["compliance_ok"]
-        for r in rows
+        r["pipeline_ok"] and r["contract_ok"] and r["compliance_ok"] for r in rows
     )
-    print(f"\nrelease score: {passed}/{len(rows)} | results: {results}")
+    print(f"\n--- per family (direction doc §6) ---")
+    for domain, stats in summarize(rows).items():
+        print(f"{domain:20} {json.dumps(stats, ensure_ascii=False)}")
+    vacuous = sum(1 for r in rows if not r["contract_required"])
+    print(
+        f"\ngate-shaped score: {passed}/{len(rows)} — read the table above instead. "
+        f"{vacuous}/{len(rows)} runs have NO required topology, so contract_ok is "
+        f"vacuously true for them and the score is effectively "
+        f"pipeline_ok AND compliance_ok."
+    )
+    print(f"results: {results}")
     return 0 if passed == len(rows) else 2
 
 

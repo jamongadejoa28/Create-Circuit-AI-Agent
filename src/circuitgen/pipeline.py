@@ -34,6 +34,10 @@ class PipelineResult:
     svg_ok: bool = False
     draft: bool = False  # emitted despite self-ERC errors (partial view)
     visual_issues: list = field(default_factory=list)
+    # net-level wiring quality: how much of the circuit is drawn as real wire
+    # rather than stub+label. Implemented in emit.route_metrics since the tree
+    # router landed, and until now computed by nobody.
+    route_metrics: dict = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
 
 
@@ -113,7 +117,13 @@ def generate(
 
     sch_path = out_dir / f"{ir.name}.kicad_sch"
     try:
-        sch_text = emit_schematic(ir, symbols, canonical_placements)
+        # Build the plan here rather than letting emit_schematic build its own:
+        # route_metrics needs it, and it was being routed twice.
+        from .emit import build_emit_plan, route_metrics
+
+        plan = build_emit_plan(ir, symbols, canonical_placements)
+        res.route_metrics = route_metrics(ir, symbols, plan)
+        sch_text = emit_schematic(ir, symbols, canonical_placements, plan)
     except (KeyError, ValueError) as e:
         res.errors.append(f"placement/emission error: {e}")
         return res
