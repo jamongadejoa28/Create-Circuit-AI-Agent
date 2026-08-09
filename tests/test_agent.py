@@ -260,6 +260,41 @@ def test_explicit_conceptual_named_module_forces_catalog_miss():
     assert spec["parts_needed"][0]["search_query"] == "__conceptual__MY_CUSTOM_RADIO"
 
 
+def test_conceptual_module_named_in_the_query_is_not_duplicated_into_a_second_role():
+    """The extractor usually puts the module name in search_query, not value.
+
+    Measured on unknown_module: matching only role/value appended a SECOND
+    role for the same physical module, so the topology contract demanded two
+    conceptual boxes for one part and aborted the run
+    ("2 uncatalogued role(s) but only 1 conceptual device(s)").
+    """
+    spec = {"parts_needed": [
+        {"role": "custom_radio_module", "search_query": "MY_CUSTOM_RADIO", "quantity": 1},
+        {"role": "mcu", "search_query": "MCU", "quantity": 1},
+    ]}
+    Agent._preserve_explicit_conceptual_parts(
+        "카탈로그에 없는 MY_CUSTOM_RADIO 모듈을 MCU에 연결해줘. 개념 심볼로 표시", spec
+    )
+    assert [p["role"] for p in spec["parts_needed"]] == ["custom_radio_module", "mcu"]
+    assert spec["parts_needed"][0]["search_query"] == "__conceptual__MY_CUSTOM_RADIO"
+
+
+def test_pin_roles_are_connections_not_components():
+    """"TX, RX 핀" produced roles tx_pin/rx_pin with search_query "pin"; they
+    survived as BOM roles, became their own blocks, and were answered with two
+    diodes."""
+    spec = {"parts_needed": [
+        {"role": "tx_pin", "search_query": "pin"},
+        {"role": "rx_pin", "search_query": "핀"},
+        {"role": "reset_pin", "search_query": "push button switch"},
+        {"role": "mcu", "search_query": "MCU"},
+    ], "connections_intent": []}
+    Agent._remove_connection_pseudo_parts(spec)
+    # a role NAMED after a pin but asking for a real device stays
+    assert [p["role"] for p in spec["parts_needed"]] == ["reset_pin", "mcu"]
+    assert spec["connections_intent"]
+
+
 def test_i2c_capability_filter_rejects_analog_temperature_sensor():
     parts = PartIndex(); agent = object.__new__(Agent); agent.parts = parts
     hits = [

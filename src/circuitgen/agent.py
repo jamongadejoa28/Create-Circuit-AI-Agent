@@ -190,6 +190,15 @@ class Agent:
         self._ensure_logic_rail(spec)
         return spec
 
+    # A search query that names a terminal rather than a device. Measured on
+    # unknown_module: "TX, RX 핀을 개념 심볼로 표시" produced roles tx_pin and
+    # rx_pin with search_query "pin", which survived the pseudo-part filter,
+    # became two blocks, and were answered with two diodes.
+    _PIN_QUERIES = frozenset({
+        "pin", "pins", "핀", "signal", "signals", "net", "nets", "wire", "wires",
+        "connection", "connections", "terminal", "terminals",
+    })
+
     @staticmethod
     def _remove_connection_pseudo_parts(spec: dict) -> None:
         """Connections are nets, not physical BOM roles."""
@@ -197,10 +206,16 @@ class Agent:
         kept = []
         for part in spec.get("parts_needed", []):
             text = f"{part.get('role', '')} {part.get('search_query', '')}".lower()
+            query = str(part.get("search_query", "")).strip().lower()
             pseudo = (
-                any(phrase in text for phrase in ("concept symbol", "conceptual symbol"))
-                and any(word in text for word in ("connection", "power", "gnd", "tx", "rx"))
-            ) or str(part.get("role", "")).strip().lower() in {"gpio", "gpio_input", "gpio_signal"}
+                (
+                    any(phrase in text for phrase in ("concept symbol", "conceptual symbol"))
+                    and any(word in text for word in ("connection", "power", "gnd", "tx", "rx"))
+                )
+                or str(part.get("role", "")).strip().lower() in {"gpio", "gpio_input", "gpio_signal"}
+                # the requirement asks for a terminal, not a part to buy
+                or query in Agent._PIN_QUERIES
+            )
             (removed if pseudo else kept).append(part)
         spec["parts_needed"] = kept
         if removed:
@@ -220,8 +235,18 @@ class Agent:
             prompt,
         )
         for token in tokens:
+            # search_query has to be part of the match: the extractor usually
+            # puts the module name THERE (role custom_radio_module, query
+            # MY_CUSTOM_RADIO). Matching only role/value appended a second
+            # role for the same physical module, and the topology contract
+            # then demanded two conceptual boxes for one part and aborted
+            # the run — measured on unknown_module.
             match = next(
-                (p for p in spec.get("parts_needed", []) if token in f"{p.get('role', '')} {p.get('value', '')}".upper()),
+                (
+                    p for p in spec.get("parts_needed", [])
+                    if token in f"{p.get('role', '')} {p.get('value', '')} "
+                                f"{p.get('search_query', '')}".upper()
+                ),
                 None,
             )
             if match is None:
