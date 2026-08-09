@@ -28,7 +28,7 @@ from pathlib import Path
 
 from .erc import net_kind
 from .ir import CircuitIR, SymbolDef, ValidationIssue
-from .netnames import supply_voltage
+from .netnames import STANDARD_RAILS, supply_voltage
 from .pins import PinType
 
 DEVICE_LIMITS_PATH = Path(__file__).resolve().parents[2] / "data" / "device_limits.json"
@@ -281,10 +281,6 @@ def check_power_integrity(
     return issues, checked
 
 
-# Rails the pipeline knows how to create supply symbols for, highest first.
-_STANDARD_RAILS = ((5.0, "+5V", "5V"), (3.3, "+3V3", "3.3V"), (1.8, "+1V8", "1.8V"))
-
-
 def ensure_device_supply_rails(
     spec: dict, ir: CircuitIR, limits: list[dict] | None = None
 ) -> list[str]:
@@ -321,7 +317,7 @@ def ensure_device_supply_rails(
         if any(legal(supply_voltage(str(r.get("name", "")))) for r in rails):
             continue
         pick = next(
-            ((name, label) for volts, name, label in _STANDARD_RAILS if legal(volts)),
+            ((name, label) for volts, name, label in STANDARD_RAILS if legal(volts)),
             None,
         )
         if pick is None:

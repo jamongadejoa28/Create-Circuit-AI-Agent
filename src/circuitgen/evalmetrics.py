@@ -33,31 +33,20 @@ from dataclasses import dataclass, field
 from .ir import CircuitIR, SymbolDef
 from .netnames import is_ground
 
-# Notes emitted by deterministic passes that CONNECT something the model did
-# not ask for. Counting them is the point: a board can reach ERC 0 because the
-# circuit is right, or because enough code guessed on its behalf, and the two
-# are indistinguishable in the score.
-_AUTO_CONNECT_MARKERS = (
-    "connected ",
-    "closed ",
-    "auto-",
-    "restored ",
-    "injected ",
-    "added rail ",
-    "resolved ",
-    "re-gathered ",
-    "cleared ",
-)
-# Notes that record a REFUSAL rather than an action — these are the good kind
-# and must not inflate the count.
-_REFUSAL_MARKERS = (
-    "left unconnected",
-    "left open",
-    "declined",
-    "refus",
-    "exposed as unconnected",
-    "no valid replacement",
-)
+Connection = tuple[str, str, str]  # (net, ref, pin)
+
+
+def connection_set(ir: CircuitIR | None) -> set[Connection]:
+    """Every (net, ref, pin) membership in a circuit."""
+    if ir is None:
+        return set()
+    return {
+        (net.name, ref, str(pin)) for net in ir.nets for ref, pin in net.nodes
+    }
+
+
+def nc_set(ir: CircuitIR | None) -> set[tuple[str, str]]:
+    return {(ref, str(pin)) for ref, pin in ir.nc_pins} if ir else set()
 
 
 @dataclass
@@ -69,8 +58,9 @@ class RunMetrics:
     role_missing: list[str] = field(default_factory=list)
     quantity_shortfall: dict[str, int] = field(default_factory=dict)
     auto_connections: int = 0
-    auto_connection_notes: list[str] = field(default_factory=list)
-    refusals: int = 0
+    auto_no_connects: int = 0
+    auto_by_component: dict[str, int] = field(default_factory=dict)
+    auto_samples: list[str] = field(default_factory=list)
 
     @property
     def role_fulfilment(self) -> float | None:
@@ -84,8 +74,9 @@ class RunMetrics:
             "role_missing": self.role_missing,
             "quantity_shortfall": self.quantity_shortfall,
             "auto_connections": self.auto_connections,
-            "auto_connection_notes": self.auto_connection_notes[:40],
-            "refusals": self.refusals,
+            "auto_no_connects": self.auto_no_connects,
+            "auto_by_component": self.auto_by_component,
+            "auto_samples": self.auto_samples,
         }
 
 
@@ -190,31 +181,43 @@ def role_fulfilment(
     return total, present, missing, shortfall
 
 
-def count_auto_connections(log: list[str]) -> tuple[int, list[str], int]:
-    """Connections deterministic code made on the model's behalf, and refusals.
+def diff_connections(
+    before: set[Connection], after: set[Connection],
+    before_nc: set[tuple[str, str]], after_nc: set[tuple[str, str]],
+) -> dict:
+    """What deterministic code added to the circuit after synthesis.
 
-    A high count is not automatically bad — PWR_FLAG placement and rail symbols
-    are legitimate. It is a number that has to be looked at: this session added
-    passes that wired 28 supply pins and closed 104 signal pins on a single
-    board, and the release score could not see any of it.
+    Measured from the IR itself, not from log prose. The first version of this
+    matched fifteen substrings against note text, which is unprincipled (it
+    measures how passes phrase themselves) and silently wrong the moment a note
+    is reworded. The set difference is exact.
+
+    A high count is not automatically bad — power symbols and PWR_FLAGs are
+    legitimate. It is a number that has to be LOOKED at: an ERC-0 board can be
+    right because the circuit is right, or because enough code guessed on the
+    model's behalf, and a pass/fail score cannot tell those apart.
     """
-    made: list[str] = []
-    refused = 0
-    for line in log or []:
-        low = line.lower()
-        if any(m in low for m in _REFUSAL_MARKERS):
-            refused += 1
-            continue
-        if any(low.startswith(m) or f" {m}" in low for m in _AUTO_CONNECT_MARKERS):
-            made.append(line)
-    return len(made), made, refused
+    added = after - before
+    return {
+        "added_connections": len(added),
+        "removed_connections": len(before - after),
+        "added_no_connects": len(after_nc - before_nc),
+        "by_component": dict(sorted(
+            {
+                ref: sum(1 for _n, r, _p in added if r == ref)
+                for ref in {r for _n, r, _p in added}
+            }.items(),
+            key=lambda kv: -kv[1],
+        )[:10]),
+        "samples": sorted(f"{net}:{ref}.{pin}" for net, ref, pin in added)[:20],
+    }
 
 
 def measure_run(
     spec: dict,
     ir: CircuitIR | None,
     symbols: dict[str, SymbolDef],
-    log: list[str],
+    auto: dict | None = None,
     candidates: dict | None = None,
 ) -> RunMetrics:
     metrics = RunMetrics()
@@ -224,10 +227,11 @@ def measure_run(
         metrics.role_present = present
         metrics.role_missing = missing
         metrics.quantity_shortfall = shortfall
-    made, notes, refused = count_auto_connections(log)
-    metrics.auto_connections = made
-    metrics.auto_connection_notes = notes
-    metrics.refusals = refused
+    auto = auto or {}
+    metrics.auto_connections = auto.get("added_connections", 0)
+    metrics.auto_no_connects = auto.get("added_no_connects", 0)
+    metrics.auto_by_component = auto.get("by_component", {})
+    metrics.auto_samples = auto.get("samples", [])
     return metrics
 
 

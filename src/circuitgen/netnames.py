@@ -39,6 +39,35 @@ def is_ground_pin(name: str) -> bool:
     return is_ground(n) or n.startswith(_GROUND_PIN_PREFIXES)
 
 
+_SUPPLY_PIN_PREFIXES = (
+    "VDD", "VCC", "AVDD", "DVDD", "VBAT", "VBUS", "VIN", "VEE", "VCORE",
+    "VPP", "VS", "V+", "V-", "3V3", "5V", "1V8", "VA", "VL",
+)
+
+# The only positive-supply pin names generic enough to act on without a
+# datasheet. Anything else — VDDIO vs VDDCORE, an op-amp's V+/V-, a
+# programming VPP — needs a device rule, and guessing is how an STM32G474
+# shipped with VDD on +5V.
+UNAMBIGUOUS_SUPPLY_NAMES: frozenset[str] = frozenset({"VDD", "VCC"})
+
+# Rails the pipeline can create supply symbols for, highest first.
+STANDARD_RAILS: tuple[tuple[float, str, str], ...] = (
+    (5.0, "+5V", "5V"), (3.3, "+3V3", "3.3V"), (1.8, "+1V8", "1.8V"),
+)
+
+
+def is_supply_pin(name: str) -> bool:
+    """True if a PIN name denotes a positive supply.
+
+    Companion to is_ground_pin, and equally name-based: electrical type does
+    not identify a supply pin. USB-C VBUS/GND are PASSIVE and a MAX310's
+    V+/V-/GND are INPUT, so a type-only test would treat all of them as
+    ordinary signals.
+    """
+    clean = (name or "").strip().upper().replace("~", "")
+    return bool(clean) and not is_ground_pin(clean) and clean.startswith(_SUPPLY_PIN_PREFIXES)
+
+
 def is_supply(name: str) -> bool:
     """True if a name denotes a non-ground supply rail (+3V3, +5V, VCC...).
 

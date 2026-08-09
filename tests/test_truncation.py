@@ -12,14 +12,16 @@ import json
 
 import pytest
 
-from circuitgen.agent import (
+from circuitgen.agent import _with_retry
+from circuitgen.llm_client import (
     _CHARS_PER_TOKEN,
+    LlamaClient,
+    LlamaServerError,
     PromptTooLargeError,
     SLOT_CONTEXT_TOKENS,
-    _output_budget,
-    _with_retry,
+    TruncatedCompletionError,
+    output_budget,
 )
-from circuitgen.llm_client import LlamaClient, LlamaServerError, TruncatedCompletionError
 
 
 class FakeServer:
@@ -115,19 +117,19 @@ def test_exhausted_retries_raise_the_last_error():
 def test_output_budget_leaves_room_for_the_prompt():
     # A prompt big enough that a 4096-token reply would not fit produced a hard
     # "Context size has been exceeded" HTTP 500 rather than an answer.
-    small = _output_budget("x" * 2000)
-    medium = _output_budget("x" * 9730)
+    small = output_budget("x" * 2000)
+    medium = output_budget("x" * 9730)
     assert small == 4096
     assert medium < 4096, "a large prompt must buy a smaller reply cap"
     for chars in (2000, 9730, 14000):
-        assert _output_budget("x" * chars) + chars / _CHARS_PER_TOKEN < SLOT_CONTEXT_TOKENS
+        assert output_budget("x" * chars) + chars / _CHARS_PER_TOKEN < SLOT_CONTEXT_TOKENS
 
 
 def test_a_prompt_that_cannot_fit_raises_instead_of_being_sent():
     """Returning a token floor sent an impossible request, and llama-server
     answers that with an opaque HTTP 500 that reads as a server fault."""
     with pytest.raises(PromptTooLargeError) as excinfo:
-        _output_budget("x" * 20000)
+        output_budget("x" * 20000)
     assert "trim the request" in str(excinfo.value)
 
 

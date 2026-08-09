@@ -22,32 +22,33 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
+from .evalmetrics import connection_set, diff_connections, nc_set
 from .compliance import (
     ComplianceReport,
     check_compliance,
     ensure_device_supply_rails,
+    part_present,
     requested_part_numbers,
 )
 from .ir import CircuitIR, Component
 from .ir_json import apply_patch, ir_from_json
 from .knowledge import KnowledgeIndex
 from .partindex import PartIndex
-from .llm_client import TruncatedCompletionError
+from .pins import PinType
+from .llm_client import (
+    SLOT_CONTEXT_TOKENS,
+    PromptTooLargeError,
+    TruncatedCompletionError,
+    MIN_USEFUL_REPLY_TOKENS,
+    estimate_prompt_tokens,
+    output_budget,
+)
 from .pipeline import PipelineResult, generate
 from .schemas import BLOCK_CIRCUIT_IR, BLOCK_PLAN, CIRCUIT_IR, REPAIR_PATCH, REQUIREMENT_SPEC
 from .netnames import GROUND_NAMES, supply_voltage
 
 MAX_REPAIRS = 3
-# llama-server per-slot context in this deployment (confirmed via /props).
-# Prompt + reply must fit: a block prompt that left less room than the reply
-# cap produced a hard "Context size has been exceeded" HTTP 500.
-SLOT_CONTEXT_TOKENS = 8192
-# Conservative on purpose: real block prompts measured 1.87-2.57 chars/token,
-# the low end on pin-dense tables (a 169-pin MCU, a 484-pin FPGA). Estimating
-# high would let the reply cap overrun the slot, which the server answers with
-# an opaque HTTP 500 instead of an error anyone can act on.
-_CHARS_PER_TOKEN = 2.0
-_CONTEXT_MARGIN = 256
+_MAX_TRIM_LEVEL = 2  # block-prompt trim: 0 full, 1 no KNOWLEDGE, 2 first candidate only
 CANDIDATES_PER_QUERY = 3
 KNOWLEDGE_PER_TOPIC = 2
 BLOCK_THRESHOLD = 5  # parts_needed roles at/above which block decomposition kicks in
@@ -56,32 +57,6 @@ REPAIR_SLICE_LIMIT = 25  # components above which the repair prompt gets a parti
 
 class LLMBackend(Protocol):
     def complete_json(self, messages: list[dict], schema: dict, **kw) -> dict: ...
-
-
-class PromptTooLargeError(RuntimeError):
-    """A request cannot fit the model's context however it is answered."""
-
-
-MIN_USEFUL_REPLY_TOKENS = 512
-_MAX_TRIM_LEVEL = 2  # 0 full, 1 no KNOWLEDGE, 2 first candidate only
-
-
-def _output_budget(content: str, cap: int = 4096) -> int:
-    """Tokens the reply may use without overrunning the slot context.
-
-    Raises when the prompt leaves no room for even a minimal answer: sending
-    it anyway gets an opaque HTTP 500 from llama-server, which reads as a
-    server fault rather than "this request cannot fit".
-    """
-    estimated_prompt = int(len(content) / _CHARS_PER_TOKEN) + 64  # + system message
-    room = SLOT_CONTEXT_TOKENS - estimated_prompt - _CONTEXT_MARGIN
-    if room < MIN_USEFUL_REPLY_TOKENS:
-        raise PromptTooLargeError(
-            f"prompt needs ~{estimated_prompt} of {SLOT_CONTEXT_TOKENS} context tokens, "
-            f"leaving {room} for the reply (minimum {MIN_USEFUL_REPLY_TOKENS}) — "
-            f"trim the request instead of sending it"
-        )
-    return min(cap, room)
 
 
 def _with_retry(fn, tries: int = 2, pass_attempt: bool = False):
@@ -114,6 +89,8 @@ class AgentResult:
     refusal: str | None = None
     log: list[str] = field(default_factory=list)
     block_plan: list[dict] | None = None
+    # what deterministic code added after synthesis, measured by IR diff
+    auto_connections: dict = field(default_factory=dict)
     # "is this the circuit that was requested, and can it be powered on?"
     # — questions ERC cannot answer; None only if no circuit was produced
     compliance: "ComplianceReport | None" = None
@@ -175,6 +152,67 @@ def _normalize_rails(spec: dict) -> dict:
     if not any(r.get("name") in GROUND_NAMES for r in rails):
         rails.append({"name": "GND", "voltage": "0V"})
     return spec
+
+
+def _block_prompt(
+    block: dict, sub_spec: dict, name: str, rails: list[str], own_ifaces: list[str],
+    contracts, contract_feedback: list[str] | None,
+    cands: dict, pin_tables: dict, snips: list, other_nets: list,
+) -> str:
+    """The block-synthesis request. Sections are dropped by trim level, so
+    the caller decides what goes in; this only assembles it.
+    """
+    from .contracts import contract_instructions
+
+    return (
+
+    f"Design ONLY this functional block as CircuitIR JSON: "
+    f"{block['id']} — {block.get('description', '')}\n"
+    "Rules:\n"
+    "- Use ONLY lib_id values from CANDIDATES and pin numbers from PIN_TABLES; "
+    "prefer the FIRST candidate of each role.\n"
+    "- EXCEPTION: if NO candidate fits a required device (off-catalog "
+    "module, servo, etc.), use lib_id 'Conceptual:<Name>' and invent "
+    "short descriptive pin numbers (VCC, GND, DATA...) — it renders "
+    "as a labeled concept box.\n"
+    f"- IMPORTANT: this is a TEMPLATE for a block with count={block.get('count', 1)}. "
+    "Generate EXACTLY ONE canonical hardware instance now; deterministic code "
+    "will copy it count times later. Include at most one main IC/device for each "
+    "role. Never emit four drivers or four encoders in this template.\n"
+    f"- This block's EXTERNAL nets must use EXACTLY these names "
+    f"(keep any {{n}} literal — instances are stamped later): {own_ifaces}\n"
+    + (
+        f"- Nets exported by other blocks that this block may connect to: "
+        f"{json.dumps(other_nets, ensure_ascii=False)}\n"
+        if other_nets
+        else ""
+    )
+    + f"- Power rails (already exist, connect power pins to them by name, "
+    f"do NOT add power:* symbols): {rails}\n"
+    "- Internal net names are free — they get namespaced automatically.\n"
+    # Per-pin accounting for a 132-pin MCU was 87% of the reply and
+    # exhausted the output budget mid-JSON; code closes those pins.
+    # The schema for this call has no nc_pins field, so this states
+    # what the grammar already enforces.
+    "- Leave unused pins of large ICs OUT of the answer entirely — "
+    "deterministic code marks them no-connect. Only wire what the "
+    "circuit needs.\n"
+    "- You MUST still put every POWER and GROUND pin of every component "
+    "in a net: those are never closed for you, and a device left "
+    "unpowered fails the build.\n"
+    "- Be terse: short net names, plain values (100nF, 10k), no prose.\n"
+    "- Apply the KNOWLEDGE rules (decoupling beside ICs, pull-ups, "
+    "series resistors).\n"
+    f"- FUNCTIONAL CONTRACTS (mandatory): "
+    f"{json.dumps(contract_instructions(contracts), ensure_ascii=False)}\n"
+    f"- PREVIOUS CONTRACT FAILURES TO FIX: "
+    f"{json.dumps(contract_feedback or [], ensure_ascii=False)}\n"
+    f"- name must be: {name}\n\n"
+    f"SPEC: {json.dumps(sub_spec, ensure_ascii=False)}\n\n"
+    f"CANDIDATES: {json.dumps(cands, ensure_ascii=False)}\n\n"
+    f"PIN_TABLES: {json.dumps(pin_tables, ensure_ascii=False)}\n\n"
+    + (f"KNOWLEDGE: {json.dumps(snips, ensure_ascii=False)}" if snips else "")
+    )
 
 
 class Agent:
@@ -791,59 +829,13 @@ class Agent:
         # the foreign-net catalog (~866). The spec, the rules, the first
         # candidate's lib_id and its pin numbers are never dropped.
         def build(level: int) -> str:
-            snips = snippets if level < 1 else []
-            cands = (
-                candidates if level < 2
-                else {role: hits[:1] for role, hits in candidates.items()}
-            )
-            other_nets = others if level < 2 else []
-            return (
-            f"Design ONLY this functional block as CircuitIR JSON: "
-            f"{block['id']} — {block.get('description', '')}\n"
-            "Rules:\n"
-            "- Use ONLY lib_id values from CANDIDATES and pin numbers from PIN_TABLES; "
-            "prefer the FIRST candidate of each role.\n"
-            "- EXCEPTION: if NO candidate fits a required device (off-catalog "
-            "module, servo, etc.), use lib_id 'Conceptual:<Name>' and invent "
-            "short descriptive pin numbers (VCC, GND, DATA...) — it renders "
-            "as a labeled concept box.\n"
-            f"- IMPORTANT: this is a TEMPLATE for a block with count={block.get('count', 1)}. "
-            "Generate EXACTLY ONE canonical hardware instance now; deterministic code "
-            "will copy it count times later. Include at most one main IC/device for each "
-            "role. Never emit four drivers or four encoders in this template.\n"
-            f"- This block's EXTERNAL nets must use EXACTLY these names "
-            f"(keep any {{n}} literal — instances are stamped later): {own_ifaces}\n"
-            + (
-                f"- Nets exported by other blocks that this block may connect to: "
-                f"{json.dumps(other_nets, ensure_ascii=False)}\n"
-                if other_nets
-                else ""
-            )
-            + f"- Power rails (already exist, connect power pins to them by name, "
-            f"do NOT add power:* symbols): {rails}\n"
-            "- Internal net names are free — they get namespaced automatically.\n"
-            # Per-pin accounting for a 132-pin MCU was 87% of the reply and
-            # exhausted the output budget mid-JSON; code closes those pins.
-            # The schema for this call has no nc_pins field, so this states
-            # what the grammar already enforces.
-            "- Leave unused pins of large ICs OUT of the answer entirely — "
-            "deterministic code marks them no-connect. Only wire what the "
-            "circuit needs.\n"
-            "- You MUST still put every POWER and GROUND pin of every component "
-            "in a net: those are never closed for you, and a device left "
-            "unpowered fails the build.\n"
-            "- Be terse: short net names, plain values (100nF, 10k), no prose.\n"
-            "- Apply the KNOWLEDGE rules (decoupling beside ICs, pull-ups, "
-            "series resistors).\n"
-            f"- FUNCTIONAL CONTRACTS (mandatory): "
-            f"{json.dumps(contract_instructions(contracts), ensure_ascii=False)}\n"
-            f"- PREVIOUS CONTRACT FAILURES TO FIX: "
-            f"{json.dumps(contract_feedback or [], ensure_ascii=False)}\n"
-            f"- name must be: {name}\n\n"
-            f"SPEC: {json.dumps(sub_spec, ensure_ascii=False)}\n\n"
-            f"CANDIDATES: {json.dumps(cands, ensure_ascii=False)}\n\n"
-            f"PIN_TABLES: {json.dumps(pin_tables, ensure_ascii=False)}\n\n"
-            + (f"KNOWLEDGE: {json.dumps(snips, ensure_ascii=False)}" if snips else "")
+            return _block_prompt(
+                block, sub_spec, name, rails, own_ifaces, contracts, contract_feedback,
+                cands=(candidates if level < 2
+                       else {role: hits[:1] for role, hits in candidates.items()}),
+                pin_tables=pin_tables,
+                snips=(snippets if level < 1 else []),
+                other_nets=(others if level < 2 else []),
             )
 
         accepted_level = 0
@@ -857,8 +849,8 @@ class Agent:
             # derived, not fixed: a prompt large enough that a 4096-token
             # reply would not fit produced a hard HTTP 500 "Context size has
             # been exceeded" instead of an answer.
-            budget = _output_budget(content)
-            estimated_prompt = int(len(content) / _CHARS_PER_TOKEN) + 64
+            budget = output_budget(content)
+            estimated_prompt = estimate_prompt_tokens(content)
             if prev_total is not None:
                 # Dropping KNOWLEDGE (3.15 chars/token) refunds fewer prompt
                 # tokens than it hands back as reply budget, so an unclamped
@@ -1014,8 +1006,6 @@ class Agent:
                 notes.append(f"resolved {ref}.{pin} -> two-pin terminal {new}")
                 return new
             return pin
-
-        from .pins import PinType
 
         def expand(ref: str, pin: str) -> list[str]:
             """A supply NAME matching several pins means all of them.
@@ -1678,6 +1668,12 @@ class Agent:
             sanitize_known_device_nets,
         )
 
+        # Snapshot before the deterministic normalization sequence: the set
+        # difference against the finished circuit IS the work code did on the
+        # model's behalf. Counting it from log prose measured how passes
+        # phrase themselves, not what they connected.
+        synth_nets = connection_set(ir)
+        synth_nc = nc_set(ir)
         res.log.extend(normalize_common_symbol_aliases(ir))
         res.log.extend(enforce_requested_stm32_variant(ir, prompt, self._resolve_symbols(ir)))
         res.log.extend(sanitize_known_device_nets(ir, self._resolve_symbols(ir)))
@@ -1855,6 +1851,9 @@ class Agent:
         # was asked for or that it survives being powered on. Both checks
         # REPORT rather than abort: the schematic stays on disk, and the
         # caller is told exactly which requirement is unmet.
+        res.auto_connections = diff_connections(
+            synth_nets, connection_set(ir), synth_nc, nc_set(ir)
+        )
         res.compliance = check_compliance(ir, self._resolve_symbols(ir), prompt)
         for issue in res.compliance.issues:
             res.log.append(f"compliance {issue.severity} {issue.rule}: {issue.message}")
@@ -1879,6 +1878,7 @@ class Agent:
         # close_unused_hub_pins is necessarily incomplete; this is how a
         # reviewer finds out what it decided.
         rec.set("auto_nc", auto_nc)
+        rec.set("auto_connections", res.auto_connections)
         rec.set("knowledge_trace", self._knowledge_trace)
         rec.set("repairs", res.repairs)
         rec.set("log", res.log)
@@ -1996,7 +1996,6 @@ class Agent:
         must confirm the result. ANY failure returns None — the normal LLM
         path takes over, never an abort.
         """
-        from .compliance import part_present
         from .contracts import infer_contracts, validate_contracts
         from .patterns import (
             PatternBinding,

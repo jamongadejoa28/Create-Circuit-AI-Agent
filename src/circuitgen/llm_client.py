@@ -41,6 +41,48 @@ class TruncatedCompletionError(LlamaServerError):
         self.usage = usage or {}
 
 
+# llama-server per-slot context in this deployment (confirmed via /props).
+# Prompt + reply must fit: a block prompt that left less room than the reply
+# cap produced a hard "Context size has been exceeded" HTTP 500.
+SLOT_CONTEXT_TOKENS = 8192
+# Conservative on purpose: real block prompts measured 1.87-2.57 chars/token,
+# the low end on pin-dense tables (a 169-pin MCU, a 484-pin FPGA). Estimating
+# high would let the reply cap overrun the slot, which the server answers with
+# an opaque HTTP 500 instead of an error anyone can act on.
+_CHARS_PER_TOKEN = 2.0
+_CONTEXT_MARGIN = 256
+MIN_USEFUL_REPLY_TOKENS = 512
+
+
+def estimate_prompt_tokens(content: str) -> int:
+    """Upper-bound token estimate for a request body (+ the system message)."""
+    return int(len(content) / _CHARS_PER_TOKEN) + 64
+
+
+class PromptTooLargeError(RuntimeError):
+    """A request cannot fit the model's context however it is answered."""
+
+
+
+
+def output_budget(content: str, cap: int = 4096) -> int:
+    """Tokens the reply may use without overrunning the slot context.
+
+    Raises when the prompt leaves no room for even a minimal answer: sending
+    it anyway gets an opaque HTTP 500 from llama-server, which reads as a
+    server fault rather than "this request cannot fit".
+    """
+    estimated_prompt = estimate_prompt_tokens(content)
+    room = SLOT_CONTEXT_TOKENS - estimated_prompt - _CONTEXT_MARGIN
+    if room < MIN_USEFUL_REPLY_TOKENS:
+        raise PromptTooLargeError(
+            f"prompt needs ~{estimated_prompt} of {SLOT_CONTEXT_TOKENS} context tokens, "
+            f"leaving {room} for the reply (minimum {MIN_USEFUL_REPLY_TOKENS}) — "
+            f"trim the request instead of sending it"
+        )
+    return min(cap, room)
+
+
 class LlamaClient:
     def __init__(
         self,

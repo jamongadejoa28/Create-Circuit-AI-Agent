@@ -79,7 +79,7 @@ def main() -> int:
             required = case.get("topology", [])
             contracts = _contract_results(required, topology)
             symbols = agent._resolve_symbols(res.ir) if res.ir else {}
-            metrics = measure_run(res.spec or {}, res.ir, symbols, res.log)
+            metrics = measure_run(res.spec or {}, res.ir, symbols, res.auto_connections)
             pr = res.pipeline
             row = {
                 "label": args.label,
@@ -125,7 +125,7 @@ def main() -> int:
                 f"erc={row['kicad_violations']} self={row['self_erc_errors']} "
                 f"conn={row['connectivity_ok']} roles={metrics.role_fulfilment} "
                 f"wired={row['wiring'].get('wired_ratio')} vis={row['visual_issues']} "
-                f"auto={metrics.auto_connections} compliance={row['compliance_ok']}"
+                f"auto={metrics.auto_connections}/{metrics.auto_no_connects}nc compliance={row['compliance_ok']}"
             )
 
     passed = sum(

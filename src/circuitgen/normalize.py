@@ -2,10 +2,21 @@
 
 from __future__ import annotations
 
+import json
 import re
+from functools import lru_cache
+from pathlib import Path
 
 from .ir import CircuitIR, Component, SymbolDef
-from .netnames import GROUND_NAMES, is_ground, is_ground_pin, logic_rail, supply_voltage
+from .netnames import (
+    GROUND_NAMES,
+    UNAMBIGUOUS_SUPPLY_NAMES,
+    is_ground,
+    is_ground_pin,
+    is_supply_pin,
+    logic_rail,
+    supply_voltage,
+)
 from .pins import PinType
 
 PWR_FLAG_LIB_ID = "power:PWR_FLAG"
@@ -699,13 +710,6 @@ def mark_documented_no_connects(
     return notes
 
 
-# The only positive-supply pin names generic enough to wire without a
-# datasheet. Anything else — VDDIO vs VDDCORE, an op-amp's V+/V-, a
-# programming VPP — needs a device rule, and guessing would be the
-# +5V-on-a-3.3V-part failure all over again.
-_UNAMBIGUOUS_SUPPLY_NAMES = frozenset({"VDD", "VCC"})
-
-
 def complete_generic_power_pins(
     ir: CircuitIR, symbols: dict[str, SymbolDef], rails: list[str]
 ) -> list[str]:
@@ -728,152 +732,152 @@ def complete_generic_power_pins(
       pins stay unconnected, which self-ERC and the compliance gate both
       report loudly.
     """
-    from .compliance import _limits_for, load_device_limits
+    from .compliance import load_device_limits
 
     limits = load_device_limits()
     logic = logic_rail(rails)
-    logic_volts = supply_voltage(logic) if logic else None
     net_of = {(r, str(p)): n.name for n in ir.nets for r, p in n.nodes}
     notes: list[str] = []
-
-    def expose(ref: str, pin_number: str) -> None:
-        """Leave a pin visibly unconnected — an NC marker would be silent."""
-        if (ref, pin_number) in ir.nc_pins:
-            ir.nc_pins.remove((ref, pin_number))
-
     for ref, comp in sorted(ir.components.items()):
         sym = symbols.get(comp.lib_id)
         if sym is None or sym.is_power or ref.startswith("#"):
             continue
-        supply_pins = [p for p in sym.pins if p.etype == PinType.PWRIN]
-        grounds = [p for p in supply_pins if is_ground_pin(p.name or "")]
-        positives = [p for p in supply_pins if not is_ground_pin(p.name or "")]
-
-        def clean(pin) -> str:
-            return (pin.name or "").strip().upper().replace("~", "")
-
-        # -- grounds --
-        ground_names = {clean(p) for p in grounds}
-        pending_gnd = [p for p in grounds if (ref, p.number) not in net_of]
-        if pending_gnd and len(ground_names) > 1:
-            # Isolators keep their sides apart: ADuM1201 has GND1 and GND2, and
-            # tying them together destroys the isolation barrier the part exists
-            # for. More than one ground NAME means domains, not a stack.
-            notes.append(
-                f"{ref} ({comp.lib_id}): {len(pending_gnd)} ground pin(s) "
-                f"{sorted(ground_names)} left unconnected — separate ground "
-                f"domains need a device rule, not a guess"
-            )
-            for pin in pending_gnd:
-                expose(ref, pin.number)
-        elif pending_gnd:
-            existing = {net_of[(ref, p.number)] for p in grounds if (ref, p.number) in net_of}
-            target = existing.pop() if len(existing) == 1 else "GND"
-            for pin in pending_gnd:
-                ir.connect(target, (ref, pin.number))
-                if (ref, pin.number) in ir.nc_pins:
-                    ir.nc_pins.remove((ref, pin.number))
-                net_of[(ref, pin.number)] = target
-            notes.append(f"{ref}: connected {len(pending_gnd)} ground pin(s) to {target}")
-
-        # -- positive supplies --
-        pending = [p for p in positives if (ref, p.number) not in net_of]
-        if not pending:
-            continue
-        names = {clean(p) for p in positives}
-        already = {net_of[(ref, p.number)] for p in positives if (ref, p.number) in net_of}
-        if len(already) > 1:
-            # Some of this part's supply pins are already on different rails.
-            # Bonding the rest to either one would short them together through the
-            # die's supply bus.
-            notes.append(
-                f"{ref} ({comp.lib_id}): supply pins already span {sorted(already)} "
-                f"— {len(pending)} left unconnected rather than bridging rails"
-            )
-            for pin in pending:
-                expose(ref, pin.number)
-            continue
-        if len(already) == 1:
-            target = already.pop()
-            for pin in pending:
-                ir.connect(target, (ref, pin.number))
-                if (ref, pin.number) in ir.nc_pins:
-                    ir.nc_pins.remove((ref, pin.number))
-                net_of[(ref, pin.number)] = target
-            notes.append(
-                f"{ref}: connected {len(pending)} remaining supply pin(s) to {target} "
-                f"(the rail its siblings already use)"
-            )
-            continue
-
-        # Nothing to copy from, so a rail has to be CHOSEN — and that needs a
-        # warrant. logic_rail returns the lowest supply <= 5.5 V, which is a
-        # coin flip for an unknown part in both directions: a 5 V CPU lands on
-        # +3V3 on a dual-rail board, a 3.3 V flash lands on +5V on a 5 V board.
-        # The second direction is the failure this repo already shipped once.
-        device = _limits_for(comp.lib_id, limits)
-        reason = None
-        if len(names) != 1 or not (names & _UNAMBIGUOUS_SUPPLY_NAMES):
-            reason = f"the supply naming {sorted(names)} is ambiguous"
-        elif logic is None:
-            reason = "no rail on this board is a plausible logic supply"
-        elif device is None:
-            reason = f"no datasheet limits are recorded for {comp.lib_id}"
-        elif logic_volts is None or not (
-            (device.get("operating_min_v") or 0) <= logic_volts
-            <= (device.get("operating_max_v") or 0)
-        ):
-            reason = (
-                f"{logic} is outside the recorded "
-                f"{device.get('operating_min_v')}–{device.get('operating_max_v')} V range"
-            )
-        if reason:
-            notes.append(
-                f"{ref} ({comp.lib_id}): {len(pending)} supply pin(s) left "
-                f"unconnected — {reason}"
-            )
-            for pin in pending:
-                expose(ref, pin.number)
-            continue
-        for pin in pending:
-            ir.connect(logic, (ref, pin.number))
-            if (ref, pin.number) in ir.nc_pins:
-                ir.nc_pins.remove((ref, pin.number))
-            net_of[(ref, pin.number)] = logic
-        notes.append(
-            f"{ref} ({comp.lib_id}): connected {len(pending)} {sorted(names)[0]} "
-            f"pin(s) to {logic} (datasheet range confirms it)"
+        supply = [p for p in sym.pins if p.etype == PinType.PWRIN]
+        notes += _wire_supply_group(
+            ir, ref, comp, [p for p in supply if is_ground_pin(p.name or "")],
+            net_of, ground=True, logic=logic, limits=limits,
+        )
+        notes += _wire_supply_group(
+            ir, ref, comp, [p for p in supply if not is_ground_pin(p.name or "")],
+            net_of, ground=False, logic=logic, limits=limits,
         )
     return notes
 
 
+def _clean_pin_name(pin) -> str:
+    return (pin.name or "").strip().upper().replace("~", "")
+
+
+def _refuse(ir: CircuitIR, ref: str, pins: list, reason: str, comp) -> list[str]:
+    """Leave pins visibly unconnected. An NC marker would make this silent:
+    erc.py skips NC pins, and the pattern path blanket-NCs unbound hub pins."""
+    for pin in pins:
+        if (ref, pin.number) in ir.nc_pins:
+            ir.nc_pins.remove((ref, pin.number))
+    return [
+        f"{ref} ({comp.lib_id}): {len(pins)} "
+        f"supply pin(s) left unconnected — {reason}"
+    ]
+
+
+def _attach(ir: CircuitIR, ref: str, pins: list, net: str, net_of: dict) -> None:
+    for pin in pins:
+        ir.connect(net, (ref, pin.number))
+        if (ref, pin.number) in ir.nc_pins:
+            ir.nc_pins.remove((ref, pin.number))
+        net_of[(ref, pin.number)] = net
+
+
+def _supply_target(
+    comp, names: set[str], logic: str | None, limits: list[dict]
+) -> tuple[str | None, str]:
+    """Which rail this part's supply pins may join, or why not.
+
+    A rail has to be CHOSEN here, and that needs a warrant. logic_rail returns
+    the lowest supply <= 5.5 V, which is a coin flip for an unknown part in
+    both directions: a 5 V CPU lands on +3V3 on a dual-rail board, a 3.3 V
+    flash lands on +5V on a 5 V board. The second direction is the failure this
+    repo already shipped once.
+    """
+    from .compliance import _limits_for
+
+    if len(names) != 1 or not (names & UNAMBIGUOUS_SUPPLY_NAMES):
+        return None, f"the supply naming {sorted(names)} is ambiguous"
+    if logic is None:
+        return None, "no rail on this board is a plausible logic supply"
+    device = _limits_for(comp.lib_id, limits)
+    if device is None:
+        return None, f"no datasheet limits are recorded for {comp.lib_id}"
+    volts = supply_voltage(logic)
+    low, high = device.get("operating_min_v") or 0, device.get("operating_max_v") or 0
+    if volts is None or not low <= volts <= high:
+        return None, f"{logic} is outside the recorded {low}–{high} V range"
+    return logic, f"{logic} (datasheet range confirms it)"
+
+
+def _wire_supply_group(
+    ir: CircuitIR, ref: str, comp, pins: list, net_of: dict,
+    *, ground: bool, logic: str | None, limits: list[dict],
+) -> list[str]:
+    """One part's ground pins, or one part's positive supply pins."""
+    pending = [p for p in pins if (ref, p.number) not in net_of]
+    if not pending:
+        return []
+    names = {_clean_pin_name(p) for p in pins}
+    already = {net_of[(ref, p.number)] for p in pins if (ref, p.number) in net_of}
+
+    if ground:
+        if len(names) > 1:
+            # Isolators keep their sides apart: ADuM1201 has GND1 and GND2, and
+            # tying them together destroys the barrier the part exists for.
+            # More than one ground NAME means domains, not a stack.
+            return _refuse(
+                ir, ref, pending,
+                f"{sorted(names)} are separate ground domains, not a stack, and "
+                f"merging them needs a device rule", comp,
+            )
+        target = already.pop() if len(already) == 1 else "GND"
+        _attach(ir, ref, pending, target, net_of)
+        return [f"{ref}: connected {len(pending)} ground pin(s) to {target}"]
+
+    if len(already) > 1:
+        # Bonding the rest to either rail would short them together through the
+        # die's supply bus.
+        return _refuse(
+            ir, ref, pending,
+            f"its supply pins already span {sorted(already)} and bridging rails "
+            f"would short them", comp,
+        )
+    if len(already) == 1:
+        target = already.pop()
+        _attach(ir, ref, pending, target, net_of)
+        return [
+            f"{ref}: connected {len(pending)} remaining supply pin(s) to {target} "
+            f"(the rail its siblings already use)"
+        ]
+
+    target, why = _supply_target(comp, names, logic, limits)
+    if target is None:
+        return _refuse(ir, ref, pending, why, comp)
+    _attach(ir, ref, pending, target, net_of)
+    return [
+        f"{ref} ({comp.lib_id}): connected {len(pending)} {sorted(names)[0]} pin(s) to {why}"
+    ]
+
+
 HUB_PIN_THRESHOLD = 16  # same "this is a hub device" line wire_mcu_interfaces uses
 
-# Pins that must never be auto-closed, matched by NAME because electrical type
-# does not identify them: USB-C VBUS/GND are PASSIVE, a MAX310's V+/V-/GND are
-# INPUT, and every strap below is INPUT. Each entry was produced by an
-# adversarial sweep of data/parts.sqlite, not invented:
-#   EN/CE/SHDN/STBY/PD  - an ESP32-C3 with EN floating is held in reset and
-#                         does nothing, while self-ERC, compliance and the
-#                         KiCad oracle all report zero
-#   RESET/NRST/RST/MR/MCLR/BOOT/BOOT0/OE/MODE - boot and strap configuration
-#   FB/VFB/COMP/SS/RT/ISET/IREF/RSET/ADJ      - regulator feedback and
-#                         compensation; 82 Regulator_Switching symbols with an
-#                         FB pin are >= 16 pins, so the size threshold protects
-#                         nothing
-#   XIN/XOUT/OSC_IN/OSC_OUT/XTAL* - the clock source
-#   CC1/CC2/VREF/VREFP/VREFN      - USB-C configuration and analog references
-_NEVER_AUTO_CLOSE = frozenset({
-    "EN", "CE", "SHDN", "STBY", "PD", "RESET", "NRST", "RST", "MR", "MCLR",
-    "BOOT", "BOOT0", "OE", "MODE", "FB", "VFB", "COMP", "SS", "RT", "ISET",
-    "IREF", "RSET", "ADJ", "XIN", "XOUT", "OSC_IN", "OSC_OUT", "XTAL_P",
-    "XTAL_N", "XTAL1", "XTAL2", "CC1", "CC2", "VREF", "VREF+", "VREF-",
-    "VREFP", "VREFN", "TEST", "PG", "POR",
-})
-_SUPPLY_NAME_PREFIXES = (
-    "VDD", "VCC", "AVDD", "DVDD", "VBAT", "VBUS", "VIN", "VEE", "VCORE",
-    "VPP", "VS", "V+", "V-", "3V3", "5V", "1V8", "VA", "VL",
-)
+PIN_POLICY_PATH = Path(__file__).resolve().parents[2] / "data" / "pin_policy.json"
+
+
+@lru_cache(maxsize=1)
+def _never_auto_close() -> frozenset[str]:
+    """Pin names deterministic code must never no-connect (data/pin_policy.json).
+
+    Policy, not net-name classification, so it lives in data with the
+    counterexample that put each entry there. Supply and ground pins are not
+    listed: netnames.is_supply_pin / is_ground_pin recognise those including
+    vendor suffixes.
+    """
+    try:
+        data = json.loads(PIN_POLICY_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return frozenset()
+    return frozenset(
+        name.strip().upper()
+        for group in data.get("never_auto_close", [])
+        for name in group.get("names", [])
+    )
 
 
 def _must_stay_open(name: str) -> bool:
@@ -881,11 +885,7 @@ def _must_stay_open(name: str) -> bool:
     clean = (name or "").strip().upper().replace("~", "").replace("{", "").replace("}", "")
     if not clean:
         return False
-    return (
-        clean in _NEVER_AUTO_CLOSE
-        or is_ground_pin(clean)
-        or clean.startswith(_SUPPLY_NAME_PREFIXES)
-    )
+    return clean in _never_auto_close() or is_ground_pin(clean) or is_supply_pin(clean)
 
 
 def close_unused_hub_pins(

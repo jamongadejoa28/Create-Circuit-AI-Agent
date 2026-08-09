@@ -7,8 +7,10 @@ could not say which circuit family failed or why.
 """
 
 from circuitgen.evalmetrics import (
-    count_auto_connections,
+    connection_set,
+    diff_connections,
     measure_run,
+    nc_set,
     role_fulfilment,
     summarize,
 )
@@ -63,22 +65,39 @@ def test_quantity_shortfall_is_reported_separately_from_presence():
     assert shortfall == {"encoder": 3}, "present but 3 short of the requested 4"
 
 
-def test_automatic_connections_are_counted_and_refusals_are_not():
-    log = [
-        "connected U1.16 to +3V3",
-        "closed 104 unused pin(s) of U1 (CPU:MC68332) as NC: 29, 30",
-        "added rail +3V3: STM32G474 operates at 1.71-3.6 V",
-        "U1 (CPU:MC68332): 13 supply pin(s) left unconnected — no datasheet limits are recorded",
-        "pattern relay_driver declined: the request also asks for ethernet",
-        "pattern match: i2c_temperature_sensor",
-    ]
-    made, notes, refused = count_auto_connections(log)
-    assert made == 3, notes
-    assert refused == 2, "a refusal is the good outcome and must not inflate the count"
+def test_automatic_connections_are_measured_from_the_ir_not_from_log_prose():
+    """The first version matched fifteen substrings against note text, which
+    measures how passes phrase themselves. The set difference is exact."""
+    before = CircuitIR("b")
+    before.add(Component("U1", "Vendor:CHIP", "CHIP"))
+    before.connect("SDA", ("U1", "9"))
+
+    after = CircuitIR("a")
+    after.add(Component("U1", "Vendor:CHIP", "CHIP"))
+    after.connect("SDA", ("U1", "9"))
+    after.connect("+3V3", ("U1", "1"), ("U1", "16"))   # wired by a device rule
+    after.connect("GND", ("U1", "15"))
+    after.nc_pins.extend([("U1", "20"), ("U1", "21")])  # closed by code
+
+    diff = diff_connections(
+        connection_set(before), connection_set(after), nc_set(before), nc_set(after)
+    )
+    assert diff["added_connections"] == 3
+    assert diff["added_no_connects"] == 2
+    assert diff["by_component"] == {"U1": 3}
+    assert "+3V3:U1.16" in diff["samples"]
+
+
+def test_a_connection_the_model_made_is_not_counted_as_automatic():
+    ir = CircuitIR("x")
+    ir.add(Component("U1", "Vendor:CHIP", "CHIP"))
+    ir.connect("SDA", ("U1", "9"))
+    same = connection_set(ir)
+    assert diff_connections(same, same, set(), set())["added_connections"] == 0
 
 
 def test_measure_run_survives_a_run_that_produced_no_circuit():
-    metrics = measure_run(SPEC, None, {}, ["requirement extraction failed: boom"])
+    metrics = measure_run(SPEC, None, {}, None)
     assert metrics.role_total == 0 and metrics.role_fulfilment is None
     assert metrics.as_dict()["auto_connections"] == 0
 
