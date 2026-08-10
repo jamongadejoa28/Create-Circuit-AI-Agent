@@ -52,7 +52,14 @@ def instantiate_blocks(
     merged = CircuitIR(name=name)
     notes: list[str] = []
     counters: dict[str, int] = {}
+    # every interface name any block can produce, known before the first
+    # instance is stamped: a block that names another block's net must keep
+    # that name whichever order the two are merged in
     global_names = set(rails)
+    for block in plan:
+        for iface in block.get("interface_nets", []):
+            for inst in range(1, int(block.get("count", 1)) + 1):
+                global_names.add(str(iface["name"]).replace("{n}", str(inst)))
 
     def next_ref(prefix: str) -> str:
         counters[prefix] = counters.get(prefix, 0) + 1
@@ -66,10 +73,25 @@ def instantiate_blocks(
             notes.append(f"block {bid}: no IR synthesized — skipped")
             continue
         iface_templates = [n["name"] for n in block.get("interface_nets", [])]
+        # A repeated block is synthesized ONCE and stamped `count` times, so
+        # its template nets carry whatever instance number the synthesis
+        # happened to write — usually 1. Matching those by literal name meant
+        # instance 2 found "MOTOR1_PWM_A" already registered as a global and
+        # joined it: on a real 4-motor board all four drivers ended up on one
+        # PWM net, all four encoders on one chip-select, and no MOTOR2/3/4 or
+        # ENC2/3/4 net existed at all. Match the {n} TEMPLATE instead of the
+        # name it was rendered with, which is the contract the planner is
+        # given ("per-instance signals use a literal {n}; shared bus nets use
+        # plain names").
+        per_instance = [
+            (
+                re.compile(r"\A" + re.escape(t).replace(r"\{n\}", r"\d+") + r"\Z"),
+                t,
+            )
+            for t in iface_templates if "{n}" in t
+        ]
 
         for inst in range(1, count + 1):
-            iface_names = {t.replace("{n}", str(inst)) for t in iface_templates}
-            global_names.update(iface_names)
             ref_map: dict[str, str] = {}
 
             for old_ref, comp in src.components.items():
@@ -82,11 +104,14 @@ def instantiate_blocks(
                     )
                 )
 
-            def net_name(local: str) -> str:
-                resolved = local.replace("{n}", str(inst))
+            def net_name(local: str, _inst=inst, _pat=per_instance) -> str:
+                resolved = local.replace("{n}", str(_inst))
+                for rx, template in _pat:
+                    if rx.fullmatch(resolved):
+                        return template.replace("{n}", str(_inst))
                 if resolved in global_names:
                     return resolved
-                suffix = str(inst) if count > 1 else ""
+                suffix = str(_inst) if count > 1 else ""
                 return f"{bid}{suffix}_{resolved}"
 
             for net in src.nets:

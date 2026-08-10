@@ -230,3 +230,78 @@ def test_a_block_with_no_interface_net_is_an_island():
 
     # a single-block plan has nothing to be an island from
     assert islands([{"id": "ONLY", "count": 1, "interface_nets": []}]) == []
+
+
+def test_a_repeated_block_gets_one_net_per_instance():
+    """Measured on the 4-motor board: the plan correctly declared
+    MOTOR{n}_PWM_A for count=4, the template IR came back naming it
+    MOTOR1_PWM_A, and every instance then joined that same net — all four
+    drivers on one PWM line, all four encoders on one chip select, and no
+    MOTOR2/3/4 or ENC2/3/4 net anywhere on the board."""
+    from circuitgen.blocks import instantiate_blocks
+    from circuitgen.ir import CircuitIR, Component
+
+    plan = [{
+        "id": "MOTOR", "count": 4, "roles": ["motor_driver"],
+        "interface_nets": [
+            {"name": "MOTOR{n}_PWM_A", "purpose": "phase A"},
+            {"name": "SPI_SCK", "purpose": "shared bus"},
+        ],
+    }]
+    # the template as synthesis returns it: the per-instance net rendered
+    # with a literal 1, the shared bus plain, plus a block-local net
+    tmpl = CircuitIR("motor")
+    tmpl.add(Component("U1", "X:DRV", "DRV"))
+    tmpl.add(Component("C1", "Device:C", "100nF"))
+    tmpl.connect("MOTOR1_PWM_A", ("U1", "15"))
+    tmpl.connect("SPI_SCK", ("U1", "2"))
+    tmpl.connect("VM_LOCAL", ("U1", "8"), ("C1", "1"))
+
+    merged, _notes = instantiate_blocks("board", plan, {"MOTOR": tmpl}, ["GND"])
+    names = {n.name: len(n.nodes) for n in merged.nets}
+
+    # one PWM net per instance, one pin each
+    assert {f"MOTOR{i}_PWM_A" for i in range(1, 5)} <= set(names)
+    assert [names[f"MOTOR{i}_PWM_A"] for i in range(1, 5)] == [1, 1, 1, 1]
+    # the shared bus stays shared: all four drivers on it
+    assert names["SPI_SCK"] == 4
+    # a block-local net is scoped per instance, not merged
+    assert {f"MOTOR{i}_VM_LOCAL" for i in range(1, 5)} <= set(names)
+
+
+def test_an_interface_net_that_misses_the_hub_is_still_dangling():
+    """The MCU-wiring pass only offered a pin to nets holding exactly ONE pin,
+    so a signal shared by four peripherals — reaching no controller pin at all
+    — was never a candidate. Measured on the 4-motor board: nine MOTORn_*/
+    ENCn_* nets, four pins each, zero MCU pins, and this pass skipped them.
+
+    Runs the real pass with a model that refuses, so the deterministic
+    round-robin fallback does the assignment.
+    """
+    from circuitgen.agent import Agent
+    from circuitgen.ir import CircuitIR, Component
+    from circuitgen.partindex import PartIndex
+
+    class Refuses:
+        def complete_json(self, *a, **k):
+            raise RuntimeError("no model in this test")
+
+    agent = object.__new__(Agent)
+    agent.parts = PartIndex()
+    agent.llm = Refuses()
+
+    ir = CircuitIR("board")
+    ir.add(Component("U1", "MCU_ST_STM32G4:STM32G474RETx", "MCU"))
+    for n in range(2, 6):
+        ir.add(Component(f"U{n}", "Driver_Motor:DRV8311H", "DRV"))
+    ir.connect("MOTOR_PWM", *[(f"U{n}", "15") for n in range(2, 6)])
+    ir.connect("ALREADY_OK", ("U1", "20"), ("U2", "14"))
+
+    notes = agent.wire_mcu_interfaces(
+        ir, [{"net": "MOTOR_PWM"}, {"net": "ALREADY_OK"}]
+    )
+    assert any("MOTOR_PWM" in n for n in notes), notes
+    pwm = next(n for n in ir.nets if n.name == "MOTOR_PWM")
+    assert "U1" in {r for r, _ in pwm.nodes}, pwm.nodes
+    # a net the hub already reaches is left alone
+    assert not any("ALREADY_OK" in n for n in notes), notes

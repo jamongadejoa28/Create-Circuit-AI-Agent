@@ -1020,9 +1020,16 @@ class Agent:
         net_sizes = {n.name: len(n.nodes) for n in ir.nets}
         used_pins = {p for n in ir.nets for r, p in n.nodes if r == hub}
         used_pins |= {p for r, p in ir.nc_pins if r == hub}
+        # An interface net's job is to reach the hub. Requiring it to hold
+        # exactly ONE pin meant a signal shared by several peripherals was
+        # never offered a controller pin: on a real 4-motor board the five
+        # MOTORn_* and four ENCn_* nets each carried four driver or encoder
+        # pins and not one MCU pin, and this pass skipped every one of them
+        # because none was a single-pin net.
+        on_net = {n.name: {r for r, _ in n.nodes} for n in ir.nets}
         dangling = [
             n for n in cat_names
-            if net_sizes.get(n, 0) == 1 and hub not in {r for net in ir.nets if net.name == n for r, _ in net.nodes}
+            if net_sizes.get(n, 0) >= 1 and hub not in on_net.get(n, set())
         ]
         if not dangling:
             return []
