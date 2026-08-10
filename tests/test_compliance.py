@@ -241,3 +241,87 @@ def test_devices_without_recorded_limits_do_not_invent_rails():
     ir.add(Component("U1", "Some_Vendor:UNKNOWN123", "UNKNOWN123"))
     assert ensure_device_supply_rails(spec, ir, load_device_limits()) == []
     assert [r["name"] for r in spec["power"]["rails"]] == ["GND"]
+
+
+# --- "is the role present" vs "is the role doing its job" ------------------
+
+
+def _two_pin(lib, prefix):
+    return SymbolDef(
+        lib, "",
+        [PinDef("1", "", PinType.PASSIVE, 0, 0, 0, 2.54),
+         PinDef("2", "", PinType.PASSIVE, 0, 0, 0, 2.54)],
+        reference_prefix=prefix,
+    )
+
+
+def test_a_present_role_that_conducts_nothing_is_not_a_fulfilled_role():
+    """The reproduction that motivated this: driver_relay reported
+    role_fulfilment 1.0, compliance ok and all three selected parts present on
+    a board whose base resistor had both ends on the same rail. Presence is
+    unchanged — it is still the floor — and the second number is what moves."""
+    from circuitgen.compliance import role_fulfilment, role_jobs_done
+    from circuitgen.topology import analyze_conduction
+
+    symbols = {
+        "Device:R": _two_pin("Device:R", "R"),
+        "power:+5V": SymbolDef(
+            "power:+5V", "",
+            [PinDef("1", "+5V", PinType.PWROUT, 0, 0, 0, 2.54)],
+            reference_prefix="#PWR", is_power=True,
+        ),
+    }
+    ir = CircuitIR("base-resistor")
+    ir.add(Component("R1", "Device:R", "1k"))
+    ir.add(Component("R2", "Device:R", "1k"))
+    ir.add(Component("#PWR01", "power:+5V", "+5V"))
+    ir.connect("+5V", ("R1", "1"), ("R2", "1"), ("#PWR01", "1"))
+    ir.connect("NOWHERE", ("R1", "2"), ("R2", "2"))
+    spec = {"parts_needed": [{"role": "base resistor", "search_query": "R"}]}
+    # the candidate list the agent records for the role, as the bench passes it
+    cands = {"base resistor": [{"lib_id": "Device:R"}]}
+
+    total, present, missing, _short, unver = role_fulfilment(spec, ir, symbols, cands)
+    assert (total, present, missing, unver) == (1, 1, [], [])
+
+    dead = analyze_conduction(ir, symbols).dead
+    judged, working, broken = role_jobs_done(spec, ir, symbols, cands, dead)
+    assert (judged, working) == (1, 0)
+    assert "base resistor" in broken[0] and "same potential" in broken[0]
+
+
+def test_compliance_reports_a_dead_component_as_an_error():
+    """Unlike the role paraphrase warnings, this is a fact about the finished
+    board: the part is there and no current can flow through it."""
+    def _rail(lib, value):
+        return SymbolDef(
+            lib, "", [PinDef("1", value, PinType.PWROUT, 0, 0, 0, 2.54)],
+            reference_prefix="#PWR", is_power=True,
+        )
+
+    symbols = {
+        "Device:R": _two_pin("Device:R", "R"),
+        "Device:C": _two_pin("Device:C", "C"),
+        "power:+5V": _rail("power:+5V", "+5V"),
+        "power:GND": _rail("power:GND", "GND"),
+    }
+    # an RC low-pass off +5V: every part bridges two different potentials
+    ir = CircuitIR("rc")
+    ir.add(Component("C1", "Device:C", "100nF"))
+    ir.add(Component("R1", "Device:R", "10k"))
+    ir.add(Component("#PWR01", "power:+5V", "+5V"))
+    ir.add(Component("#PWR02", "power:GND", "GND"))
+    ir.connect("+5V", ("R1", "1"), ("#PWR01", "1"))
+    ir.connect("SIG", ("R1", "2"), ("C1", "1"))
+    ir.connect("GND", ("C1", "2"), ("#PWR02", "1"))
+    report = check_compliance(ir, symbols, prompt="", spec={})
+    assert report.dead_components == {}, report.dead_components
+
+    # now short each of them across a single net
+    ir.nets = []
+    ir.connect("GND", ("C1", "1"), ("C1", "2"), ("#PWR02", "1"))
+    ir.connect("SIG", ("R1", "1"), ("R1", "2"))
+    report = check_compliance(ir, symbols, prompt="", spec={})
+    assert set(report.dead_components) == {"C1", "R1"}
+    assert not report.ok
+    assert {i.rule for i in report.errors} == {"component_does_no_work"}

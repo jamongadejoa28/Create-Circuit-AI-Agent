@@ -30,6 +30,7 @@ from .erc import net_kind
 from .ir import CircuitIR, SymbolDef, ValidationIssue
 from .netnames import STANDARD_RAILS, supply_voltage
 from .pins import PinType
+from .topology import analyze_conduction
 
 DEVICE_LIMITS_PATH = Path(__file__).resolve().parents[2] / "data" / "device_limits.json"
 
@@ -60,6 +61,10 @@ class ComplianceReport:
     role_present: int = 0
     role_missing: list[str] = field(default_factory=list)
     role_unverifiable: list[str] = field(default_factory=list)
+    role_judged: int = 0
+    role_working: int = 0
+    role_not_working: list[str] = field(default_factory=list)
+    dead_components: dict[str, str] = field(default_factory=dict)
 
     @property
     def errors(self) -> list[ValidationIssue]:
@@ -80,6 +85,10 @@ class ComplianceReport:
             "role_present": self.role_present,
             "role_missing": self.role_missing,
             "role_unverifiable": self.role_unverifiable,
+            "role_judged": self.role_judged,
+            "role_working": self.role_working,
+            "role_not_working": self.role_not_working,
+            "dead_components": self.dead_components,
             "issues": [
                 {"rule": i.rule, "severity": i.severity, "path": i.path, "message": i.message}
                 for i in self.issues
@@ -206,17 +215,23 @@ def _token_hit(wanted: set[str], have: set[str]) -> bool:
     return False
 
 
-def role_fulfilment(
+def _role_matches(
     spec: dict, ir: CircuitIR, symbols: dict[str, SymbolDef], candidates: dict | None = None
-) -> tuple[int, int, list[str], dict[str, int], list[str]]:
-    """How many requested roles are represented by a real component.
+) -> list[tuple[dict, list[str] | None]]:
+    """Each requested part paired with the components answering it.
 
-    Matching is deliberately generous — a role name is an LLM paraphrase, so a
+    ``None`` means unverifiable: the role text named nothing in the circuit and
+    no candidate list was recorded for it, so there is no warrant for a verdict
+    either way.
+
+    One definition, used by both questions asked of a role — is it there, and
+    is it doing anything — so the two can never disagree about which component
+    a role refers to.
+
+    Matching is deliberately generous: a role name is an LLM paraphrase, so a
     strict test would measure the extractor's vocabulary rather than the board.
-    A role counts as present when any component's lib_id or value shares a
-    token with the role text or its search query, or when one of the candidate
-    lib_ids offered for that role is in the circuit. Being generous keeps this
-    honest as a FLOOR: a role reported missing really is missing.
+    Being generous keeps presence honest as a FLOOR — a role reported missing
+    really is missing.
     """
     candidates = candidates or {}
     physical = {
@@ -231,33 +246,45 @@ def role_fulfilment(
     comp_tokens = {
         ref: _tokens(comp.lib_id.split(":")[-1]) for ref, comp in physical.items()
     }
-    lib_ids = {c.lib_id for c in physical.values()}
 
+    out: list[tuple[dict, list[str] | None]] = []
+    for part in spec.get("parts_needed", []):
+        role = str(part.get("role", ""))
+        query = str(part.get("search_query", "")).replace("__conceptual__", "")
+        wanted = (_tokens(role) | _tokens(query)) - _GENERIC_ROLE_WORDS
+        matches = [ref for ref, toks in comp_tokens.items() if _token_hit(wanted, toks)]
+        offered = {h.get("lib_id") for h in candidates.get(role, []) if h.get("lib_id")}
+        if not matches and offered:
+            matches = [ref for ref, comp in physical.items() if comp.lib_id in offered]
+        if not matches and not offered:
+            out.append((part, None))
+        else:
+            out.append((part, matches))
+    return out
+
+
+def role_fulfilment(
+    spec: dict, ir: CircuitIR, symbols: dict[str, SymbolDef], candidates: dict | None = None
+) -> tuple[int, int, list[str], dict[str, int], list[str]]:
+    """How many requested roles are represented by a real component.
+
+    Presence only — see `role_jobs_done` for whether the component is wired so
+    that it can do anything.
+    """
     total = 0
     present = 0
     missing: list[str] = []
     unverifiable: list[str] = []
     shortfall: dict[str, int] = {}
-    for part in spec.get("parts_needed", []):
+    for part, matches in _role_matches(spec, ir, symbols, candidates):
         role = str(part.get("role", ""))
-        query = str(part.get("search_query", "")).replace("__conceptual__", "")
-        wanted = (_tokens(role) | _tokens(query)) - _GENERIC_ROLE_WORDS
         total += 1
-        matches = [ref for ref, toks in comp_tokens.items() if _token_hit(wanted, toks)]
-        offered = {h.get("lib_id") for h in candidates.get(role, []) if h.get("lib_id")}
-        if not matches and offered:
-            matches = [
-                ref for ref, comp in physical.items() if comp.lib_id in offered
-            ]
-        if not matches and not offered:
-            # Nothing to check against: the role text did not name anything in
-            # the circuit and no candidate list was recorded for it. Calling
-            # that "missing" is a verdict without a warrant — the synonym table
-            # that used to answer here reported the MCP6001 board as missing
-            # its op-amp and the STM32 board as missing its MCU.
+        if matches is None:
+            # The synonym table that used to answer here reported the MCP6001
+            # board as missing its op-amp and the STM32 board as missing its
+            # MCU. An abstention is not a miss.
             unverifiable.append(role)
-            continue
-        if matches:
+        elif matches:
             present += 1
             want_qty = max(1, int(part.get("quantity", 1) or 1))
             if len(matches) < want_qty:
@@ -265,6 +292,46 @@ def role_fulfilment(
         else:
             missing.append(role)
     return total, present, missing, shortfall, unverifiable
+
+
+def role_jobs_done(
+    spec: dict,
+    ir: CircuitIR,
+    symbols: dict[str, SymbolDef],
+    candidates: dict | None = None,
+    dead: dict[str, str] | None = None,
+) -> tuple[int, int, list[str]]:
+    """Of the roles that are present, how many are wired to do their job.
+
+    "Is the role present" and "is the role doing its job" are different
+    questions, and only the second is the one the user cannot answer for
+    themselves: they arrive having chosen the parts, not knowing where the
+    resistor goes. Measured on driver_relay: role_fulfilment 1.0 on a board
+    whose transistor collector sat on a one-pin net; measured on
+    digital_control: 0.875 with compliance ok on a board where six decoupling
+    capacitors and two crystals hung off a net that never reached the MCU.
+
+    `dead` comes from `topology.analyze_conduction` — a per-component fact
+    about the finished board, independent of this fuzzy role matching. A role
+    counts as done when every component matched to it conducts.
+    """
+    dead = dead or {}
+    judged = 0
+    done = 0
+    broken: list[str] = []
+    for part, matches in _role_matches(spec, ir, symbols, candidates):
+        if not matches:
+            continue  # absent or unverifiable — role_fulfilment's business
+        judged += 1
+        stuck = [ref for ref in matches if ref in dead]
+        if stuck:
+            broken.append(
+                f"{part.get('role', '')}: "
+                + "; ".join(f"{ref} {dead[ref]}" for ref in sorted(stuck))
+            )
+        else:
+            done += 1
+    return judged, done, broken
 
 
 def load_device_limits(path: str | Path = DEVICE_LIMITS_PATH) -> list[dict]:
@@ -488,8 +555,31 @@ def check_compliance(
         )
         for role, short in sorted(shortfall.items())
     ]
+
+    # Presence was never the question the user needed answered. They arrive
+    # with the parts chosen and cannot tell where the resistor goes, so a board
+    # can hold every part they named and still be one they cannot order:
+    # measured on driver_relay, role_fulfilment 1.0 with the transistor
+    # collector on a one-pin net; on digital_control, compliance ok with six
+    # decoupling capacitors and two crystals on a net that never reached the
+    # MCU. Conduction is a fact about the finished board — a pin that reaches
+    # nothing, a part shorted across one net, two ends at the same potential —
+    # so unlike the role paraphrase above it is reported as an ERROR.
+    conduction = analyze_conduction(ir, symbols)
+    role_judged, role_working, role_broken = role_jobs_done(
+        spec or {}, ir, symbols, candidates, conduction.dead
+    )
+    dead_issues = [
+        _issue(
+            "component_does_no_work", "error", ref,
+            f"{ref} ({ir.components[ref].lib_id}) is on the board but can carry "
+            f"no current: {why}",
+        )
+        for ref, why in sorted(conduction.dead.items())
+    ]
+
     return ComplianceReport(
-        issues=req_issues + pwr_issues + role_issues,
+        issues=req_issues + pwr_issues + role_issues + dead_issues,
         requested_parts=requested,
         satisfied_parts=satisfied,
         missing_parts=missing,
@@ -498,4 +588,8 @@ def check_compliance(
         role_present=role_present,
         role_missing=role_missing,
         role_unverifiable=role_unverifiable,
+        role_judged=role_judged,
+        role_working=role_working,
+        role_not_working=role_broken,
+        dead_components=conduction.dead,
     )

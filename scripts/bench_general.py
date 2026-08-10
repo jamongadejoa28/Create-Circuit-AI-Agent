@@ -143,6 +143,7 @@ def main() -> int:
                 f"{case['id']:18} r{repeat}: stage={res.stage:<22} "
                 f"erc={row['kicad_violations']} self={row['self_erc_errors']} "
                 f"conn={row['connectivity_ok']} roles={metrics.role_fulfilment} "
+                f"job={metrics.role_job_done} live={metrics.parts_working}/{metrics.parts_total} "
                 f"wired={row['wiring'].get('wired_ratio')} vis={row['visual_issues']} "
                 f"auto={metrics.auto_connections}/{metrics.auto_no_connects}nc "
                 f"parts={len(in_board)}/{len(selected)} compliance={row['compliance_ok']}"

@@ -29,8 +29,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .compliance import role_fulfilment
+from .compliance import role_fulfilment, role_jobs_done
 from .ir import CircuitIR, SymbolDef
+from .topology import analyze_conduction
 
 Connection = tuple[str, str, str]  # (net, ref, pin)
 
@@ -56,6 +57,12 @@ class RunMetrics:
     role_present: int = 0
     role_missing: list[str] = field(default_factory=list)
     role_unverifiable: list[str] = field(default_factory=list)
+    role_judged: int = 0
+    role_working: int = 0
+    role_not_working: list[str] = field(default_factory=list)
+    parts_total: int = 0
+    parts_working: int = 0
+    dead_components: dict[str, str] = field(default_factory=dict)
     quantity_shortfall: dict[str, int] = field(default_factory=dict)
     auto_connections: int = 0
     auto_no_connects: int = 0
@@ -75,6 +82,26 @@ class RunMetrics:
         judged = self.role_total - len(self.role_unverifiable)
         return round(self.role_present / judged, 3) if judged else None
 
+    @property
+    def role_job_done(self) -> float | None:
+        """Of the roles that ARE present, how many are wired to do anything.
+
+        Reported beside role_fulfilment, never instead of it: presence is the
+        floor, and a board can score 1.0 there while nothing on it conducts.
+        """
+        return (
+            round(self.role_working / self.role_judged, 3)
+            if self.role_judged else None
+        )
+
+    @property
+    def conducting_ratio(self) -> float | None:
+        """The same question asked of every part, not just the requested roles."""
+        return (
+            round(self.parts_working / self.parts_total, 3)
+            if self.parts_total else None
+        )
+
     def as_dict(self) -> dict:
         return {
             "role_total": self.role_total,
@@ -82,6 +109,14 @@ class RunMetrics:
             "role_fulfilment": self.role_fulfilment,
             "role_missing": self.role_missing,
             "role_unverifiable": self.role_unverifiable,
+            "role_judged": self.role_judged,
+            "role_working": self.role_working,
+            "role_job_done": self.role_job_done,
+            "role_not_working": self.role_not_working,
+            "parts_total": self.parts_total,
+            "parts_working": self.parts_working,
+            "conducting_ratio": self.conducting_ratio,
+            "dead_components": self.dead_components,
             "quantity_shortfall": self.quantity_shortfall,
             "auto_connections": self.auto_connections,
             "auto_no_connects": self.auto_no_connects,
@@ -139,6 +174,16 @@ def measure_run(
         metrics.role_missing = missing
         metrics.quantity_shortfall = shortfall
         metrics.role_unverifiable = unver
+        conduction = analyze_conduction(ir, symbols)
+        metrics.parts_total = conduction.total
+        metrics.parts_working = conduction.working
+        metrics.dead_components = conduction.dead
+        judged, working, broken = role_jobs_done(
+            spec, ir, symbols, candidates, conduction.dead
+        )
+        metrics.role_judged = judged
+        metrics.role_working = working
+        metrics.role_not_working = broken
     auto = auto or {}
     metrics.auto_connections = auto.get("added_connections", 0)
     metrics.auto_no_connects = auto.get("added_no_connects", 0)
@@ -185,6 +230,19 @@ def summarize(rows: list[dict]) -> dict:
             "role_fulfilment": spread([
                 (r.get("metrics") or {}).get("role_fulfilment") for r in group
             ]),
+            # presence says a part is there; this says it is wired to do
+            # something. A family at 1.0 on the first and low on the second is
+            # drawing the right bill of materials and the wrong circuit.
+            "role_job_done": spread([
+                (r.get("metrics") or {}).get("role_job_done") for r in group
+            ]),
+            "conducting_ratio": spread([
+                (r.get("metrics") or {}).get("conducting_ratio") for r in group
+            ]),
+            "dead_components": sorted(
+                {ref for r in group
+                 for ref in ((r.get("metrics") or {}).get("dead_components") or {})}
+            ),
             "wired_ratio": spread([
                 (r.get("wiring") or {}).get("wired_ratio") for r in group
             ]),
