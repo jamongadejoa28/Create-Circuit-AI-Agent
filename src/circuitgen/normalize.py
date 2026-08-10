@@ -1024,3 +1024,81 @@ def ensure_stm32g4_power_network(
     return notes
 
 
+
+
+def resolve_unknown_symbols(ir: CircuitIR, parts) -> list[str]:
+    """Every component must be something the emitter can actually place.
+
+    A fabricated lib_id does not stop the run: `_resolve_symbols` leaves it
+    out, self-ERC reports `unknown_symbol`, and the pipeline drops the part
+    into draft mode and emits the rest. The IR keeps it, so from that point
+    compliance, conduction and every measurement judge a circuit that is not
+    the one written to disk. Measured on a real 4-motor board: `U11` with
+    lib_id "communication:STS3215 UART" (a library that does not exist, and a
+    space in the symbol name) and `D1` with "Device:Diode_Schottky" (the real
+    symbol is `Device:D_Schottky`) were both absent from the schematic while
+    the netlist round-trip — correctly — reported the mismatch.
+
+    Two ways out, in order, neither of them a list of names:
+
+    1. Ask the catalog for the symbol NAME and take the first candidate that
+       has every pin this circuit already uses. That is what rescues
+       Device:Diode_Schottky -> Device:D_Schottky, and the pin test is what
+       stops it rescuing it into something unrelated.
+    2. Otherwise make it a Conceptual box, the mechanism this project already
+       uses for parts no library carries. The connections survive, the reader
+       sees a labelled box, and the emitted sheet matches the IR.
+
+    Idempotent by construction: afterwards every lib_id either resolves in
+    the index or starts with "Conceptual:", so a second pass changes nothing.
+    """
+    from .conceptual import PREFIX as CONCEPTUAL
+
+    notes: list[str] = []
+    used: dict[str, set[str]] = {}
+    for net in ir.nets:
+        for ref, pin in net.nodes:
+            used.setdefault(ref, set()).add(str(pin))
+    for ref, pin in ir.nc_pins:
+        used.setdefault(ref, set()).add(str(pin))
+
+    for ref, comp in sorted(ir.components.items()):
+        if comp.lib_id.startswith(CONCEPTUAL):
+            continue
+        try:
+            parts.symbol_source(comp.lib_id)
+            continue
+        except KeyError:
+            pass
+
+        name = comp.lib_id.split(":")[-1]
+        want = used.get(ref, set())
+        chosen = None
+        for hit in parts.search_parts(name, 8):
+            lib_id = hit.get("lib_id")
+            if not lib_id:
+                continue
+            try:
+                sym = parts.load_symbols([lib_id])[lib_id]
+            except Exception:
+                continue
+            try:
+                for pin in want:
+                    sym.pin(pin)
+            except KeyError:
+                continue  # cannot carry this circuit's pins — not a substitute
+            chosen = lib_id
+            break
+
+        if chosen:
+            notes.append(f"{ref}: unknown symbol {comp.lib_id} -> {chosen} (catalog, pins fit)")
+            comp.lib_id = chosen
+        else:
+            box = CONCEPTUAL + re.sub(r"[^A-Za-z0-9_]+", "_", name).strip("_")
+            notes.append(
+                f"{ref}: no symbol named {name!r} in the catalog carries pins "
+                f"{sorted(want) or ['(none)']} — drawn as {box} so the sheet "
+                f"matches the circuit"
+            )
+            comp.lib_id = box
+    return notes

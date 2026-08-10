@@ -2044,6 +2044,7 @@ class Agent:
             enforce_requested_stm32_variant,
             mark_documented_no_connects,
             normalize_common_symbol_aliases,
+            resolve_unknown_symbols,
             sanitize_known_device_nets,
             unify_stacked_pins,
         )
@@ -2054,6 +2055,10 @@ class Agent:
         dc_rail = "+12V" if "+12V" in rails else "+5V"
 
         notes += normalize_common_symbol_aliases(ir)
+        # first, because every pass below reads the symbol: a lib_id nothing
+        # can load is invisible to all of them and to the emitter, and the
+        # board then measured is not the board on disk
+        notes += resolve_unknown_symbols(ir, self.parts)
         notes += enforce_requested_stm32_variant(ir, prompt, syms())
         notes += sanitize_known_device_nets(ir, syms())
         # the parts that ended up in the circuit decide which rails it needs:
