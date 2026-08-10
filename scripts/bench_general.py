@@ -80,7 +80,9 @@ def main() -> int:
             required = case.get("topology", [])
             contracts = _contract_results(required, topology)
             symbols = agent._resolve_symbols(res.ir) if res.ir else {}
-            metrics = measure_run(res.spec or {}, res.ir, symbols, res.auto_connections)
+            metrics = measure_run(
+                res.spec or {}, res.ir, symbols, res.auto_connections, res.candidates
+            )
             # The product assumption is that the user arrives having ALREADY
             # chosen the parts and needs the design. So the first thing to
             # measure is whether the parts they named survive into the board.

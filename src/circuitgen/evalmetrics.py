@@ -64,7 +64,16 @@ class RunMetrics:
 
     @property
     def role_fulfilment(self) -> float | None:
-        return round(self.role_present / self.role_total, 3) if self.role_total else None
+        """Present out of the roles we could actually judge.
+
+        Abstentions used to sit in the denominator, so they scored exactly like
+        misses: a correct LM2937 board with both bypass capacitors reported
+        0.20 because the metric could not see a Device:C. Reported alongside
+        role_unverifiable, which is the number that says how much of the
+        requirement went unchecked.
+        """
+        judged = self.role_total - len(self.role_unverifiable)
+        return round(self.role_present / judged, 3) if judged else None
 
     def as_dict(self) -> dict:
         return {

@@ -7,6 +7,7 @@ could not say which circuit family failed or why.
 """
 
 from circuitgen.evalmetrics import (
+    RunMetrics,
     connection_set,
     diff_connections,
     measure_run,
@@ -46,15 +47,18 @@ def test_a_role_is_missing_only_when_we_could_actually_check():
         "MCU_ST_STM32G4:STM32G474RETx": _sym("MCU_ST_STM32G4:STM32G474RETx", 8),
         "Device:R": _sym("Device:R"),
     }
-    candidates = {"I2C temperature sensor": [{"lib_id": "Sensor_Temperature:TMP100"}]}
+    candidates = {
+        "I2C temperature sensor": [{"lib_id": "Sensor_Temperature:TMP100"}],
+        "SDA pull-up": [{"lib_id": "Device:R"}],
+    }
     total, present, missing, _short, unver = role_fulfilment(SPEC, ir, symbols, candidates)
     assert total == 3
-    # STM32 matches by token; the sensor had candidates offered and none is on
-    # the board, so it is genuinely missing
+    # the sensor had candidates offered and none is on the board: missing
     assert missing == ["I2C temperature sensor"]
-    # the pull-up role names nothing in the circuit and had no candidates
-    # recorded, so we cannot tell — that is not the same as absent
-    assert unver == ["SDA pull-up"] and present == 1
+    # the pull-up is answered by R1 through its candidate list. It cannot be
+    # answered by tokens — _tokens drops "R", so Device:R and Device:C can
+    # never match by lib_id, which is why the candidate list has to reach here
+    assert unver == [] and present == 2
 
 
 def test_power_symbols_do_not_count_as_fulfilling_a_role():
@@ -110,6 +114,15 @@ def test_measure_run_survives_a_run_that_produced_no_circuit():
     metrics = measure_run(SPEC, None, {}, None)
     assert metrics.role_total == 0 and metrics.role_fulfilment is None
     assert metrics.as_dict()["auto_connections"] == 0
+
+
+def test_an_abstention_is_not_scored_as_a_miss():
+    """A correct LM2937 board with both bypass capacitors reported 0.20,
+    because the metric could not see a Device:C and counted every abstention
+    in the denominator."""
+    m = RunMetrics(role_total=5, role_present=1, role_unverifiable=["a", "b", "c", "d"])
+    assert m.role_fulfilment == 1.0, "one judged role, one present"
+    assert m.as_dict()["role_unverifiable"] == ["a", "b", "c", "d"]
 
 
 def test_summary_reports_per_family_with_repeat_spread():

@@ -196,18 +196,6 @@ _GENERIC_ROLE_WORDS = {
     "REQUIREMENT", "CONNECTION", "CIRCUIT", "MODULE",
 }
 
-def _library_prefix(comp, symbols) -> str:
-    """The reference prefix the LIBRARY assigns, not the one in the ref string.
-
-    contracts.py, topology.py, place.py and erc.py all read
-    symbols[lib_id].reference_prefix; this used to parse the ref instead, so
-    the same Device:R counted as a resistor when the model called it R1 and
-    did not when it called it RN1 or RES1.
-    """
-    sym = symbols.get(comp.lib_id)
-    return (sym.reference_prefix if sym else "").upper()
-
-
 def _token_hit(wanted: set[str], have: set[str]) -> bool:
     """Part numbers are single tokens that rarely match exactly: a request for
     STM32 is answered by STM32G474RETx. Substring either way, min 3 chars."""
@@ -220,7 +208,7 @@ def _token_hit(wanted: set[str], have: set[str]) -> bool:
 
 def role_fulfilment(
     spec: dict, ir: CircuitIR, symbols: dict[str, SymbolDef], candidates: dict | None = None
-) -> tuple[int, int, list[str], dict[str, int]]:
+) -> tuple[int, int, list[str], dict[str, int], list[str]]:
     """How many requested roles are represented by a real component.
 
     Matching is deliberately generous — a role name is an LLM paraphrase, so a
@@ -236,9 +224,12 @@ def role_fulfilment(
         if not ref.startswith("#")
         and not (symbols.get(comp.lib_id) and symbols[comp.lib_id].is_power)
     }
+    # the symbol only. comp.value is written by the pipeline, so reading it
+    # let four electrically identical boards score 0 or 1 depending on whether
+    # the string happened to contain the role's word — the same reason
+    # part_present refuses it.
     comp_tokens = {
-        ref: _tokens(comp.lib_id.split(":")[-1]) | _tokens(comp.value)
-        for ref, comp in physical.items()
+        ref: _tokens(comp.lib_id.split(":")[-1]) for ref, comp in physical.items()
     }
     lib_ids = {c.lib_id for c in physical.values()}
 

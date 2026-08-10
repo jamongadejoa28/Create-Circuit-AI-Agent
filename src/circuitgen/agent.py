@@ -92,6 +92,9 @@ class AgentResult:
     block_plan: list[dict] | None = None
     # what deterministic code added after synthesis, measured by IR diff
     auto_connections: dict = field(default_factory=dict)
+    # the catalog candidates offered per role — role coverage cannot be
+    # judged without them, and the harness had no way to see them
+    candidates: dict = field(default_factory=dict)
     # "is this the circuit that was requested, and can it be powered on?"
     # — questions ERC cannot answer; None only if no circuit was produced
     compliance: "ComplianceReport | None" = None
@@ -385,14 +388,24 @@ class Agent:
         thirty copies of it.
         """
         seen: dict[str, int] = {}
+        seen_roles: set[str] = set()
         for part in spec.get("parts_needed", []):
             base = (part.get("role") or part.get("search_query") or "part").strip()
             seen[base] = seen.get(base, 0) + 1
             if seen[base] > 1:
-                detail = (part.get("search_query") or str(seen[base])).strip()
-                part["role"] = f"{base}:{detail}"[:32]
+                # truncate BEFORE disambiguating, not after: appending the
+                # query and then cutting to 32 produced
+                # '3.3V Decoupling Capacitors:capac' twice, so a function whose
+                # job is unique keys handed out a duplicate that then
+                # overwrote its own candidate entry and inflated role_total
+                detail = (part.get("search_query") or "").strip()
+                suffix = f":{detail}" if detail else ""
+                part["role"] = (base[:32 - len(suffix)] + suffix) if suffix else base[:32]
+                if part["role"] in seen_roles:
+                    part["role"] = f"{base[:28]}:{seen[base]}"
             else:
                 part["role"] = base[:32]
+            seen_roles.add(part["role"])
             part["quantity"] = max(1, int(part.get("quantity", 1)))
 
     def _designators(self, lib_ids) -> set[str]:
@@ -1810,9 +1823,10 @@ class Agent:
         res.auto_connections = diff_connections(
             synth_nets, connection_set(ir), synth_nc, nc_set(ir)
         )
+        res.candidates = ctx.get("candidates") or {}
         res.compliance = check_compliance(
             ir, self._resolve_symbols(ir), prompt, self.parts, spec,
-            ctx.get("candidates"),
+            res.candidates,
         )
         for issue in res.compliance.issues:
             res.log.append(f"compliance {issue.severity} {issue.rule}: {issue.message}")
@@ -2075,9 +2089,19 @@ class Agent:
                 # AMS1117 by bm25 and left FB/~SHDN dangling
                 hits.sort(key=lambda h: h.get("pins") or 99)
                 cands = [h["lib_id"] for h in hits]
-            # a named part that fits this role outranks both the pattern's
-            # own lib_id and the search ranking
-            cands = list(dict.fromkeys(preferred + cands))
+            # A named part outranks the pattern's own lib_id only for a role it
+            # could actually BE. Prepending it to every role shipped a dead
+            # board: the user pasted Switch:SW_Push, it was tried first for the
+            # current-limiting resistor role, bind_role_pins accepted it
+            # because a switch also has pins "1" and "2", and passive_led came
+            # out as two switches in series with an unprotected LED. The test
+            # is the reference designator the library itself assigns.
+            want_prefix = prefix_of.get(rspec.get("kind", ""), "U")
+            fits = [
+                lib_id for lib_id in preferred
+                if want_prefix in self._designators([lib_id])
+            ]
+            cands = list(dict.fromkeys(fits + cands))
             bound = None
             for lid in cands:
                 try:
