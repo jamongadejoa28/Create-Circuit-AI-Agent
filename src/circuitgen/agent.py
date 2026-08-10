@@ -828,7 +828,7 @@ class Agent:
     # ---- stage 2b: block decomposition (board scale, plan §7.2) ----
 
     def plan_blocks(self, spec: dict) -> tuple[list[dict], list[str]]:
-        from .blocks import validate_plan
+        from .blocks import islands, validate_plan
 
         content = (
             "Partition this circuit spec into functional blocks for separate "
@@ -852,12 +852,46 @@ class Agent:
             "(SPI_SCK).\n\n"
             f"SPEC: {json.dumps(spec, ensure_ascii=False)}"
         )
-        data = _with_retry(lambda: self.llm.complete_json(
-            [{"role": "system", "content": _SYSTEM}, {"role": "user", "content": content}],
-            schema=BLOCK_PLAN,
-            max_tokens=2048,
-        ))
-        return validate_plan(data["blocks"], spec)
+        def ask(extra: str = "") -> tuple[list[dict], list[str]]:
+            data = _with_retry(lambda: self.llm.complete_json(
+                [{"role": "system", "content": _SYSTEM},
+                 {"role": "user", "content": content + extra}],
+                schema=BLOCK_PLAN,
+                max_tokens=2048,
+            ))
+            return validate_plan(data["blocks"], spec)
+
+        plan, notes = ask()
+        # A block that declares no interface net is synthesized into its own
+        # private net names and lands on the board as an island. Measured on a
+        # 4-motor request: MCU and COMM declared CAN_H/CAN_L/TX/RX and those
+        # four were the only signals that connected, while four MOTOR, four
+        # ENCODER and one BATTERY block declared none and produced 100 one-pin
+        # nets out of 113. Caught here it costs one more plan call; caught at
+        # the end it costs the whole generation.
+        stranded = islands(plan)
+        if stranded:
+            notes.append(
+                f"block plan: {', '.join(stranded)} declare no interface net and "
+                f"would be generated as islands — asking once more"
+            )
+            retry, retry_notes = ask(
+                f"\n\nYour previous plan left {', '.join(stranded)} with an EMPTY "
+                f"interface_nets list. A block with no interface net is wired to "
+                f"nothing: every signal pin ends up alone on its own net. Name the "
+                f"signals each of those blocks exchanges with the controller — for a "
+                f"motor driver its PWM inputs and fault line, for an encoder its SPI "
+                f"or output lines. Power rails stay implicit."
+            )
+            if len(islands(retry)) < len(stranded):
+                plan, notes = retry, notes + retry_notes
+            still = islands(plan)
+            notes.append(
+                f"block plan: {', '.join(still)} still declare no interface net — "
+                f"expect them to arrive unconnected"
+                if still else "block plan: every block now declares an interface"
+            )
+        return plan, notes
 
     @staticmethod
     def _interface_catalog(plan: list[dict]) -> list[dict]:
@@ -1749,9 +1783,6 @@ class Agent:
             rails = [r["name"] for r in spec.get("power", {}).get("rails", [])]
             ir, mnotes = instantiate_blocks(name, plan, block_irs, rails)
             res.log.extend(mnotes)
-            from .normalize import merge_dangling_interface_nets
-
-            res.log.extend(merge_dangling_interface_nets(ir))
             res.log.extend(self.wire_mcu_interfaces(ir, catalog))
             ctx = {"candidates": merged_candidates}
             if not ir.components:
@@ -1833,7 +1864,6 @@ class Agent:
             ensure_dc_power_entry,
             ensure_i2c_pullups,
             enforce_requested_stm32_variant,
-            merge_dangling_interface_nets,
             normalize_common_symbol_aliases,
             sanitize_known_device_nets,
         )
@@ -2002,7 +2032,6 @@ class Agent:
             ensure_stm32g4_power_network,
             enforce_requested_stm32_variant,
             mark_documented_no_connects,
-            merge_dangling_interface_nets,
             normalize_common_symbol_aliases,
             sanitize_known_device_nets,
             unify_stacked_pins,
@@ -2016,7 +2045,6 @@ class Agent:
         notes += normalize_common_symbol_aliases(ir)
         notes += enforce_requested_stm32_variant(ir, prompt, syms())
         notes += sanitize_known_device_nets(ir, syms())
-        notes += merge_dangling_interface_nets(ir)
         # the parts that ended up in the circuit decide which rails it needs:
         # a pattern supplies its own MCU, so the requirement may list no logic
         # rail at all and every supply pass below is keyed on one existing
@@ -2372,7 +2400,16 @@ class Agent:
         Trims to the requirement's QUANTITY, never blindly to one — a 4-axis
         board legitimately holds 4 drivers and 4 encoders, and cutting to
         refs[0] would delete healthy channels after every repair round. A
-        role that cannot be matched to a spec entry is left untouched."""
+        role that cannot be matched to a spec entry is left untouched.
+
+        WHICH copy survives is decided by how much of the board it is wired
+        to, not by its reference designator. Measured on a 4-motor request:
+        the MCU block produced U1 wired to every motor and encoder net, the
+        UART block separately produced MCU1 carrying only TXD/RXD, and
+        alphabetical order kept MCU1 — deleting the controller that the rest
+        of the board was connected to, and with it every one of those
+        connections. Removing the better-connected copy can only lose wiring;
+        that is not a preference, it is arithmetic."""
         notes: list[str] = []
 
         def norm(s: str) -> str:
@@ -2391,14 +2428,21 @@ class Agent:
                 h.get("lib_id") for h in hits
                 if h.get("lib_id") and not h.get("lib_id", "").startswith("Device:")
             }
-            refs = sorted(r for r, c in ir.components.items() if c.lib_id in ids)
-            for ref in refs[max(1, qty):]:
+            wired = {
+                r: sum(1 for net in ir.nets for nr, _p in net.nodes if nr == r)
+                for r, c in ir.components.items() if c.lib_id in ids
+            }
+            refs = sorted(wired, key=lambda r: (-wired[r], r))
+            keep, drop = refs[: max(1, qty)], refs[max(1, qty):]
+            for ref in drop:
                 ir.components.pop(ref, None)
                 for net in ir.nets:
                     net.nodes = [node for node in net.nodes if node[0] != ref]
                 ir.nc_pins = [node for node in ir.nc_pins if node[0] != ref]
                 notes.append(
-                    f"repair duplicate removed: {ref} beyond quantity {qty} for role {role}"
+                    f"repair duplicate removed: {ref} ({wired[ref]} connections) "
+                    f"beyond quantity {qty} for role {role}; kept "
+                    + ", ".join(f"{r} ({wired[r]})" for r in keep)
                 )
         ir.nets = [net for net in ir.nets if net.nodes]
         return notes

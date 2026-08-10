@@ -296,6 +296,33 @@ def validate_plan(plan: list[dict], spec: dict) -> tuple[list[dict], list[str]]:
     return plan, notes
 
 
+def islands(plan: list[dict]) -> list[str]:
+    """Blocks that declare no shared net, in a plan that has more than one.
+
+    `interface_nets` is how a block says which nets another block also
+    reaches; blocks are synthesized separately and nothing else joins them.
+    A block that declares none is generated into its own private net names
+    and arrives on the board as an island — every signal pin alone on a
+    one-pin net.
+
+    Measured on a real request (STM32G474 + 4 BLDC + 4 AS5048A + CAN + UART +
+    battery monitor): MCU and COMM declared CAN_H/CAN_L/TX/RX and those four
+    are precisely the signals that ended up connected; the four MOTOR, four
+    ENCODER and one BATTERY block declared `[]` and produced 100 one-pin nets
+    out of 113. The mechanism works — the plan just did not use it.
+
+    Power rails are excluded by the planner's own instruction ("power rails
+    are implicit and shared, never list them"), so a block that genuinely
+    only exchanges power will show up here too; the caller re-asks rather
+    than rejecting, and reports what it got either way.
+    """
+    if len(plan) < 2:
+        return []
+    return [
+        str(b.get("id", "?")) for b in plan if not b.get("interface_nets")
+    ]
+
+
 def validate_block_template(
     block: dict,
     ir: CircuitIR,

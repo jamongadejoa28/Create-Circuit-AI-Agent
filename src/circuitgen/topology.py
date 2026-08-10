@@ -141,12 +141,25 @@ def _series_elements(ir: CircuitIR, symbols: dict[str, SymbolDef]) -> set[str]:
     `_two_pin_edges`, which answers a different question (a bypass/feedback
     BRIDGE, where a diode or a switch is not the same thing as an R or a C).
 
-    A two-pin CONNECTOR is the exception, and it has to be one: its pins are
-    two separate terminals with nothing between them. Treating one as a path
-    merged CANH and CANL through the bus connector and reported the 120 Ω
-    termination — the one part of that board the user could not have placed
-    themselves — as carrying no current. The reference designator is the
-    library's own (IEEE 315: J is a connector), not a label we assign.
+    Two kinds of two-pin part are NOT an impedance and must not be traced
+    through. Both are read off the library, and both were found by a false
+    diagnosis on a board that was fine:
+
+    * a CONNECTOR (IEEE 315 designator J) — its pins are separate terminals
+      with nothing between them. Treating one as a path merged CANH and CANL
+      through the bus header and reported the 120 Ω termination, the one part
+      of that board the user could not have placed themselves, as carrying no
+      current.
+    * a SOURCE — a cell or battery, whose pins are named "+" and "-"
+      (Device:Battery, Device:Solar_Cell; a polarised capacitor leaves both
+      pin names blank). It HOLDS its terminals apart rather than joining them,
+      so a path ends there. Tracing through one collapsed BATTERY_VCC into
+      GND and declared the battery, its Schottky and both divider resistors
+      dead on a real 4-motor board.
+
+    Two exceptions is the limit. A third means this predicate is the wrong
+    one and needs replacing, not extending — a list of designators is exactly
+    what `docs/working-rules.md` §2 says to delete.
     """
     out = set()
     for ref, comp in ir.components.items():
@@ -154,8 +167,11 @@ def _series_elements(ir: CircuitIR, symbols: dict[str, SymbolDef]) -> set[str]:
         if sym is None or sym.is_power or sym.reference_prefix == "J":
             continue
         pins = [p for p in sym.pins if not p.hidden]
-        if len(pins) == 2 and all(p.etype.name == "PASSIVE" for p in pins):
-            out.add(ref)
+        if len(pins) != 2 or not all(p.etype.name == "PASSIVE" for p in pins):
+            continue
+        if {(p.name or "").strip() for p in pins} == {"+", "-"}:
+            continue
+        out.add(ref)
     return out
 
 

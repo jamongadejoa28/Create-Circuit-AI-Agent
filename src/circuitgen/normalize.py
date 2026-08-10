@@ -105,48 +105,6 @@ def normalize_common_symbol_aliases(ir: CircuitIR) -> list[str]:
     return notes
 
 
-_IF_SIGNALS = {
-    "MOSI", "MISO", "SCK", "SCLK", "SDA", "SCL", "TX", "RX", "TXD", "RXD",
-    "CANH", "CANL", "CLK", "SWDIO", "SWCLK", "NRST", "INT", "DRDY",
-}
-
-
-def merge_dangling_interface_nets(ir: CircuitIR) -> list[str]:
-    """Unify net-name pairs like SPI_MOSI (MCU side) / MOSI (device side).
-
-    Measured failure (BLDC board): blocks name the same interface signal
-    with and without a bus prefix, leaving BOTH nets single-pin — self-ERC
-    then reports two dangling pins, and the GPIO mapper would attach the
-    device net to a fresh pin instead of the matching one. Merge is
-    conservative: only when exactly two nets share a known interface
-    suffix, at least one is single-pin, and their refs are disjoint.
-    """
-    notes: list[str] = []
-
-    def suffix(name: str) -> str | None:
-        tok = name.rsplit("_", 1)[-1].upper()
-        return tok if tok in _IF_SIGNALS else None
-
-    by_suffix: dict[str, list] = {}
-    for net in ir.nets:
-        s = suffix(net.name)
-        if s:
-            by_suffix.setdefault(s, []).append(net)
-    for s, nets in sorted(by_suffix.items()):
-        if len(nets) != 2:
-            continue  # >2 same-suffix nets (per-channel buses) stay apart
-        a, b = nets
-        if min(len(a.nodes), len(b.nodes)) != 1:
-            continue
-        if {r for r, _ in a.nodes} & {r for r, _ in b.nodes}:
-            continue
-        keep, drop = (a, b) if (len(a.nodes), len(a.name)) >= (len(b.nodes), len(b.name)) else (b, a)
-        keep.nodes.extend(drop.nodes)
-        ir.nets.remove(drop)
-        notes.append(f"merged dangling interface net {drop.name} into {keep.name}")
-    return notes
-
-
 def unify_stacked_pins(ir: CircuitIR, symbols: dict[str, SymbolDef]) -> list[str]:
     """Pins stacked at one coordinate are one physical node — wire them as one.
 

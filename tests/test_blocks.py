@@ -210,3 +210,23 @@ def test_missing_block_ir_skipped():
     ir, notes = instantiate_blocks("t", PLAN, {}, rails=["GND"])
     assert not ir.components
     assert any("skipped" in n for n in notes)
+
+
+def test_a_block_with_no_interface_net_is_an_island():
+    """Measured on a real request (STM32G474 + 4 BLDC + 4 AS5048A + CAN + UART
+    + battery monitor): MCU and COMM declared CAN_H/CAN_L/TX/RX and those four
+    were exactly the signals that connected. MOTOR, ENCODER and BATTERY
+    declared `[]` and the board came out with 100 one-pin nets out of 113.
+    """
+    from circuitgen.blocks import islands
+
+    plan = [
+        {"id": "MCU", "count": 1, "roles": ["controller"],
+         "interface_nets": [{"name": "CAN_H", "purpose": "CAN high"}]},
+        {"id": "MOTOR", "count": 4, "roles": ["motor_driver"], "interface_nets": []},
+        {"id": "ENCODER", "count": 4, "roles": ["encoder"], "interface_nets": []},
+    ]
+    assert islands(plan) == ["MOTOR", "ENCODER"]
+
+    # a single-block plan has nothing to be an island from
+    assert islands([{"id": "ONLY", "count": 1, "interface_nets": []}]) == []

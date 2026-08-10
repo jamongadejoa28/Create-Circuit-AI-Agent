@@ -1063,3 +1063,30 @@ def test_capability_filters_never_override_a_part_the_user_named(agent_env):
     generic = [h["lib_id"] for h in candidates["generic relay"]]
     assert generic and all(g.startswith("Relay:") for g in generic)
     assert "Relay:G5V-1" not in generic
+
+
+def test_duplicate_removal_keeps_the_better_wired_copy():
+    """Measured on the 4-motor board: the MCU block produced U1 wired to every
+    motor and encoder net, the UART block separately produced MCU1 carrying
+    only TXD/RXD, and `sorted()` kept MCU1 — deleting the controller the rest
+    of the board was connected to, and every one of those connections with it.
+    """
+    agent = object.__new__(Agent)
+    ir = CircuitIR("two-mcus")
+    ir.add(Component("U1", "MCU_ST_STM32G4:STM32G474RETx", "STM32G474"))
+    ir.add(Component("MCU1", "MCU_ST_STM32G4:STM32G474RETx", "STM32G474"))
+    for pin, net in (("21", "MOTOR1_PWM_A"), ("22", "MOTOR2_PWM_A"),
+                     ("23", "ENC1_CS"), ("24", "ENC2_CS")):
+        ir.connect(net, ("U1", pin))
+    ir.connect("UART_TX", ("MCU1", "8"))
+
+    spec = {"parts_needed": [{"role": "controller", "quantity": 1}]}
+    cands = {"controller": [{"lib_id": "MCU_ST_STM32G4:STM32G474RETx"}]}
+    notes = agent._limit_main_device_copies(ir, cands, spec)
+
+    assert set(ir.components) == {"U1"}, ir.components
+    assert any("kept U1 (4)" in n for n in notes), notes
+    # the wiring survived with it
+    assert {n.name for n in ir.nets} == {
+        "MOTOR1_PWM_A", "MOTOR2_PWM_A", "ENC1_CS", "ENC2_CS"
+    }

@@ -141,25 +141,6 @@ def test_stm32g4_power_network_adds_per_vdd_and_analog_decoupling():
     assert on_rail == {"+3V3"}, "3.11.1: VDDA belongs on the VDD rail"
 
 
-def test_merge_dangling_interface_nets():
-    from circuitgen.normalize import merge_dangling_interface_nets
-
-    ir = CircuitIR("m")
-    ir.add(Component("U1", "MCU_ST_STM32G4:STM32G474RETx", "MCU"))
-    ir.add(Component("U2", "Sensor_Magnetic:AS5048A", "ENC"))
-    ir.connect("SPI_MOSI", ("U1", "21"))
-    ir.connect("MOSI", ("U2", "4"))
-    ir.connect("ENC1_CS", ("U1", "22"), ("U2", "5"))
-    notes = merge_dangling_interface_nets(ir)
-    assert any("MOSI" in n for n in notes)
-    names = [n.name for n in ir.nets]
-    assert "MOSI" not in names and "SPI_MOSI" in names
-    spi = next(n for n in ir.nets if n.name == "SPI_MOSI")
-    assert ("U2", "4") in [(r, p) for r, p in spi.nodes]
-    # untouched: already-connected net
-    assert len(next(n for n in ir.nets if n.name == "ENC1_CS").nodes) == 2
-
-
 def test_stacked_pins_join_their_wired_sibling_net():
     from circuitgen.normalize import unify_stacked_pins
 
