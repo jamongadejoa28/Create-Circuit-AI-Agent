@@ -21,7 +21,9 @@ because their sqlite connections belong to the thread that opened them.
 
 from __future__ import annotations
 
+import hashlib
 import queue
+import subprocess
 import threading
 import traceback
 import uuid
@@ -39,6 +41,28 @@ OUT_ROOT = Path(__file__).resolve().parents[2] / "out" / "web"
 class DesignRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=8000)
     name: str | None = Field(default=None, max_length=64)
+    #: fixed so two runs of one prompt are comparable; change it deliberately
+    #: to sample the model's spread rather than by accident
+    seed: int = Field(default=1, ge=0, le=2**31 - 1)
+
+
+def _commit() -> str:
+    """The exact code this run used, so a later run can be compared to it."""
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=Path(__file__).resolve().parents[2],
+            capture_output=True, text=True, timeout=5,
+        )
+        head = out.stdout.strip() or "unknown"
+        dirty = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=Path(__file__).resolve().parents[2],
+            capture_output=True, text=True, timeout=5,
+        ).stdout.strip()
+        return f"{head}+dirty" if dirty else head
+    except Exception:
+        return "unknown"
 
 
 @dataclass
@@ -46,6 +70,7 @@ class Job:
     id: str
     prompt: str
     name: str
+    seed: int = 1
     state: str = "queued"  # queued | running | done | failed
     created: str = ""
     started: str | None = None
@@ -60,6 +85,7 @@ class Job:
             "state": self.state,
             "name": self.name,
             "prompt": self.prompt,
+            "seed": self.seed,
             "created": self.created,
             "started": self.started,
             "finished": self.finished,
@@ -145,7 +171,14 @@ def _run_job(job: Job) -> None:
 
     run_dir = OUT_ROOT / job.id
     run_dir.mkdir(parents=True, exist_ok=True)
-    llm = LlamaClient()
+    # A run that cannot be compared with the last one cannot show whether a
+    # change helped. The model is deterministic at temperature 0 — four
+    # identical requests returned four identical plans — so when two runs of
+    # the same prompt differ, what differed is the CODE or the seed, and the
+    # report has to say which. Measured the hard way: the plan appeared to
+    # change run to run while I was editing plan_blocks between the user's
+    # tests, which made every before/after comparison meaningless.
+    llm = LlamaClient(extra_payload={"seed": job.seed})
     if not llm.health():
         raise RuntimeError(
             "llama-server에 연결할 수 없습니다 — Windows 쪽에서 실행 중인지 확인하세요"
@@ -153,6 +186,12 @@ def _run_job(job: Job) -> None:
     agent = Agent(llm, PartIndex(), KnowledgeIndex(), run_dir)
     res = agent.run(job.prompt, name=job.name)
     job.result = _report(res, run_dir)
+    job.result["run"] = {
+        "seed": job.seed,
+        "commit": _commit(),
+        "prompt_sha256": hashlib.sha256(job.prompt.encode()).hexdigest()[:16],
+        "model": getattr(llm, "model", None),
+    }
 
 
 def _worker() -> None:
@@ -197,6 +236,7 @@ def submit(req: DesignRequest) -> dict:
         id=uuid.uuid4().hex[:12],
         prompt=req.prompt,
         name=_safe_name(req.name),
+        seed=req.seed,
         created=_now(),
     )
     with _LOCK:
@@ -297,6 +337,9 @@ function render(id,j){
      blocking.map(i=>`<li><span class="mono">${esc(i.rule)}</span> — ${esc(i.message)}</li>`).join('')+'</ul></div>'}
   if(warns.length){h+='<div class="card warn"><b>확인이 필요한 항목 '+warns.length+'건</b><ul>'+
      warns.map(i=>`<li><span class="mono">${esc(i.rule)}</span> — ${esc(i.message)}</li>`).join('')+'</ul></div>'}
+  const run=r.run||{};
+  h+=`<div class="card"><b>이 실행</b> <span class="mono">commit ${esc(run.commit||'?')} · seed ${run.seed??'?'} · prompt ${esc(run.prompt_sha256||'?')}</span>
+      <br><small>같은 commit·seed·prompt면 같은 결과가 나옵니다. 결과가 달라졌다면 이 세 값 중 하나가 달라진 것입니다.</small></div>`;
   const e=r.erc||{};
   h+=`<div class="card"><b>검증</b><ul>
       <li>KiCad ERC 위반: ${e.kicad_violations??'—'}</li>
