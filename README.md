@@ -21,11 +21,15 @@
 - 부품/지식 인덱스: `scripts/build_part_index.py`, `scripts/build_knowledge_index.py`
 
 ```bash
-.venv/bin/pip install -e ".[web]"
-PYTHONPATH=src .venv/bin/python -m uvicorn circuitgen.webapp:app --port 8000
+.venv/bin/pip install -e ".[web]"     # 한 번만. 이걸 빼면 ModuleNotFoundError: circuitgen
+.venv/bin/python -m uvicorn circuitgen.webapp:app --port 8000
 ```
 
 브라우저에서 `http://localhost:8000`. 한 번에 한 작업만 돌립니다(llama-server 슬롯이 하나).
+
+설치하지 않고 한 번만 띄워보려면 `PYTHONPATH=src`를 앞에 붙이면 됩니다.
+editable 설치라 `src/`를 그대로 가리키므로 `data/`(부품·지식 인덱스, 패턴,
+`device_limits.json`) 경로는 설치 후에도 저장소 안을 그대로 씁니다.
 
 API로 쓸 경우:
 
