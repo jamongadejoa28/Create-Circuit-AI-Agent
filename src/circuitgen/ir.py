@@ -45,6 +45,15 @@ class SymbolDef:
                 return p
         raise KeyError(f"{self.lib_id} has no pin {number!r}")
 
+    @property
+    def is_source(self) -> bool:
+        """CANDIDATE FIX (scratch): a cell/battery — two PASSIVE terminals
+        named "+"/"-" (Device:Battery, Device:Solar_Cell)."""
+        pins = [p for p in self.pins if not p.hidden]
+        if len(pins) != 2 or not all(p.etype == PinType.PASSIVE for p in pins):
+            return False
+        return {(p.name or "").strip() for p in pins} == {"+", "-"}
+
     def placed_units(self) -> list[int]:
         """Units that get their own placed instance.
 

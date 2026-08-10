@@ -219,7 +219,7 @@ def generate_hierarchical(
         draft.nc_pins = [(r, p) for r, p in ir.nc_pins if r in known and pin_ok(r, p)]
         ir = draft
 
-    partition = partition_by_function(ir)
+    partition = partition_by_function(ir, symbols)
     hier = emit_hierarchical(ir, symbols, partition, out_dir, name, parts_index)
     res.sch_path = hier["root"]
     write_project(res.sch_path)

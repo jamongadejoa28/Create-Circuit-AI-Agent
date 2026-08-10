@@ -25,10 +25,21 @@ OUT = Path(__file__).resolve().parent.parent / "out" / "tests" / "hier"
 
 
 def _board() -> CircuitIR:
+    """Three groups that each genuinely earn a sheet: two multi-pin devices
+    apiece. A group holding one device plus passives now shares the hub's
+    sheet, so a board built from those would be a ONE-sheet board and could
+    not exercise the hierarchy at all. The devices are all the same I2C sensor
+    because this test is about sheet mechanics — ownership, ports, round-trip
+    — not about the circuit being a sensible product.
+    """
     ir = CircuitIR("hier_t")
+    sensor = ("Sensor_Temperature:Si7050-A20", "Si7050",
+              "Package_DFN_QFN:DFN-6-1EP_3x3mm_P1mm_EP1.5x2.4mm")
+    devices = {"POWER": ["U5", "U6"], "SENSOR": ["U1", "U2"], "MCU": ["U3", "U4"]}
+    for group, refs in devices.items():
+        for ref in refs:
+            ir.add(Component(ref, *sensor, group))
     ir.add(Component("C1", "Device:C", "10uF", "Capacitor_SMD:C_0805_2012Metric", "POWER"))
-    ir.add(Component("U1", "Sensor_Temperature:Si7050-A20", "Si7050",
-                     "Package_DFN_QFN:DFN-6-1EP_3x3mm_P1mm_EP1.5x2.4mm", "SENSOR"))
     ir.add(Component("R1", "Device:R", "10k", "Resistor_SMD:R_0603_1608Metric", "SENSOR"))
     ir.add(Component("R2", "Device:R", "10k", "Resistor_SMD:R_0603_1608Metric", "SENSOR"))
     ir.add(Component("R3", "Device:R", "330R", "Resistor_SMD:R_0603_1608Metric", "MCU"))
@@ -37,23 +48,26 @@ def _board() -> CircuitIR:
     ir.add(Component("C2", "Device:C", "10nF", "Capacitor_SMD:C_0603_1608Metric", "MCU"))
     ir.add(Component("#PWR01", "power:+3V3", "+3V3"))
     ir.add(Component("#PWR02", "power:GND", "GND"))
-    ir.connect("+3V3", ("C1", "1"), ("U1", "5"), ("R1", "1"), ("R2", "1"), ("R3", "1"),
-               ("R4", "1"), ("#PWR01", "1"))
-    ir.connect("GND", ("C1", "2"), ("U1", "2"), ("D1", "1"), ("C2", "2"), ("#PWR02", "1"))
-    ir.connect("SDA", ("U1", "1"), ("R1", "2"), ("D1", "2"))
-    ir.connect("SCL", ("U1", "6"), ("R2", "2"), ("R3", "2"))
-    # sheet-local net: KiCad exports it path-prefixed ("/MCU_CAN_DEBUG/FILT");
-    # the round-trip must resolve that to the IR name
+
+    all_sensors = [r for refs in devices.values() for r in refs]
+    ir.connect("+3V3", ("C1", "1"), ("R1", "1"), ("R2", "1"), ("R3", "1"),
+               ("R4", "1"), ("#PWR01", "1"), *[(r, "5") for r in all_sensors])
+    ir.connect("GND", ("C1", "2"), ("D1", "1"), ("C2", "2"), ("#PWR02", "1"),
+               *[(r, "2") for r in all_sensors])
+    ir.connect("SDA", ("R1", "2"), ("D1", "2"), *[(r, "1") for r in all_sensors])
+    ir.connect("SCL", ("R2", "2"), ("R3", "2"), *[(r, "6") for r in all_sensors])
+    # sheet-local net: KiCad exports it path-prefixed ("/MCU/FILT") and the
+    # round-trip must resolve that back to the IR name
     ir.connect("FILT", ("R4", "2"), ("C2", "1"))
-    ir.nc_pins = [("U1", "3"), ("U1", "4")]
+    ir.nc_pins = [(r, p) for r in all_sensors for p in ("3", "4")]
     return ir
 
 
 def test_hierarchical_emission_erc_clean_and_roundtrips():
     ir = _board()
     symbols = load_symbols(sorted({c.lib_id for c in ir.components.values()} | {"power:PWR_FLAG"}))
-    partition = partition_by_function(ir)
-    assert {"POWER", "SENSOR", "MCU_CAN_DEBUG"} <= set(partition)
+    partition = partition_by_function(ir, symbols)
+    assert set(partition) == {"POWER", "SENSOR", "MCU"}, sorted(partition)
 
     res = emit_hierarchical(ir, symbols, partition, OUT, "hier_t", None)
     assert len(res["children"]) == 3

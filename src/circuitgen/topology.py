@@ -169,7 +169,7 @@ def _series_elements(ir: CircuitIR, symbols: dict[str, SymbolDef]) -> set[str]:
         pins = [p for p in sym.pins if not p.hidden]
         if len(pins) != 2 or not all(p.etype.name == "PASSIVE" for p in pins):
             continue
-        if {(p.name or "").strip() for p in pins} == {"+", "-"}:
+        if sym.is_source:  # CANDIDATE FIX (scratch): shared definition
             continue
         out.add(ref)
     return out

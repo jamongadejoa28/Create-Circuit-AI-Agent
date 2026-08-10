@@ -56,9 +56,19 @@ def net_kind(ir: CircuitIR, symbols: dict[str, SymbolDef], net) -> str:
     if vals or any(
         (t := _pin_type(ir, symbols, r, str(p))) == PinType.PWROUT
         for r, p in net.nodes
-    ):
+    ) or _source_terminals(ir, symbols, net):
         return "power"
     return "signal"
+
+
+def _source_terminals(ir, symbols, net) -> bool:
+    """CANDIDATE FIX (scratch): net holds a terminal of a cell/battery."""
+    for ref, _pin in net.nodes:
+        comp = ir.components.get(ref)
+        sym = symbols.get(comp.lib_id) if comp else None
+        if sym is not None and sym.is_source:
+            return True
+    return False
 
 
 

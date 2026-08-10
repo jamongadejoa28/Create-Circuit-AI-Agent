@@ -410,6 +410,75 @@ def _try_direct_wire(
     return (x1, y1), (x2, y2)
 
 
+#: sheet frame margin, and the height the title block reserves bottom-right
+_FRAME_MARGIN = 12.7
+_TITLE_BLOCK_H = 30.0
+_PAPERS = (("A4", 297.0, 210.0), ("A3", 420.0, 297.0),
+           ("A2", 594.0, 420.0), ("A1", 841.0, 594.0))
+
+
+def content_box(
+    ir: CircuitIR, symbols: dict[str, SymbolDef],
+    placements: dict[str, dict[int, Placement]],
+) -> tuple[float, float, float, float] | None:
+    """(min_x, min_y, max_x, max_y) of everything placed, in sheet mm."""
+    xs: list[float] = []
+    ys: list[float] = []
+    for ref, units in placements.items():
+        sym = symbols.get(ir.components[ref].lib_id)
+        if sym is None:
+            continue
+        ex = max((abs(p.x) for p in sym.pins), default=5.08) + 10.16
+        ey = max((abs(p.y) for p in sym.pins), default=5.08) + 10.16
+        for place in units.values():
+            xs += [place.x - ex, place.x + ex]
+            ys += [place.y - ey, place.y + ey]
+    if not xs:
+        return None
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def fit_paper(
+    ir: CircuitIR, symbols: dict[str, SymbolDef],
+    placements: dict[str, dict[int, Placement]],
+) -> tuple[str, tuple[float, float]]:
+    """Pick the sheet size and the shift that centres the content on it.
+
+    Two things were wrong with choosing the paper from `max(x)` alone. The
+    size followed how far RIGHT the content started rather than how big it
+    is, so a compact block laid out at x=400 demanded A1. And nothing ever
+    moved the content: every sheet was laid out from a fixed top-left origin
+    against an A2-width assumption, so a child sheet holding one battery
+    printed as a postage stamp in the corner of an A4 page — which is what
+    the reader actually sees.
+
+    The shift is grid-snapped so relative geometry is preserved exactly:
+    every wire, stub and label keeps its position relative to its pin.
+    """
+    box = content_box(ir, symbols, placements)
+    if box is None:
+        return "A4", (0.0, 0.0)
+    min_x, min_y, max_x, max_y = box
+    width, height = max_x - min_x, max_y - min_y
+
+    paper, page_w, page_h = _PAPERS[-1]
+    for cand, w_mm, h_mm in _PAPERS:
+        paper, page_w, page_h = cand, w_mm, h_mm
+        if (width <= w_mm - 2 * _FRAME_MARGIN
+                and height <= h_mm - _FRAME_MARGIN - _TITLE_BLOCK_H):
+            break
+
+    left, top = _FRAME_MARGIN, _FRAME_MARGIN
+    right, bottom = page_w - _FRAME_MARGIN, page_h - _TITLE_BLOCK_H
+    dx = (left + right) / 2 - (min_x + max_x) / 2
+    dy = (top + bottom) / 2 - (min_y + max_y) / 2
+    # never push content off the top or left edge of an oversized sheet
+    dx = max(dx, left - min_x) if width <= right - left else left - min_x
+    dy = max(dy, top - min_y) if height <= bottom - top else top - min_y
+    snap = lambda v: round(v / GRID) * GRID  # noqa: E731 — keep relative geometry exact
+    return paper, (snap(dx), snap(dy))
+
+
 def build_emit_plan(
     ir: CircuitIR,
     symbols: dict[str, SymbolDef],
@@ -541,6 +610,18 @@ def emit_schematic(
       uses it for its (sheet ...) boxes).
     """
     placements = normalize_placements(ir, symbols, placements)
+    paper, offset = fit_paper(ir, symbols, placements)
+    if offset != (0.0, 0.0):
+        placements = {
+            ref: {
+                unit: Placement(p.x + offset[0], p.y + offset[1], p.rotation, p.mirror)
+                for unit, p in units.items()
+            }
+            for ref, units in placements.items()
+        }
+        # wires and labels are derived from the placements, so a plan built
+        # against the old coordinates cannot be reused
+        plan = None
     if plan is None:
         plan = build_emit_plan(ir, symbols, placements)
 
@@ -551,21 +632,6 @@ def emit_schematic(
     out: list[str] = []
     w = out.append
 
-    # paper auto-size: content must stay inside the frame (margins + title
-    # block reserve) — the 85mm-tall STM32 symbol overflowed A4 (user report)
-    max_x = max_y = 0.0
-    for ref, units in placements.items():
-        sym = symbols[ir.components[ref].lib_id]
-        ex = max((abs(p.x) for p in sym.pins), default=5.08) + 10.16
-        ey = max((abs(p.y) for p in sym.pins), default=5.08) + 10.16
-        for place in units.values():
-            max_x = max(max_x, place.x + ex)
-            max_y = max(max_y, place.y + ey)
-    paper = "A4"
-    for cand, w_mm, h_mm in (("A4", 297, 210), ("A3", 420, 297), ("A2", 594, 420), ("A1", 841, 594)):
-        paper = cand
-        if max_x <= w_mm - 15 and max_y <= h_mm - 30:
-            break
 
     w("(kicad_sch\n")
     w(f"\t(version {SCH_VERSION})\n")

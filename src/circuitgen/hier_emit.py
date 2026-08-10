@@ -68,7 +68,10 @@ def emit_hierarchical(
             if r in power_refs and ir.components[r].lib_id != "power:PWR_FLAG":
                 rail_of_net[net.name] = ir.components[r].value
 
-    ordered = sorted(partition.values(), key=lambda s: (s.name != "POWER", s.name))
+    # biggest sheet first, so the page after the root is the one the board is
+    # organised around. Ordering by the name "POWER" was a convention that
+    # only applied to boards that happened to have a group called that.
+    ordered = sorted(partition.values(), key=lambda s: (-len(s.components), s.name))
     flag_done: set[str] = set()
     children: dict[str, Path] = {}
     page_of: dict[str, int] = {}

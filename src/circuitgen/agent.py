@@ -1169,20 +1169,24 @@ class Agent:
         return notes
 
     def _generate(self, ir: CircuitIR, name: str):
-        """Flat sheet for small circuits; functional child sheets for boards
-        (dvk-mx8m-bsb style — each part complete within its own frame)."""
+        """Child sheets only when the partition actually yields more than one.
+
+        The decision used to be "2+ groups and 12+ parts", taken before
+        anything knew how the groups would merge. A 13-part board came out as
+        twelve one-component child sheets plus a root holding nothing but
+        twelve labelled empty boxes — every name on it already written on the
+        sheet it points at. A hierarchy whose root carries no circuit is a
+        page the reader has to click through, so it is not built.
+        """
+        from .hierarchy import partition_by_function
         from .pipeline import generate, generate_hierarchical
 
-        groups = {c.group for c in ir.components.values() if c.group}
-        if len(groups) >= 2 and len(ir.components) >= 12:
+        symbols = self._resolve_symbols(ir)
+        if len(partition_by_function(ir, symbols)) >= 2:
             return generate_hierarchical(
-                ir, self.out_dir, name,
-                symbols=self._resolve_symbols(ir), parts_index=self.parts,
+                ir, self.out_dir, name, symbols=symbols, parts_index=self.parts,
             )
-        return generate(
-            ir, self.out_dir,
-            symbols=self._resolve_symbols(ir), parts_index=self.parts,
-        )
+        return generate(ir, self.out_dir, symbols=symbols, parts_index=self.parts)
 
     def _fix_footprints(self, ir: CircuitIR) -> list[str]:
         from .fp_checks import assign_footprints
