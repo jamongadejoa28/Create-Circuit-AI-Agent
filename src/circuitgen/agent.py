@@ -507,6 +507,25 @@ class Agent:
         candidates: dict[str, list[dict]] = {}
         for need in spec.get("parts_needed", []):
             hits = self.parts.search_parts(need["search_query"], CANDIDATES_PER_QUERY)
+            # A query that names a specific catalogue part is the user's own
+            # choice, not a search to be second-guessed. The capability filters
+            # below exist to pick among generic results; measured, they threw
+            # the choice away: Relay:G5V-1 numbers its coil pins 1/2/5/6/9/10
+            # with blank names, the relay branch requires pins called A1/A2,
+            # so the user's relay was discarded and RM50-xx21 substituted.
+            # "is this a part NUMBER" uses the one reference test, not a name
+            # match: the generic word "relay" is the name of a symbol in the
+            # OLIMEX library, so matching on the name alone made every generic
+            # query look like an explicit choice.
+            query = str(need.get("search_query", ""))
+            named_here = requested_part_numbers(query, self.parts)
+            chosen = [
+                hit for hit in hits
+                if any(part_present(tok, hit["lib_id"]) for tok in named_here)
+            ]
+            if chosen:
+                candidates[need["role"]] = chosen[:CANDIDATES_PER_QUERY]
+                continue
             hits = self._filter_incompatible_candidates(need, hits)
             global_intent = " ".join(
                 [str(spec.get("summary", "")), *map(str, spec.get("connections_intent", []))]

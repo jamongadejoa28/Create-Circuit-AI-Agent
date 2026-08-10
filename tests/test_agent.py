@@ -864,3 +864,34 @@ def test_a_word_that_only_looks_like_a_part_number_is_not_selected(agent_env):
     spec = {"parts_needed": [{"role": "xcvr", "search_query": "transceiver"}]}
     agent._ensure_named_parts("RS485(Modbus RTU) 통신이 필요합니다", spec)
     assert [p["search_query"] for p in spec["parts_needed"]] == ["transceiver"]
+
+
+def test_capability_filters_never_override_a_part_the_user_named(agent_env):
+    """The filters exist to pick among generic search results. They have no
+    authority over an explicit choice.
+
+    Measured: Relay:G5V-1 numbers its coil pins 1/2/5/6/9/10 with blank names,
+    the relay branch of _gather requires pins called A1/A2, so the user's relay
+    was discarded and Relay:RM50-xx21 substituted — while the board still
+    reported the request as satisfied because the substitute carried "G5V-1"
+    in its value field.
+    """
+    parts, knowledge, tmp = agent_env
+    agent = Agent(MockLLM(), parts, knowledge, tmp / "gather")
+    agent.parts = PartIndex()          # the full catalog, not the test subset
+    spec = {
+        "summary": "relay driver", "connections_intent": [],
+        "power": {"rails": [{"name": "+12V"}, {"name": "GND"}]},
+        "parts_needed": [
+            {"role": "relay", "search_query": "G5V-1"},
+            {"role": "generic relay", "search_query": "relay"},
+        ],
+    }
+    candidates, _snips, _pins = agent._gather(spec)
+    assert [h["lib_id"] for h in candidates["relay"]] == ["Relay:G5V-1"]
+    # a generic query is still filtered — "relay" is also the NAME of a symbol
+    # in the OLIMEX library, and matching on the name alone made every generic
+    # query look like an explicit choice
+    generic = [h["lib_id"] for h in candidates["generic relay"]]
+    assert generic and all(g.startswith("Relay:") for g in generic)
+    assert "Relay:G5V-1" not in generic
