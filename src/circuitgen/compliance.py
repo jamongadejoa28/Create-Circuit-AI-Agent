@@ -59,6 +59,7 @@ class ComplianceReport:
     role_total: int = 0
     role_present: int = 0
     role_missing: list[str] = field(default_factory=list)
+    role_unverifiable: list[str] = field(default_factory=list)
 
     @property
     def errors(self) -> list[ValidationIssue]:
@@ -78,6 +79,7 @@ class ComplianceReport:
             "role_total": self.role_total,
             "role_present": self.role_present,
             "role_missing": self.role_missing,
+            "role_unverifiable": self.role_unverifiable,
             "issues": [
                 {"rule": i.rule, "severity": i.severity, "path": i.path, "message": i.message}
                 for i in self.issues
@@ -133,14 +135,19 @@ def requested_part_numbers(prompt: str, parts=None) -> list[str]:
 def part_present(token: str, lib_id: str, value: str = "") -> bool:
     """Does this component answer a request for `token`?
 
-    Matches the symbol name or the value, tolerating the ordering-code
-    convention KiCad libraries use for a whole family: a request for
-    STM32G474RET6 is satisfied by the symbol STM32G474RETx.
+    Matches the SYMBOL, tolerating the ordering-code convention KiCad uses for
+    a family: a request for STM32G474RET6 is answered by STM32G474RETx.
+
+    It deliberately does not look at `value`. That string is written by the
+    pipeline, so matching it let any component satisfy the request by having
+    the part number typed into it — measured on driver_relay, where
+    Relay:RM50-xx21 with value "G5V-1" was reported as satisfying a request for
+    G5V-1 while Relay:G5V-1 sat unused in the bundled library.
     """
     want = _norm(token)
     if len(want) < 4:
         return False
-    for candidate in (_norm(lib_id.split(":")[-1]), _norm(value)):
+    for candidate in (_norm(lib_id.split(":")[-1]),):
         if len(candidate) < 4:
             continue
         if want in candidate or candidate in want:
@@ -189,33 +196,16 @@ _GENERIC_ROLE_WORDS = {
     "REQUIREMENT", "CONNECTION", "CIRCUIT", "MODULE",
 }
 
-# A functional kind -> the KiCad reference prefix that realises it. The
-# direction doc (§7.3) asks for role names to carry a functional taxonomy
-# instead of being free strings; this is the measurement-side half of that.
-# A generic passive cannot be matched by name — "Device:R" carries no token
-# longer than one character — so the kind is what identifies it.
-_KIND_REF_PREFIX = {
-    "resistor": "R", "resistors": "R", "pullup": "R", "pull-up": "R",
-    "pulldown": "R", "pull-down": "R", "divider": "R",
-    "capacitor": "C", "capacitors": "C", "decoupling": "C", "bypass": "C",
-    "inductor": "L", "ferrite": "FB", "bead": "FB",
-    "diode": "D", "led": "D", "tvs": "D", "zener": "D", "flyback": "D",
-    "switch": "SW", "button": "SW", "pushbutton": "SW",
-    "connector": "J", "header": "J", "socket": "J", "terminal": "J",
-    "transistor": "Q", "mosfet": "Q", "bjt": "Q", "npn": "Q", "pnp": "Q",
-    "relay": "K", "crystal": "Y", "oscillator": "Y", "resonator": "Y",
-    "fuse": "F", "jumper": "JP", "polyfuse": "F",
-}
+def _library_prefix(comp, symbols) -> str:
+    """The reference prefix the LIBRARY assigns, not the one in the ref string.
 
-
-def _ref_prefix(ref: str) -> str:
-    match = re.match(r"^#?([A-Za-z]+)", ref)
-    return match.group(1).upper() if match else ""
-
-
-def _kinds(text: str) -> set[str]:
-    words = re.split(r"[^A-Za-z-]+", (text or "").lower())
-    return {_KIND_REF_PREFIX[w] for w in words if w in _KIND_REF_PREFIX}
+    contracts.py, topology.py, place.py and erc.py all read
+    symbols[lib_id].reference_prefix; this used to parse the ref instead, so
+    the same Device:R counted as a resistor when the model called it R1 and
+    did not when it called it RN1 or RES1.
+    """
+    sym = symbols.get(comp.lib_id)
+    return (sym.reference_prefix if sym else "").upper()
 
 
 def _token_hit(wanted: set[str], have: set[str]) -> bool:
@@ -255,22 +245,27 @@ def role_fulfilment(
     total = 0
     present = 0
     missing: list[str] = []
+    unverifiable: list[str] = []
     shortfall: dict[str, int] = {}
     for part in spec.get("parts_needed", []):
         role = str(part.get("role", ""))
         query = str(part.get("search_query", "")).replace("__conceptual__", "")
         wanted = (_tokens(role) | _tokens(query)) - _GENERIC_ROLE_WORDS
-        kinds = _kinds(role) | _kinds(query)
         total += 1
         matches = [ref for ref, toks in comp_tokens.items() if _token_hit(wanted, toks)]
-        if not matches and kinds:
-            matches = [ref for ref in physical if _ref_prefix(ref) in kinds]
-        if not matches:
-            offered = {h.get("lib_id") for h in candidates.get(role, []) if h.get("lib_id")}
-            if offered & lib_ids:
-                matches = [
-                    ref for ref, comp in physical.items() if comp.lib_id in offered
-                ]
+        offered = {h.get("lib_id") for h in candidates.get(role, []) if h.get("lib_id")}
+        if not matches and offered:
+            matches = [
+                ref for ref, comp in physical.items() if comp.lib_id in offered
+            ]
+        if not matches and not offered:
+            # Nothing to check against: the role text did not name anything in
+            # the circuit and no candidate list was recorded for it. Calling
+            # that "missing" is a verdict without a warrant — the synonym table
+            # that used to answer here reported the MCP6001 board as missing
+            # its op-amp and the STM32 board as missing its MCU.
+            unverifiable.append(role)
+            continue
         if matches:
             present += 1
             want_qty = max(1, int(part.get("quantity", 1) or 1))
@@ -278,7 +273,7 @@ def role_fulfilment(
                 shortfall[role] = want_qty - len(matches)
         else:
             missing.append(role)
-    return total, present, missing, shortfall
+    return total, present, missing, shortfall, unverifiable
 
 
 def load_device_limits(path: str | Path = DEVICE_LIMITS_PATH) -> list[dict]:
@@ -472,7 +467,9 @@ def check_compliance(
     # board prompts from being answered by an eight-part fragment: the fragment
     # is not wrong because of what the prompt SAYS, it is wrong because most of
     # what was asked for is absent, and that is measurable on the finished board.
-    role_total, role_present, role_missing, shortfall = role_fulfilment(spec or {}, ir, symbols, candidates)
+    role_total, role_present, role_missing, shortfall, role_unverifiable = role_fulfilment(
+        spec or {}, ir, symbols, candidates
+    )
     # WARNING, not error: parts_needed is the extractor's paraphrase and
     # contains its inventions — a "12V to 5V regulator" prompt that names no
     # resistor still produced a `resistor` role. Failing the board for that
@@ -486,6 +483,13 @@ def check_compliance(
             f"answers it",
         )
         for role in role_missing
+    ] + [
+        _issue(
+            "role_unverifiable", "warning", f"requirement:{role}",
+            f"cannot tell whether {role!r} is on the board: nothing in the "
+            f"circuit names it and no candidate list was recorded for it",
+        )
+        for role in role_unverifiable
     ] + [
         _issue(
             "requested_quantity_short", "warning", f"requirement:{role}",
@@ -502,4 +506,5 @@ def check_compliance(
         role_total=role_total,
         role_present=role_present,
         role_missing=role_missing,
+        role_unverifiable=role_unverifiable,
     )

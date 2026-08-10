@@ -55,6 +55,7 @@ class RunMetrics:
     role_total: int = 0
     role_present: int = 0
     role_missing: list[str] = field(default_factory=list)
+    role_unverifiable: list[str] = field(default_factory=list)
     quantity_shortfall: dict[str, int] = field(default_factory=dict)
     auto_connections: int = 0
     auto_no_connects: int = 0
@@ -71,6 +72,7 @@ class RunMetrics:
             "role_present": self.role_present,
             "role_fulfilment": self.role_fulfilment,
             "role_missing": self.role_missing,
+            "role_unverifiable": self.role_unverifiable,
             "quantity_shortfall": self.quantity_shortfall,
             "auto_connections": self.auto_connections,
             "auto_no_connects": self.auto_no_connects,
@@ -120,11 +122,14 @@ def measure_run(
 ) -> RunMetrics:
     metrics = RunMetrics()
     if ir is not None:
-        total, present, missing, shortfall = role_fulfilment(spec, ir, symbols, candidates)
+        total, present, missing, shortfall, unver = role_fulfilment(
+            spec, ir, symbols, candidates
+        )
         metrics.role_total = total
         metrics.role_present = present
         metrics.role_missing = missing
         metrics.quantity_shortfall = shortfall
+        metrics.role_unverifiable = unver
     auto = auto or {}
     metrics.auto_connections = auto.get("added_connections", 0)
     metrics.auto_no_connects = auto.get("added_no_connects", 0)

@@ -34,7 +34,11 @@ SPEC = {"parts_needed": [
 ]}
 
 
-def test_role_fulfilment_counts_what_is_actually_on_the_board():
+def test_a_role_is_missing_only_when_we_could_actually_check():
+    """A verdict needs a warrant. The synonym table that used to answer here
+    reported an MCP6001 board as missing its op-amp and an STM32 board as
+    missing its MCU, because 'opamp' is not a substring of 'MCP6001R' and the
+    table had no entry for either word."""
     ir = CircuitIR("m")
     ir.add(Component("U1", "MCU_ST_STM32G4:STM32G474RETx", "STM32G474RETx"))
     ir.add(Component("R1", "Device:R", "10k"))
@@ -42,17 +46,23 @@ def test_role_fulfilment_counts_what_is_actually_on_the_board():
         "MCU_ST_STM32G4:STM32G474RETx": _sym("MCU_ST_STM32G4:STM32G474RETx", 8),
         "Device:R": _sym("Device:R"),
     }
-    total, present, missing, _short = role_fulfilment(SPEC, ir, symbols)
-    assert total == 3 and present == 2
-    assert missing == ["I2C temperature sensor"], "the absent sensor must be named"
+    candidates = {"I2C temperature sensor": [{"lib_id": "Sensor_Temperature:TMP100"}]}
+    total, present, missing, _short, unver = role_fulfilment(SPEC, ir, symbols, candidates)
+    assert total == 3
+    # STM32 matches by token; the sensor had candidates offered and none is on
+    # the board, so it is genuinely missing
+    assert missing == ["I2C temperature sensor"]
+    # the pull-up role names nothing in the circuit and had no candidates
+    # recorded, so we cannot tell — that is not the same as absent
+    assert unver == ["SDA pull-up"] and present == 1
 
 
 def test_power_symbols_do_not_count_as_fulfilling_a_role():
     ir = CircuitIR("m")
     ir.add(Component("#PWR01", "power:+3V3", "+3V3"))
     symbols = {"power:+3V3": _sym("power:+3V3", 1, power=True)}
-    total, present, missing, _s = role_fulfilment(SPEC, ir, symbols)
-    assert (total, present) == (3, 0) and len(missing) == 3
+    total, present, missing, _s, unver = role_fulfilment(SPEC, ir, symbols)
+    assert (total, present) == (3, 0) and len(missing) + len(unver) == 3
 
 
 def test_quantity_shortfall_is_reported_separately_from_presence():
@@ -60,7 +70,7 @@ def test_quantity_shortfall_is_reported_separately_from_presence():
     ir = CircuitIR("m")
     ir.add(Component("U1", "Vendor:ENCODER", "ENCODER"))
     symbols = {"Vendor:ENCODER": _sym("Vendor:ENCODER", 8)}
-    total, present, missing, shortfall = role_fulfilment(spec, ir, symbols)
+    total, present, missing, shortfall, _u = role_fulfilment(spec, ir, symbols)
     assert (total, present, missing) == (1, 1, [])
     assert shortfall == {"encoder": 3}, "present but 3 short of the requested 4"
 

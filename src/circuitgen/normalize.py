@@ -46,12 +46,6 @@ def component_value(text: str) -> float | None:
     return None
 
 
-def is_capacitor(lib_id: str) -> bool:
-    """Any KiCad capacitor symbol, not just the exact id a rule happens to add."""
-    name = lib_id.split(":")[-1].upper()
-    return name == "C" or name.startswith(("C_", "CP", "C-"))
-
-
 def move_pin(ir: CircuitIR, ref: str, pin: str, net_name: str) -> None:
     """Put a pin on `net_name`, removing it from wherever it was.
 
@@ -453,23 +447,6 @@ I2C_PULLUP_VALUE = "10k"
 
 
 
-def _unfinished_pullup(
-    ir: CircuitIR, symbols: dict[str, SymbolDef], net_name: str
-) -> tuple[str, str] | None:
-    """A 2-pin resistor with one leg on `net_name` and the other unconnected."""
-    connected = {(ref, str(pin)) for net in ir.nets for ref, pin in net.nodes}
-    on_net = {ref for net in ir.nets if net.name == net_name for ref, _ in net.nodes}
-    for ref in sorted(on_net):
-        comp = ir.components.get(ref)
-        sym = symbols.get(comp.lib_id) if comp else None
-        if sym is None or sym.reference_prefix != "R" or len(sym.pins) != 2:
-            continue
-        free = [p.number for p in sym.pins if (ref, p.number) not in connected]
-        if len(free) == 1:
-            return ref, free[0]
-    return None
-
-
 def ensure_i2c_pullups(
     ir: CircuitIR, symbols: dict[str, SymbolDef], rail: str
 ) -> list[str]:
@@ -502,21 +479,6 @@ def ensure_i2c_pullups(
             for other in ir.nets if other.name == name
         ):
             continue  # already pulled up to a supply
-
-        # A resistor with one leg on the bus and the other leg FLOATING is an
-        # unfinished pull-up, not a spare part: finish it rather than adding a
-        # second one beside it. Only a free pin qualifies — a resistor already
-        # bridging two nets is doing something else, and repurposing one of
-        # those is how the previous version hijacked an unrelated bleeder.
-        unfinished = _unfinished_pullup(ir, symbols, net.name)
-        if unfinished is not None:
-            ref, free_pin = unfinished
-            ir.connect(rail, (ref, free_pin))
-            notes.append(
-                f"completed {ref} as the pull-up on {net.name}: one leg was on "
-                f"the bus and the other was floating"
-            )
-            continue
 
         ref = refs.take("R")
         ir.add(Component(ref, "Device:R", I2C_PULLUP_VALUE))
@@ -989,6 +951,9 @@ def ensure_stm32g4_power_network(
         return next((n.name for n in ir.nets if (ref, pin) in n.nodes), None)
 
 
+    unreadable: list[str] = []
+    unresolved: list[str] = []
+
     def cap_count(rail: str, value: str) -> int:
         """Capacitors of `value` already bridging `rail` and GND.
 
@@ -1003,10 +968,25 @@ def ensure_stm32g4_power_network(
         want = component_value(value)
         count = 0
         for ref, comp in ir.components.items():
-            if not is_capacitor(comp.lib_id):
+            sym = symbols.get(comp.lib_id)
+            if sym is None:
+                # Cannot tell what this part is, so it cannot be counted — and
+                # not counting it means this pass adds a duplicate beside it.
+                # Say so instead of degrading quietly.
+                unresolved.append(f"{ref}={comp.lib_id}")
+                continue
+            if sym.reference_prefix != "C":
                 continue
             have = component_value(comp.value)
-            if want is None or have is None or abs(have - want) > want * 0.01:
+            if want is None:
+                continue
+            if have is None:
+                # An unreadable value must not be silently skipped: skipping
+                # means "not present", and this pass then adds a second
+                # capacitor in parallel with one that was already right.
+                unreadable.append(f"{ref}={comp.value!r}")
+                continue
+            if abs(have - want) > want * 0.01:
                 continue
             touched = {n.name for n in ir.nets if any(r == ref for r, _ in n.nodes)}
             if {rail, "GND"} <= touched:
@@ -1059,6 +1039,18 @@ def ensure_stm32g4_power_network(
         for value, want in sorted(required.items()):
             for _ in range(max(0, want - cap_count(logic_rail, value))):
                 add_cap(logic_rail, value)
+        if unresolved:
+            notes.append(
+                f"{ref}: symbol(s) not resolvable, so existing decoupling could "
+                f"not be counted and may now be duplicated: "
+                + ", ".join(sorted(set(unresolved)))
+            )
+        if unreadable:
+            notes.append(
+                f"{ref}: capacitor value(s) not readable, so they could not be "
+                f"counted towards the datasheet set and may now be duplicated: "
+                + ", ".join(sorted(set(unreadable)))
+            )
 
         # The user's question "do I need an external crystal?" has a datasheet
         # answer, and it belongs in the record rather than in a silently added

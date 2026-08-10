@@ -90,7 +90,11 @@ def is_i2c_net(ir: CircuitIR, symbols: dict[str, SymbolDef], net) -> bool:
     usually do not (ESP32: IO21/IO22), so a net NAMED SDA/SCL counts as
     equally strong intent.
     """
-    if net.name.upper() in ("SDA", "SCL"):
+    name = net.name.upper()
+    if name in ("SDA", "SCL") or name.endswith(("_SDA", "_SCL", "-SDA", "-SCL")):
+        # I2C1_SDA is ST's own HAL naming and MCU_SDA is what block
+        # namespacing produces; exact match alone left those buses with no
+        # pull-up at all, which is the failure this detection exists to catch.
         return True
     for ref, pin_no in net.nodes:
         comp = ir.components.get(ref)

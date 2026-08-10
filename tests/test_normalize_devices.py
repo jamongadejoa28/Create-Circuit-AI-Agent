@@ -545,7 +545,10 @@ def test_stm32g4_decoupling_matches_the_datasheet_figure():
     from circuitgen.symbols import load_symbols
 
     lid = "MCU_ST_STM32G4:STM32G474RETx"
-    symbols = load_symbols([lid])
+    # the whole symbol set, as the pipeline resolves it before each pass: the
+    # capacitors this pass adds must be identifiable on the next call or it
+    # cannot see its own work
+    symbols = load_symbols([lid, "Device:C"])
     ir = CircuitIR("g4")
     ir.add(Component("U1", lid, "STM32G474RET6", group="MCU"))
     ir.connect("+3V3", ("U1", "16"))
@@ -645,35 +648,6 @@ def test_the_checker_and_the_fixer_share_one_definition_of_an_i2c_net():
         if ir.components.get(r) and ir.components[r].lib_id == "Device:R"
     }
     assert "BUS_A" in pulled and "UNRELATED" not in pulled
-
-
-def test_a_half_drawn_pullup_is_completed_not_duplicated():
-    """Measured on sensor_i2c: the model drew R1/R2 with one leg on the bus
-    and the other floating. That is an unfinished pull-up, not a spare part —
-    adding a second resistor beside it leaves two dangling pins and two ERC
-    errors, and discards the value the model chose."""
-    from circuitgen.normalize import ensure_i2c_pullups
-    from circuitgen.symbols import load_symbols
-
-    sensor, res = "Sensor_Temperature:TMP100", "Device:R"
-    symbols = load_symbols([sensor, res, "power:+3V3"])
-    ir = CircuitIR("i2c")
-    ir.add(Component("U1", sensor, "TMP100"))
-    ir.add(Component("#PWR01", "power:+3V3", "+3V3"))
-    ir.connect("+3V3", ("#PWR01", "1"))
-    ir.connect("SDA", ("U1", "6"))
-    ir.connect("SCL", ("U1", "1"))
-    for i, line in enumerate(("SDA", "SCL"), 1):
-        ir.add(Component(f"R{i}", res, "4.7kΩ"))
-        ir.connect(line, (f"R{i}", "1"))          # other leg left floating
-
-    notes = ensure_i2c_pullups(ir, symbols, "+3V3")
-    assert all("completed" in n for n in notes) and len(notes) == 2
-    assert [c.value for c in ir.components.values() if c.lib_id == res] == ["4.7kΩ"] * 2
-    for ref in ("R1", "R2"):
-        on = {n.name for n in ir.nets if any(r == ref for r, _p in n.nodes)}
-        assert "+3V3" in on
-    assert ensure_i2c_pullups(ir, symbols, "+3V3") == []
 
 
 def test_a_resistor_already_bridging_two_nets_is_never_repurposed():
