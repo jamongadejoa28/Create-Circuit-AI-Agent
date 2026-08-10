@@ -452,6 +452,24 @@ def ensure_dc_power_entry(ir: CircuitIR, output_rail: str = "+12V") -> list[str]
 I2C_PULLUP_VALUE = "10k"
 
 
+
+def _unfinished_pullup(
+    ir: CircuitIR, symbols: dict[str, SymbolDef], net_name: str
+) -> tuple[str, str] | None:
+    """A 2-pin resistor with one leg on `net_name` and the other unconnected."""
+    connected = {(ref, str(pin)) for net in ir.nets for ref, pin in net.nodes}
+    on_net = {ref for net in ir.nets if net.name == net_name for ref, _ in net.nodes}
+    for ref in sorted(on_net):
+        comp = ir.components.get(ref)
+        sym = symbols.get(comp.lib_id) if comp else None
+        if sym is None or sym.reference_prefix != "R" or len(sym.pins) != 2:
+            continue
+        free = [p.number for p in sym.pins if (ref, p.number) not in connected]
+        if len(free) == 1:
+            return ref, free[0]
+    return None
+
+
 def ensure_i2c_pullups(
     ir: CircuitIR, symbols: dict[str, SymbolDef], rail: str
 ) -> list[str]:
@@ -484,6 +502,22 @@ def ensure_i2c_pullups(
             for other in ir.nets if other.name == name
         ):
             continue  # already pulled up to a supply
+
+        # A resistor with one leg on the bus and the other leg FLOATING is an
+        # unfinished pull-up, not a spare part: finish it rather than adding a
+        # second one beside it. Only a free pin qualifies — a resistor already
+        # bridging two nets is doing something else, and repurposing one of
+        # those is how the previous version hijacked an unrelated bleeder.
+        unfinished = _unfinished_pullup(ir, symbols, net.name)
+        if unfinished is not None:
+            ref, free_pin = unfinished
+            ir.connect(rail, (ref, free_pin))
+            notes.append(
+                f"completed {ref} as the pull-up on {net.name}: one leg was on "
+                f"the bus and the other was floating"
+            )
+            continue
+
         ref = refs.take("R")
         ir.add(Component(ref, "Device:R", I2C_PULLUP_VALUE))
         ir.connect(net.name, (ref, "1"))
