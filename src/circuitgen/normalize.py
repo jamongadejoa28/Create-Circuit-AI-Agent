@@ -146,6 +146,47 @@ def unify_stacked_pins(ir: CircuitIR, symbols: dict[str, SymbolDef]) -> list[str
     return notes
 
 
+def migrate_component(
+    ir: CircuitIR, ref: str, target_id: str, old: SymbolDef, target: SymbolDef,
+    value: str | None = None,
+) -> int:
+    """Move a component onto another symbol, carrying its nets BY PIN NAME.
+
+    Pin numbers differ between packages of the same die — PA5 is 13 on an
+    LQFP48 and 19 on an LQFP64 — so a swap that keeps the numbers silently
+    rewires the board. Returns how many pins were carried across; a pin whose
+    name the target does not have is left where it was, for self-ERC to
+    report rather than for this to guess about.
+    """
+    by_name: dict[str, list[str]] = {}
+    for pin in target.pins:
+        by_name.setdefault(pin.name.upper(), []).append(pin.number)
+    used: dict[str, int] = {}
+    mapping: dict[str, str] = {}
+    for pin in old.pins:
+        choices = by_name.get(pin.name.upper(), [])
+        if not choices:
+            continue
+        index = used.get(pin.name.upper(), 0)
+        mapping[pin.number] = choices[min(index, len(choices) - 1)]
+        used[pin.name.upper()] = index + 1
+    for net in ir.nets:
+        net.nodes = [
+            (r, mapping.get(str(pin), str(pin)) if r == ref else str(pin))
+            for r, pin in net.nodes
+        ]
+    ir.nc_pins = [
+        (r, mapping.get(str(pin), str(pin)) if r == ref else str(pin))
+        for r, pin in ir.nc_pins
+    ]
+    comp = ir.components[ref]
+    comp.lib_id = target_id
+    if value is not None:
+        comp.value = value
+    comp.footprint = target.properties.get("Footprint", "")
+    return len(mapping)
+
+
 #: how much of two symbol names must agree before one may be migrated onto
 #: the other. Ordering codes differ in their tail (STM32G474CBTx vs
 #: STM32G474RETx, AS5048A vs AS5048B), so a family prefix is long; anything
@@ -219,35 +260,11 @@ def enforce_requested_part_variants(
         if old is None:
             continue
 
-        target_by_name: dict[str, list[str]] = {}
-        for pin in target.pins:
-            target_by_name.setdefault(pin.name.upper(), []).append(pin.number)
-        used_by_name: dict[str, int] = {}
-        mapping: dict[str, str] = {}
-        for pin in old.pins:
-            choices = target_by_name.get(pin.name.upper(), [])
-            if not choices:
-                continue
-            index = used_by_name.get(pin.name.upper(), 0)
-            mapping[pin.number] = choices[min(index, len(choices) - 1)]
-            used_by_name[pin.name.upper()] = index + 1
-        for net in ir.nets:
-            net.nodes = [
-                (r, mapping.get(str(pin), str(pin)) if r == best else str(pin))
-                for r, pin in net.nodes
-            ]
-        ir.nc_pins = [
-            (r, mapping.get(str(pin), str(pin)) if r == best else str(pin))
-            for r, pin in ir.nc_pins
-        ]
-        comp = ir.components[best]
-        old_id = comp.lib_id
-        comp.lib_id = target_id
-        comp.value = token
-        comp.footprint = target.properties.get("Footprint", "")
+        old_id = ir.components[best].lib_id
+        moved = migrate_component(ir, best, target_id, old, target, value=token)
         notes.append(
             f"{best}: requested {token} -> {old_id} replaced by {target_id}; "
-            f"migrated {len(mapping)} pins by name"
+            f"migrated {moved} pins by name"
         )
     return notes
 

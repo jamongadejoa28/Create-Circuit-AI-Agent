@@ -124,7 +124,7 @@ def _artifacts(run_dir: Path) -> dict[str, str]:
     return found
 
 
-def _report(res, run_dir: Path) -> dict:
+def _report(res, run_dir: Path, prompt: str = "", parts=None, symbols=None) -> dict:
     """The agent's own verdict, passed through without re-judging it."""
     pr = res.pipeline
     compliance = res.compliance.as_dict() if res.compliance else None
@@ -154,11 +154,26 @@ def _report(res, run_dir: Path) -> dict:
         "compliance": compliance,
         "wiring": (pr.route_metrics if pr else {}) or {},
         "visual_issues": len(pr.visual_issues) if pr else None,
+        # why the board looks the way it does — computed from the artefacts,
+        # not from the log, and shown above the drawing
+        "rationale": _rationale(res, prompt, parts, symbols),
         "refusal": res.refusal,
         "repairs": res.repairs,
         "log": res.log,
         "files": _artifacts(run_dir),
     }
+
+
+def _rationale(res, prompt: str, parts, symbols) -> list[dict]:
+    from .rationale import explain
+
+    try:
+        return explain(
+            prompt, res.spec, res.block_plan, res.ir, symbols,
+            res.compliance, parts,
+        )
+    except Exception as e:  # an explanation must never cost the schematic
+        return [{"title": "설명 생성 실패", "detail": f"{type(e).__name__}: {e}"}]
 
 
 def _run_job(job: Job) -> None:
@@ -185,7 +200,8 @@ def _run_job(job: Job) -> None:
         )
     agent = Agent(llm, PartIndex(), KnowledgeIndex(), run_dir)
     res = agent.run(job.prompt, name=job.name)
-    job.result = _report(res, run_dir)
+    symbols = agent._resolve_symbols(res.ir) if res.ir else {}
+    job.result = _report(res, run_dir, job.prompt, agent.parts, symbols)
     job.result["run"] = {
         "seed": job.seed,
         "commit": _commit(),
@@ -337,6 +353,9 @@ function render(id,j){
      blocking.map(i=>`<li><span class="mono">${esc(i.rule)}</span> — ${esc(i.message)}</li>`).join('')+'</ul></div>'}
   if(warns.length){h+='<div class="card warn"><b>확인이 필요한 항목 '+warns.length+'건</b><ul>'+
      warns.map(i=>`<li><span class="mono">${esc(i.rule)}</span> — ${esc(i.message)}</li>`).join('')+'</ul></div>'}
+  const why=r.rationale||[];
+  if(why.length){h+='<div class="card"><b>왜 이렇게 설계했는가</b><ul>'+
+     why.map(x=>`<li><b>${esc(x.title)}</b> — ${esc(x.detail)}</li>`).join('')+'</ul></div>'}
   const run=r.run||{};
   h+=`<div class="card"><b>이 실행</b> <span class="mono">commit ${esc(run.commit||'?')} · seed ${run.seed??'?'} · prompt ${esc(run.prompt_sha256||'?')}</span>
       <br><small>같은 commit·seed·prompt면 같은 결과가 나옵니다. 결과가 달라졌다면 이 세 값 중 하나가 달라진 것입니다.</small></div>`;

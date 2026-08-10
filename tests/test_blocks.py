@@ -318,14 +318,8 @@ def test_an_interface_net_that_misses_the_hub_is_still_dangling():
     assert not any("ALREADY_OK" in n for n in notes), notes
 
 
-def test_a_hub_with_no_free_pins_says_so_instead_of_returning_nothing():
-    """Measured on the 4-motor board: the model chose the LQFP48 package, the
-    plan asked for 37 interface nets, all 48 pins were already spoken for, and
-    this pass returned an empty list without a word. The board then failed
-    downstream with dangling driver and encoder pins and no statement of why.
-    Demand and supply are both known here — it is arithmetic, not opinion."""
+def _hub_agent():
     from circuitgen.agent import Agent
-    from circuitgen.ir import CircuitIR, Component
     from circuitgen.partindex import PartIndex
 
     class Refuses:
@@ -335,18 +329,61 @@ def test_a_hub_with_no_free_pins_says_so_instead_of_returning_nothing():
     agent = object.__new__(Agent)
     agent.parts = PartIndex()
     agent.llm = Refuses()
+    return agent
 
+
+def test_a_package_too_small_for_the_board_is_grown_to_one_that_fits():
+    """Measured: the model chose STM32G474CBTx (39 I/O) for a board whose plan
+    needed 37 interface nets on the controller, every pin had been parked as a
+    no-connect, and this pass returned an empty list without a word.
+
+    "STM32G474" names a family, not a package. Counting the pins the plan
+    requires and picking the smallest package that carries them is arithmetic,
+    and it is the design work the user says they cannot do.
+    """
+    from circuitgen.ir import CircuitIR, Component
+
+    agent = _hub_agent()
     ir = CircuitIR("too-small")
     hub_id = "MCU_ST_STM32G4:STM32G474CBTx"
     ir.add(Component("U1", hub_id, "STM32G474"))
     ir.add(Component("U2", "Driver_Motor:DRV8311H", "DRV"))
     sym = agent.parts.load_symbols([hub_id])[hub_id]
-    # every hub pin already spoken for, as the real board had them
-    ir.nc_pins = [("U1", p.number) for p in sym.pins]
-    for i in range(1, 6):
-        ir.connect(f"PWM{i}", ("U2", str(10 + i)))
+    io = [p for p in sym.pins if p.etype.name in ("BIDIR", "INPUT", "OUTPUT")]
+    # more interface nets than this package has I/O pins
+    catalog = [{"net": f"SIG{i}"} for i in range(len(io) + 4)]
+    for c in catalog:
+        ir.connect(c["net"], ("U2", "15"))
 
-    notes = agent.wire_mcu_interfaces(ir, [{"net": f"PWM{i}"} for i in range(1, 6)])
-    assert notes, "a pass that cannot do its job must say so"
-    assert "0 free I/O pins" in notes[0] and "5 interface nets" in notes[0]
-    assert "too small for the requested board" in notes[0]
+    notes = agent.wire_mcu_interfaces(ir, catalog)
+    grown = ir.components["U1"].lib_id
+    assert grown != hub_id, notes
+    new_io = len([
+        p for p in agent.parts.load_symbols([grown])[grown].pins
+        if p.etype.name in ("BIDIR", "INPUT", "OUTPUT")
+    ])
+    assert new_io >= len(catalog)
+    assert any("was replaced by" in n and str(new_io) in n for n in notes), notes
+    # and it took the SMALLEST that fits, not the biggest in the family
+    assert new_io < 87, f"{grown} is larger than this board needs"
+
+
+def test_when_no_package_in_the_family_fits_it_says_what_to_decide():
+    """A shortfall no part can absorb is the user's call — split the board or
+    drop a peripheral — and the run must say so instead of going quiet."""
+    from circuitgen.ir import CircuitIR, Component
+
+    agent = _hub_agent()
+    ir = CircuitIR("hopeless")
+    hub_id = "MCU_ST_STM32G4:STM32G474CBTx"
+    ir.add(Component("U1", hub_id, "STM32G474"))
+    ir.add(Component("U2", "Driver_Motor:DRV8311H", "DRV"))
+    catalog = [{"net": f"SIG{i}"} for i in range(400)]
+    for c in catalog:
+        ir.connect(c["net"], ("U2", "15"))
+
+    notes = agent.wire_mcu_interfaces(ir, catalog)
+    assert ir.components["U1"].lib_id == hub_id, "nothing fits, so nothing moves"
+    joined = " ".join(notes)
+    assert "no package of" in joined and "the largest available is" in joined
+    assert "Split the board" in joined

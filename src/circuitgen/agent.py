@@ -1002,6 +1002,78 @@ class Agent:
             "sub_spec": sub_spec,
         }
 
+    def _grow_hub_package(
+        self, ir: CircuitIR, hub: str, symbols: dict, needed: int
+    ) -> tuple[bool, str]:
+        """Move the controller to a package of its own family that has the I/O.
+
+        Demand is the number of interface nets the plan says must reach the
+        controller; supply is the symbol's I/O pin count. Both are known, so
+        this is arithmetic — no judgement about what the board is for. The
+        replacement must come from the SAME library and share a family-length
+        prefix with the current part, so a shortfall never turns into a
+        different device; the nets move by pin name, because PA5 is pin 13 on
+        an LQFP48 and 19 on an LQFP64.
+
+        Returns (changed, note). When nothing in the family is big enough the
+        note says so and names the largest that exists, which is a thing the
+        user has to decide — split the board, or drop a peripheral.
+        """
+        comp = ir.components[hub]
+        current = symbols.get(comp.lib_id)
+        if current is None:
+            return False, ""
+        library = comp.lib_id.split(":")[0]
+        family = comp.lib_id.split(":")[-1].upper()
+        io_now = len([p for p in current.pins if p.etype.name in ("BIDIR", "INPUT", "OUTPUT")])
+        io_pins = {p.number for p in current.pins
+                   if p.etype.name in ("BIDIR", "INPUT", "OUTPUT")}
+        # only I/O pins already carrying a SIGNAL are spoken for; a no-connect
+        # is a parked pin. Counting NCs here asked for an 87-I/O BGA on a
+        # board that needs 37 connections.
+        in_use = len({
+            p for net in ir.nets for r, p in net.nodes
+            if r == hub and p in io_pins
+        })
+        want = in_use + needed
+
+        from .normalize import _shared_prefix, migrate_component
+
+        best_id, best_io = None, io_now
+        largest_id, largest_io = comp.lib_id, io_now
+        for hit in self.parts.search_parts(family[:9], 60):
+            lib_id = hit.get("lib_id") or ""
+            if lib_id.split(":")[0] != library or lib_id == comp.lib_id:
+                continue
+            if _shared_prefix(lib_id.split(":")[-1].upper(), family) < 5:
+                continue
+            try:
+                cand = self.parts.load_symbols([lib_id])[lib_id]
+            except Exception:
+                continue
+            io = len([p for p in cand.pins if p.etype.name in ("BIDIR", "INPUT", "OUTPUT")])
+            if io > largest_io:
+                largest_id, largest_io = lib_id, io
+            # the smallest package that fits, not the biggest available
+            if io >= want and (best_id is None or io < best_io):
+                best_id, best_io = lib_id, io
+
+        if best_id is None:
+            return False, (
+                f"{hub}: no package of {family} carries the {want} I/O pins this "
+                f"board needs; the largest available is {largest_id} with "
+                f"{largest_io}. Split the board across two controllers, or drop "
+                f"a peripheral — this is a decision the circuit cannot make."
+            )
+        target = self.parts.load_symbols([best_id])[best_id]
+        old_id = comp.lib_id
+        moved = migrate_component(ir, hub, best_id, current, target)
+        return True, (
+            f"{hub}: {old_id} has {io_now} I/O pins and this board needs {want} "
+            f"(existing wiring plus {needed} interface nets), so it was replaced "
+            f"by {best_id} with {best_io}; {moved} pins carried across by name"
+        )
+
     def wire_mcu_interfaces(self, ir: CircuitIR, catalog: list[dict]) -> list[str]:
         """Connect dangling interface nets to free MCU pins.
 
@@ -1023,8 +1095,12 @@ class Agent:
 
         cat_names = {c["net"] for c in catalog}
         net_sizes = {n.name: len(n.nodes) for n in ir.nets}
+        # A no-connect is where a pass PARKED an unused pin so ERC would pass,
+        # not a commitment. Counting them as spoken for is what made a
+        # 39-I/O part report zero free pins on a board that needed 37: every
+        # pin had been NC'd, so this pass gave up and said nothing. Connecting
+        # one simply clears its NC below, which this already does.
         used_pins = {p for n in ir.nets for r, p in n.nodes if r == hub}
-        used_pins |= {p for r, p in ir.nc_pins if r == hub}
         # An interface net's job is to reach the hub. Requiring it to hold
         # exactly ONE pin meant a signal shared by several peripherals was
         # never offered a controller pin: on a real 4-motor board the five
@@ -1044,6 +1120,30 @@ class Agent:
             if p.number not in used_pins and p.etype.name in ("BIDIR", "INPUT", "OUTPUT")
         ]
         if len(free) < len(dangling):
+            # A package too small for the board is a design decision nobody
+            # made: "STM32G474" names a family, not a package, and choosing
+            # between LQFP48 and LQFP64 is a pin-budget calculation — exactly
+            # the work the user says they cannot do. The catalog search that
+            # picked this one ranks by text score, so a 4-motor board got the
+            # 39-I/O part because it happened to sort first. Try the same
+            # family for a package that fits before reporting a shortfall.
+            grown, note = self._grow_hub_package(ir, hub, symbols, len(dangling))
+            if grown:
+                symbols = self._resolve_symbols(ir)
+                sym = symbols[ir.components[hub].lib_id]
+                used_pins = {p for n in ir.nets for r, p in n.nodes if r == hub}
+                free = [
+                    p.number for p in sym.pins
+                    if p.number not in used_pins
+                    and p.etype.name in ("BIDIR", "INPUT", "OUTPUT")
+                ]
+                early = [note]
+            else:
+                early = [note] if note else []
+        else:
+            early = []
+
+        if len(free) < len(dangling):
             # Arithmetic, not opinion: the plan says how many connections the
             # controller has to make and the symbol says how many it has.
             # Measured on a 4-motor board — 4x5 driver signals, 4x4 encoder
@@ -1053,7 +1153,7 @@ class Agent:
             # whose controller cannot reach its peripherals is not buildable,
             # and silence about it is the failure mode this project exists to
             # avoid.
-            notes = [
+            notes = early + [
                 f"{hub} ({ir.components[hub].lib_id}) has {len(free)} free I/O "
                 f"pins for {len(dangling)} interface nets that need one — "
                 f"{', '.join(sorted(dangling)[:6])}"
@@ -1067,7 +1167,7 @@ class Agent:
             if not free:
                 return notes
         else:
-            notes = []
+            notes = list(early)
 
         assignments: list[dict] = []
         try:
