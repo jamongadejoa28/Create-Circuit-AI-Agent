@@ -24,6 +24,7 @@ from typing import Protocol
 
 from .evalmetrics import connection_set, diff_connections, nc_set
 from .compliance import (
+    _norm as _norm_part,
     ComplianceReport,
     check_compliance,
     ensure_device_supply_rails,
@@ -394,38 +395,110 @@ class Agent:
                 part["role"] = base[:32]
             part["quantity"] = max(1, int(part.get("quantity", 1)))
 
+    def _designators(self, lib_ids) -> set[str]:
+        """Reference designators of these symbols, per the library itself."""
+        found: set[str] = set()
+        for lib_id in lib_ids:
+            try:
+                sym = self.parts.load_symbols([lib_id])[lib_id]
+            except Exception:
+                continue
+            if sym.reference_prefix:
+                found.add(sym.reference_prefix.upper())
+        return found
+
     def _ensure_named_parts(self, prompt: str, spec: dict) -> None:
-        """Explicit part numbers in the request must become roles.
+        """A part number the user named must drive SELECTION, not just grading.
 
-        Live measurement: the spec extractor treated 'STM32G474RET6' as
-        context and listed only its support parts — no block ever held the
-        MCU. Any prompt token that resolves in the part index and is not
-        covered by an existing search_query gets a role appended.
+        The product assumption is that the user arrives having already chosen
+        the parts. Measured on driver_relay: the prompt names Relay:G5V-1,
+        BC337 and 1N4148, the extractor reduced them to the generic queries
+        "relay"/"transistor"/"diode", and the board came out with none of the
+        three — while Relay:G5V-1 sat unused in the bundled library.
+
+        This used to run its own regex, stricter than the reference one in
+        compliance, which missed exactly the shapes a user pastes: 1N4148 and
+        2N3904 start with a digit and G5V-1 has a single one. It now uses the
+        reference extractor, so the checker and the selector agree on what the
+        user asked for.
+
+        Which existing role a part number belongs to is decided by the
+        CATALOG, not by a synonym table: the named part and the role's generic
+        query are both searched, and they match when the symbols they resolve
+        to carry the same reference designator (IEEE 315 — Relay:G5V-1 and
+        "relay" are both K, 1N4148 and "diode" are both D). Matching on the
+        library name instead does not work: bm25 answers "relay" with
+        OLIMEX and SparkFun parts before the official Relay library.
         """
-        import re as _re
-
-        tokens = set(_re.findall(r"\b[A-Za-z]{2,}[0-9][A-Za-z0-9-]{3,}\b", prompt))
+        named = requested_part_numbers(prompt, self.parts)
         parts = spec.setdefault("parts_needed", [])
-        for tok in sorted(tokens)[:5]:
-            if not self.parts.search_parts(tok, 1):
-                continue  # not a resolvable part number
-            up = tok.upper()
+        for token in named:
+            hits = [
+                hit for hit in self.parts.search_parts(token, 8)
+                if part_present(token, hit["lib_id"])
+            ]
+            if not hits:
+                continue
+            designators = self._designators(h["lib_id"] for h in hits)
+            # a role already carrying a named part is spoken for: an MCU and a
+            # sensor are both "U", so a designator match alone let the second
+            # part overwrite the first
+            free = [p for p in parts if not any(
+                part_present(other, str(p.get("search_query", ""))) for other in named
+            )]
             covered = False
-            for p in parts:
-                if up[:6] in p.get("search_query", "").upper():
+            for part in parts:
+                if part_present(token, str(part.get("search_query", ""))) or part_present(
+                    token, str(part.get("role", ""))
+                ):
+                    part["search_query"] = token
                     covered = True
                     break
-                # role mentions the part number but the query is generic
-                # (measured: role 'STM32G474RET6' with query 'microcontroller'
-                # made the model pick a 68HC12) — rewrite the query
-                if up[:6] in p.get("role", "").upper():
-                    p["search_query"] = tok
+            if covered:
+                continue
+            # the role's query names the family this part belongs to:
+            # "STM32 microcontroller" holds STM32, which is a prefix of
+            # STM32G474RET6. Same substring logic part_present uses, applied to
+            # the query's words — not a synonym table.
+            norm_token = _norm_part(token)
+            for part in free:
+                words = re.split(r"[^A-Za-z0-9]+", str(part.get("search_query", "")))
+                if any(
+                    len(w) >= 4 and norm_token.startswith(_norm_part(w)) for w in words
+                ):
+                    part["search_query"] = token
+                    covered = True
+                    break
+            if covered:
+                continue
+            # next: the role's own search actually returns this part, so it is
+            # what that role was looking for
+            for part in free:
+                query = str(part.get("search_query", ""))
+                if query and any(
+                    part_present(token, hit["lib_id"])
+                    for hit in self.parts.search_parts(query, 40)
+                ):
+                    part["search_query"] = token
+                    covered = True
+                    break
+            if covered:
+                continue
+            for part in free:
+                query = str(part.get("search_query", ""))
+                if not query:
+                    continue
+                role_designators = self._designators(
+                    h["lib_id"] for h in self.parts.search_parts(query, 4)
+                )
+                if designators & role_designators:
+                    part["search_query"] = token
                     covered = True
                     break
             if not covered:
-                parts.append({"role": tok.lower(), "search_query": tok})
+                parts.append({"role": token.lower(), "search_query": token, "quantity": 1})
                 spec.setdefault("connections_intent", []).append(
-                    f"{tok} is the main named component and must be included"
+                    f"{token} is a part the user selected and must be in the circuit"
                 )
 
     # ---- stage 2: part candidates + knowledge + IR synthesis ----

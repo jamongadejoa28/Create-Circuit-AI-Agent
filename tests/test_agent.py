@@ -820,3 +820,47 @@ def test_the_normalization_sequence_is_one_sequence_and_is_idempotent(agent_env)
     agent._normalize(ir, spec, "STM32G474RET6 최소 회로")
     agent._normalize(ir, spec, "STM32G474RET6 최소 회로")
     assert snapshot() == first, "running the sequence again must change nothing"
+
+
+def test_named_parts_rewrite_the_role_that_was_looking_for_them(agent_env):
+    """The product assumption is that the user already chose the parts, so a
+    part number must drive SELECTION, not just after-the-fact grading.
+
+    Measured on driver_relay: the prompt named Relay:G5V-1, BC337 and 1N4148,
+    the extractor reduced them to "relay"/"transistor"/"diode", and the board
+    came out with none of the three while Relay:G5V-1 sat unused in the
+    bundled library.
+
+    Which role a part belongs to is decided by the catalog and by IEEE 315
+    reference designators, never by a synonym table.
+    """
+    parts, knowledge, tmp = agent_env
+    agent = Agent(MockLLM(), parts, knowledge, tmp / "named")
+
+    spec = {"parts_needed": [
+        {"role": "mcu", "search_query": "STM32 microcontroller"},
+        {"role": "sensor", "search_query": "I2C temperature sensor"},
+    ]}
+    agent._ensure_named_parts("STM32G474RET6에 온도센서 TMP100을 연결", spec)
+    assert [(p["role"], p["search_query"]) for p in spec["parts_needed"]] == [
+        ("mcu", "STM32G474RET6"), ("sensor", "TMP100"),
+    ], "an MCU and a sensor are both 'U'; one must not take the other's role"
+
+
+def test_a_named_part_with_no_matching_role_becomes_its_own(agent_env):
+    parts, knowledge, tmp = agent_env
+    agent = Agent(MockLLM(), parts, knowledge, tmp / "named2")
+    spec = {"parts_needed": [{"role": "led", "search_query": "LED"}]}
+    agent._ensure_named_parts("STM32G474RET6로 제어합니다", spec)
+    roles = [(p["role"], p["search_query"]) for p in spec["parts_needed"]]
+    assert ("led", "LED") in roles
+    assert any(q == "STM32G474RET6" for _r, q in roles)
+
+
+def test_a_word_that_only_looks_like_a_part_number_is_not_selected(agent_env):
+    """The catalog decides what is a part number; RS485 is a protocol."""
+    parts, knowledge, tmp = agent_env
+    agent = Agent(MockLLM(), parts, knowledge, tmp / "named3")
+    spec = {"parts_needed": [{"role": "xcvr", "search_query": "transceiver"}]}
+    agent._ensure_named_parts("RS485(Modbus RTU) 통신이 필요합니다", spec)
+    assert [p["search_query"] for p in spec["parts_needed"]] == ["transceiver"]
