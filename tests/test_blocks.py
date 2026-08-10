@@ -93,21 +93,32 @@ def test_validate_plan_corrects_repeated_hardware_count_from_requirements():
     assert any("ENC" in n and "corrected" in n for n in notes)
 
 
-def test_validate_plan_namespaces_repeated_control_but_keeps_shared_spi_bus():
+def test_validate_plan_reports_shared_interfaces_instead_of_renaming_them():
+    """It used to append {n} to every interface net outside a six-name list of
+    bus names. On a real board the model wrote SCK / MISO / MOSI without the
+    "SPI_" prefix that list expected, so all three were made per-instance and
+    the board came out with FOUR SPI buses instead of one bus and four chip
+    selects. Nothing available at plan time separates a clock from a select —
+    both are INPUTs on the peripheral — so the plan is left as written and the
+    sharing is reported to whoever reads the run.
+    """
     spec = {"parts_needed": [{"role": "encoder", "quantity": 4}]}
     plan = [{
         "id": "ENC", "roles": ["encoder"], "count": 4,
         "interface_nets": [
-            {"name": "SPI_SCK", "purpose": "shared clock"},
-            {"name": "SPI_MISO", "purpose": "shared data"},
-            {"name": "ENC_CS", "purpose": "individual select"},
+            {"name": "SCK", "purpose": "shared clock"},
+            {"name": "MISO", "purpose": "shared data"},
+            {"name": "ENC_CS{n}", "purpose": "individual select"},
         ],
     }]
     fixed, notes = validate_plan(plan, spec)
     assert [n["name"] for n in fixed[0]["interface_nets"]] == [
-        "SPI_SCK", "SPI_MISO", "ENC_CS{n}"
+        "SCK", "MISO", "ENC_CS{n}"
     ]
-    assert any("ENC_CS" in n and "per-instance" in n for n in notes)
+    shared_note = next(n for n in notes if n.startswith("block ENC:"))
+    assert "SCK" in shared_note and "MISO" in shared_note
+    assert "ENC_CS{n}" not in shared_note  # already per-instance
+    assert "4 instances share" in shared_note
 
 
 def test_validate_plan_removes_passive_only_decoupling_block():
@@ -305,3 +316,37 @@ def test_an_interface_net_that_misses_the_hub_is_still_dangling():
     assert "U1" in {r for r, _ in pwm.nodes}, pwm.nodes
     # a net the hub already reaches is left alone
     assert not any("ALREADY_OK" in n for n in notes), notes
+
+
+def test_a_hub_with_no_free_pins_says_so_instead_of_returning_nothing():
+    """Measured on the 4-motor board: the model chose the LQFP48 package, the
+    plan asked for 37 interface nets, all 48 pins were already spoken for, and
+    this pass returned an empty list without a word. The board then failed
+    downstream with dangling driver and encoder pins and no statement of why.
+    Demand and supply are both known here — it is arithmetic, not opinion."""
+    from circuitgen.agent import Agent
+    from circuitgen.ir import CircuitIR, Component
+    from circuitgen.partindex import PartIndex
+
+    class Refuses:
+        def complete_json(self, *a, **k):
+            raise RuntimeError("no model in this test")
+
+    agent = object.__new__(Agent)
+    agent.parts = PartIndex()
+    agent.llm = Refuses()
+
+    ir = CircuitIR("too-small")
+    hub_id = "MCU_ST_STM32G4:STM32G474CBTx"
+    ir.add(Component("U1", hub_id, "STM32G474"))
+    ir.add(Component("U2", "Driver_Motor:DRV8311H", "DRV"))
+    sym = agent.parts.load_symbols([hub_id])[hub_id]
+    # every hub pin already spoken for, as the real board had them
+    ir.nc_pins = [("U1", p.number) for p in sym.pins]
+    for i in range(1, 6):
+        ir.connect(f"PWM{i}", ("U2", str(10 + i)))
+
+    notes = agent.wire_mcu_interfaces(ir, [{"net": f"PWM{i}"} for i in range(1, 6)])
+    assert notes, "a pass that cannot do its job must say so"
+    assert "0 free I/O pins" in notes[0] and "5 interface nets" in notes[0]
+    assert "too small for the requested board" in notes[0]

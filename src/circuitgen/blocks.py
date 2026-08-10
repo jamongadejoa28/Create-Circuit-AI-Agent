@@ -31,12 +31,6 @@ _REF_RE = re.compile(r"^(#?[A-Za-z]+)(\d+)$")
 # feedback and chip-select lines must be unique per channel.  Small models
 # regularly omit the documented ``{n}``, silently shorting all four motor
 # channels together during instantiation.
-_REPEAT_SHARED_INTERFACES = {
-    "SPI_SCK", "SPI_CLK", "SPI_MOSI", "SPI_MISO",
-    "I2C_SCL", "I2C_SDA",
-}
-
-
 def _ref_prefix(ref: str) -> str:
     m = _REF_RE.match(ref)
     return m.group(1) if m else ref
@@ -245,15 +239,32 @@ def validate_plan(plan: list[dict], spec: dict) -> tuple[list[dict], list[str]]:
                 f"block {b['id']}: count {b.get('count', 1)} corrected to requirement quantity {expected}"
             )
             b["count"] = expected
-        if int(b.get("count", 1)) > 1:
-            for net in b.get("interface_nets", []):
-                name = str(net.get("name", ""))
-                if not name or "{n}" in name or name.upper() in _REPEAT_SHARED_INTERFACES:
-                    continue
-                net["name"] = name + "{n}"
-                notes.append(
-                    f"block {b['id']}: repeated interface {name} made per-instance as {name}{{n}}"
-                )
+        # A repeated block's interface net without {n} is shared by every
+        # instance. That is sometimes right (a bus) and sometimes fatal (a
+        # chip select four devices answer at once), and nothing here can tell
+        # which: an SCK and a CS are both INPUTs on the peripheral.
+        #
+        # This used to append {n} to anything outside a six-name list of bus
+        # names. On a real board the model wrote SCK / MISO / MOSI without the
+        # "SPI_" prefix the list expected, so all three were made per-instance
+        # and the board came out with FOUR SPI buses instead of one bus and
+        # four chip selects. Extending the list is what working-rules §2 says
+        # to delete, and no length of it would have covered the next spelling.
+        #
+        # So the plan is left as written and the sharing is REPORTED. The
+        # electrical half is not a guess and is already checked downstream:
+        # several driver pins on one net is a pin-type conflict that self-ERC
+        # raises by the ported SKiDL matrix.
+        shared = [
+            str(net.get("name", "")) for net in b.get("interface_nets", [])
+            if str(net.get("name", "")) and "{n}" not in str(net.get("name", ""))
+        ]
+        if int(b.get("count", 1)) > 1 and shared:
+            notes.append(
+                f"block {b['id']}: {', '.join(shared)} carry no {{n}}, so all "
+                f"{b['count']} instances share each of them — right for a bus, "
+                f"wrong for a per-device select or command line"
+            )
         covered.update(b["roles"])
     orphans = roles - covered
     if orphans:

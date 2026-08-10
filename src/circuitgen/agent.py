@@ -847,9 +847,14 @@ class Agent:
             "- interface_nets: ONLY nets another block must also connect to "
             "(signals to the MCU, shared buses, block outputs). Power rails "
             "are implicit and shared — never list them.\n"
-            "- Per-instance signals of repeated blocks use a literal {n} in "
-            "the net name (DRV{n}_PWM_A); shared bus nets use plain names "
-            "(SPI_SCK).\n\n"
+            "- Repeated blocks: a net EVERY instance may receive at the same "
+            "time is shared and keeps a plain name (a clock, a data line to "
+            "slaves: SCK, MOSI, SDA, SCL). A net that addresses or commands "
+            "ONE instance must carry a literal {n} (chip select, enable, "
+            "PWM, fault: CS{n}, PWM_A{n}, FAULT{n}). Getting this wrong is "
+            "not cosmetic: a shared chip select means four devices answer at "
+            "once, and a per-instance clock means four buses where one was "
+            "wanted.\n\n"
             f"SPEC: {json.dumps(spec, ensure_ascii=False)}"
         )
         def ask(extra: str = "") -> tuple[list[dict], list[str]]:
@@ -1038,8 +1043,31 @@ class Agent:
             p.number for p in sym.pins
             if p.number not in used_pins and p.etype.name in ("BIDIR", "INPUT", "OUTPUT")
         ]
-        if not free:
-            return []
+        if len(free) < len(dangling):
+            # Arithmetic, not opinion: the plan says how many connections the
+            # controller has to make and the symbol says how many it has.
+            # Measured on a 4-motor board — 4x5 driver signals, 4x4 encoder
+            # signals, CAN, UART, battery — where the model chose the LQFP48
+            # package: 37 nets needed a pin, all 48 were already spoken for,
+            # and this pass returned an empty list without a word. A board
+            # whose controller cannot reach its peripherals is not buildable,
+            # and silence about it is the failure mode this project exists to
+            # avoid.
+            notes = [
+                f"{hub} ({ir.components[hub].lib_id}) has {len(free)} free I/O "
+                f"pins for {len(dangling)} interface nets that need one — "
+                f"{', '.join(sorted(dangling)[:6])}"
+                + (" ..." if len(dangling) > 6 else "")
+                + (
+                    "; this package is too small for the requested board"
+                    if len(free) == 0 else
+                    f"; {len(dangling) - len(free)} will stay unconnected"
+                )
+            ]
+            if not free:
+                return notes
+        else:
+            notes = []
 
         assignments: list[dict] = []
         try:
@@ -1084,7 +1112,6 @@ class Agent:
         if not assignments:  # deterministic fallback
             assignments = [{"net": n, "pin": p} for n, p in zip(sorted(dangling), free)]
 
-        notes = []
         taken: set[str] = set()
         for a in assignments:
             net_name, pin = a.get("net"), str(a.get("pin"))
