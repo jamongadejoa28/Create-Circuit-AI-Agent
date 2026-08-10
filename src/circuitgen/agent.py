@@ -1288,6 +1288,16 @@ class Agent:
         "fixes" unconnected pins by dumping them on GND (measured: encoder
         A/B/INDEX outputs to GND, ERC 21→58); pin-type math says that can
         never be right.
+        (4) any wiring op naming a pin the symbol does not have — see
+        `absent_pin`; this was the one op every other check let through.
+        (5) an added part the same patch never wires — it can only add
+        unconnected-pin errors to the round that was meant to remove them.
+        (6) removal of a part the same patch also wires — a contradictory
+        patch, whose wiring half used to outlive the component it named.
+
+        Op names here must match `schemas.REPAIR_PATCH`: this gate spent its
+        whole life checking for "mark_nc", which nothing emits, so every
+        set_nc op walked past (1) and (4) untouched.
         """
         symbols = self._resolve_symbols(ir)
 
@@ -1309,9 +1319,10 @@ class Agent:
 
         text = " ".join(problems)
         # refs this same patch adds (and whose lib_id will be accepted):
-        # connect/disconnect/mark_nc on them is the addition's second half,
+        # connect/disconnect/set_nc on them is the addition's second half,
         # regardless of op order within the patch
         pending_adds: set[str] = set()
+        pending_lib: dict[str, str] = {}
         for op in ops:
             if op.get("op") != "add_component" or op.get("ref", "") in ir.components:
                 continue
@@ -1322,23 +1333,74 @@ class Agent:
                 try:
                     self.parts.symbol_source(lid)
                     pending_adds.add(op.get("ref", ""))
+                    pending_lib[op.get("ref", "")] = lid
                 except KeyError:
                     pass
+
+        def absent_pin(lib_id: str, pin: str) -> str | None:
+            """The symbol's pin numbers, when `pin` is not one of them.
+
+            A pin the symbol does not have cannot be wired, and this used to
+            be the ONE op that passed every check below: the lookup raised
+            KeyError, `etype` became None, and the entire validation block
+            was skipped — so the more thorough the gate, the more reliably a
+            phantom pin sailed through it. Measured on driver_relay, 3 of 3
+            seeds: the model wired K1.3/4/7/8 to GND on a Relay:G5V-1 whose
+            pins are 1/2/5/6/9/10.
+
+            Conceptual boxes are exempt: their pin set IS the set of pins the
+            nets reference (conceptual.resolve_conceptual), so naming a new
+            one is how the box legitimately grows.
+            """
+            if lib_id.startswith("Conceptual:"):
+                return None
+            sym = symbols.get(lib_id)
+            if sym is None:
+                try:
+                    sym = self.parts.load_symbols([lib_id])[lib_id]
+                except Exception:
+                    return None
+            try:
+                sym.pin(str(pin))
+            except KeyError:
+                return ", ".join(p.number for p in sym.pins)
+            return None
+
         kept, notes = [], []
         for op in ops:
             kind = op.get("op")
             ref = op.get("ref", "")
-            if kind in ("connect", "disconnect", "mark_nc") and ref not in ir.components:
+            if kind in ("connect", "disconnect", "set_nc") and ref not in ir.components:
                 if ref in pending_adds:
                     # the same patch added this part; wiring it is the
                     # legitimate second half of that addition (ops are
                     # filtered before any is applied)
+                    have = pending_lib.get(ref)
+                    numbers = absent_pin(have, op.get("pin", "")) if have else None
+                    if numbers is not None:
+                        notes.append(
+                            f"rejected op: {kind} {ref}.{op.get('pin')} — {have} has no "
+                            f"such pin ({numbers})"
+                        )
+                        continue
                     kept.append(op)
                     continue
                 notes.append(f"rejected op: {kind} references missing component {ref}")
                 continue
+            if kind in ("connect", "disconnect", "set_nc") and ref in ir.components:
+                comp_lib = ir.components[ref].lib_id
+                numbers = absent_pin(comp_lib, op.get("pin", ""))
+                if numbers is not None:
+                    notes.append(
+                        f"rejected op: {kind} {ref}.{op.get('pin')} — {comp_lib} has no "
+                        f"such pin ({numbers})"
+                    )
+                    continue
             if kind == "connect" and ref in ir.components:
                 sym = symbols.get(ir.components[ref].lib_id)
+                # existence is settled above; a Conceptual box may be growing a
+                # new pin here and those carry no electrical type, so it falls
+                # through to the structural checks with etype None
                 try:
                     etype = sym.pin(str(op.get("pin", ""))).etype.name if sym else None
                 except KeyError:
@@ -1424,6 +1486,59 @@ class Agent:
                     notes.append(f"rejected op: {kind} on {ref} — not part of any reported problem")
                     continue
             kept.append(op)
+
+        # A patch that removes a part AND wires it in the same round is
+        # self-contradictory, and the wiring half used to survive: filtering
+        # runs before anything is applied, so the ref still existed when the
+        # connect was judged, and apply_patch then re-inserted the node into a
+        # net for a component that was no longer on the board. Measured on
+        # driver_relay seeds 201/203: "removed D1" followed by "connected D1.1
+        # to +5V", leaving ('D1','1') in the +5V net with no D1 in components.
+        # The destructive half is the one to drop — a patch that contradicts
+        # itself is not a licence to delete a part.
+        removed = {op.get("ref", "") for op in kept if op.get("op") == "remove_component"}
+        wiring_kinds = ("connect", "disconnect", "set_nc")
+        contradictory = removed & {
+            op.get("ref", "") for op in kept if op.get("op") in wiring_kinds
+        }
+        if contradictory:
+            notes.append(
+                f"rejected op: remove_component {', '.join(sorted(contradictory))} — "
+                f"the same patch also wires {'them' if len(contradictory) > 1 else 'it'}"
+            )
+            kept = [
+                op for op in kept
+                if not (
+                    op.get("op") == "remove_component"
+                    and op.get("ref", "") in contradictory
+                )
+            ]
+
+        # A part the patch adds but never wires repairs nothing: every one of
+        # its pins lands unconnected, so the round strictly INCREASES the
+        # error count it was called to reduce. There was no bound on this at
+        # all — `Device:*` is exempt from the duplicate check, and the
+        # "not part of any reported problem" check only reaches refs that
+        # already exist, which a new ref never does. Measured on driver_relay
+        # seed 202: one round added R2..R12 and wired only four of them,
+        # shipping seven floating resistors (8 parts -> 23).
+        #
+        # Judged against the ops that SURVIVED the gate, so an addition whose
+        # only wiring was rejected above goes out with it.
+        wired = {op.get("ref", "") for op in kept if op.get("op") == "connect"}
+        stranded = {
+            op.get("ref", "")
+            for op in kept
+            if op.get("op") == "add_component"
+            and op.get("ref", "") not in ir.components
+            and op.get("ref", "") not in wired
+        }
+        if stranded:
+            notes.append(
+                f"rejected op: add_component {', '.join(sorted(stranded))} — "
+                f"the patch never wires {'them' if len(stranded) > 1 else 'it'}"
+            )
+            kept = [op for op in kept if op.get("ref", "") not in stranded]
         return kept, notes
 
     def _repair(self, ir: CircuitIR, problems: list[str], candidates: dict) -> list[str]:

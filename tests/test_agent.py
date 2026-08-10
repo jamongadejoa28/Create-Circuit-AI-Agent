@@ -332,6 +332,174 @@ def test_repair_gate_duplicates_and_same_patch_adds(agent_env):
     assert "missing component" in notes[0]
 
 
+def test_repair_gate_rejects_a_pin_the_symbol_does_not_have():
+    """Measured on driver_relay, 3 of 3 seeds: "connected K1.4 to GND".
+
+    Relay:G5V-1 numbers its pins 1/2/5/6/9/10 — there is no 3, 4, 7 or 8.
+    The op passed every check in this gate (documented-NC, supply-driver,
+    SKiDL conflict matrix) precisely BECAUSE the pin did not exist: the
+    lookup raised KeyError, etype became None, and the whole validation
+    block was skipped. Seed 202 put four such pins on GND in one round.
+    """
+    agent = object.__new__(Agent)
+    agent.parts = PartIndex()
+    ir = CircuitIR("relay")
+    ir.add(Component("K1", "Relay:G5V-1", "G5V-1"))
+    kept, notes = agent._filter_ops(
+        ir,
+        [
+            {"op": "connect", "ref": "K1", "pin": "4", "net": "GND"},
+            {"op": "connect", "ref": "K1", "pin": "6", "net": "GND"},
+        ],
+        ["unconnected pin K1.4", "unconnected pin K1.6"],
+    )
+    assert [op["pin"] for op in kept] == ["6"]
+    assert any("has no such pin" in n for n in notes), notes
+
+    # same check on a part the patch itself is adding, judged against the
+    # lib_id the patch names rather than the (not yet existing) component
+    kept, notes = agent._filter_ops(
+        CircuitIR("empty"),
+        [
+            {"op": "add_component", "ref": "K1", "lib_id": "Relay:G5V-1", "value": "G5V-1"},
+            {"op": "connect", "ref": "K1", "pin": "3", "net": "GND"},
+            {"op": "connect", "ref": "K1", "pin": "6", "net": "GND"},
+        ],
+        ["unconnected pin K1.3"],
+    )
+    assert [op.get("pin") for op in kept] == [None, "6"]
+    assert any("has no such pin" in n for n in notes), notes
+
+
+def test_repair_gate_lets_a_conceptual_box_grow_a_pin():
+    """The pin-existence check must not freeze an off-catalog module.
+
+    A Conceptual: box has no library symbol; its pins ARE whatever the nets
+    reference (conceptual.resolve_conceptual), so naming a new one is how
+    the box legitimately grows a supply pin during repair.
+    """
+    agent = object.__new__(Agent)
+    agent.parts = PartIndex()
+    ir = CircuitIR("radio")
+    ir.add(Component("U1", "Conceptual:MY_CUSTOM_RADIO", "MY_CUSTOM_RADIO"))
+    ir.connect("UART_TX", ("U1", "TX"))
+    kept, notes = agent._filter_ops(
+        ir,
+        [{"op": "connect", "ref": "U1", "pin": "VDD", "net": "+3V3"}],
+        ["module supply pin U1.VDD is not on any rail"],
+    )
+    assert len(kept) == 1, notes
+
+
+def test_repair_gate_drops_an_added_part_the_patch_never_wires():
+    """Measured on driver_relay seed 202: R2..R12 added in one round.
+
+    Seven of the eleven were never connected to anything, so they arrived on
+    the board as floating parts — the round ADDED unconnected-pin errors to
+    the problem list it was called to shorten (8 parts -> 23, ERC 2 -> 18).
+    Nothing bounded this: Device:* is exempt from the duplicate check, and
+    the "not part of any reported problem" check only reaches a ref that
+    already exists, which a newly added one never does.
+    """
+    agent = object.__new__(Agent)
+    agent.parts = PartIndex()
+    ir = CircuitIR("flood")
+    ir.add(Component("R1", "Device:R", "1k"))
+    ops = [
+        {"op": "add_component", "ref": f"R{n}", "lib_id": "Device:R", "value": "1k"}
+        for n in range(2, 8)
+    ]
+    ops += [
+        {"op": "connect", "ref": "R2", "pin": "1", "net": "+5V"},
+        {"op": "connect", "ref": "R2", "pin": "2", "net": "SDA"},
+    ]
+    kept, notes = agent._filter_ops(ir, ops, ["unconnected pin R1.2"])
+    assert sorted({op["ref"] for op in kept}) == ["R2"]
+    assert [op["op"] for op in kept] == ["add_component", "connect", "connect"]
+    assert any("never wires" in n for n in notes), notes
+
+
+def test_repair_gate_drops_an_addition_whose_only_wiring_was_rejected():
+    """The two gates compose: judged on the ops that SURVIVED, not the ones
+    the model sent. An added relay wired only through a pin it does not have
+    is an addition with no wiring at all."""
+    agent = object.__new__(Agent)
+    agent.parts = PartIndex()
+    kept, notes = agent._filter_ops(
+        CircuitIR("empty"),
+        [
+            {"op": "add_component", "ref": "K1", "lib_id": "Relay:G5V-1", "value": "G5V-1"},
+            {"op": "connect", "ref": "K1", "pin": "3", "net": "GND"},
+        ],
+        ["unconnected pin K1.3"],
+    )
+    assert kept == []
+    assert any("has no such pin" in n for n in notes), notes
+    assert any("never wires" in n for n in notes), notes
+
+
+def test_repair_gate_refuses_a_patch_that_removes_and_wires_the_same_part():
+    """Measured on driver_relay seeds 201/203 once the phantom pins were gone.
+
+    "removed D1" and "connected D1.1 to +5V" arrived in one patch. Filtering
+    happens before anything is applied, so D1 still existed when the connect
+    was judged; apply_patch removed the component (pruning its nodes) and
+    then re-inserted ('D1','1') into the +5V net, leaving a net node pointing
+    at a component that is not on the board.
+    """
+    agent = object.__new__(Agent)
+    agent.parts = PartIndex()
+    ir = CircuitIR("contradiction")
+    ir.add(Component("D1", "Diode:1N4148", "1N4148"))
+    ir.add(Component("R1", "Device:R", "1k"))
+    kept, notes = agent._filter_ops(
+        ir,
+        [
+            {"op": "remove_component", "ref": "D1"},
+            {"op": "connect", "ref": "D1", "pin": "1", "net": "+5V"},
+        ],
+        ["unconnected pin D1.1", "unconnected pin D1.2"],
+    )
+    assert [op["op"] for op in kept] == ["connect"]
+    assert any("also wires" in n for n in notes), notes
+
+    # an uncontested removal is still allowed
+    kept, notes = agent._filter_ops(
+        ir, [{"op": "remove_component", "ref": "D1"}], ["unconnected pin D1.1"]
+    )
+    assert [op["op"] for op in kept] == ["remove_component"]
+
+
+def test_repair_gate_checks_set_nc_the_op_name_the_schema_actually_emits():
+    """The gate checked for "mark_nc" for its whole life; schemas.REPAIR_PATCH
+    and ir_json._apply_one both call it "set_nc", so every NC op walked past
+    the missing-component and pin-existence checks untouched."""
+    from circuitgen.schemas import REPAIR_PATCH
+
+    names = {
+        branch["properties"]["op"]["const"]
+        for branch in REPAIR_PATCH["properties"]["ops"]["items"]["anyOf"]
+    }
+    assert "set_nc" in names and "mark_nc" not in names
+
+    agent = object.__new__(Agent)
+    agent.parts = PartIndex()
+    ir = CircuitIR("nc")
+    ir.add(Component("K1", "Relay:G5V-1", "G5V-1"))
+    kept, notes = agent._filter_ops(
+        ir,
+        [
+            {"op": "set_nc", "ref": "K1", "pin": "7"},
+            {"op": "set_nc", "ref": "K9", "pin": "1"},
+            {"op": "set_nc", "ref": "K1", "pin": "9"},
+        ],
+        ["unconnected pin K1.9"],
+    )
+    assert [op["pin"] for op in kept] == ["9"]
+    assert any("has no such pin" in n for n in notes), notes
+    assert any("missing component" in n for n in notes), notes
+
+
 def test_repeated_block_template_keeps_one_main_part_per_role():
     from circuitgen.ir import CircuitIR, Component
 
