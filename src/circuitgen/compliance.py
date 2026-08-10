@@ -161,8 +161,17 @@ def part_present(token: str, lib_id: str, value: str = "") -> bool:
             continue
         if want in candidate or candidate in want:
             return True
-        if want[:-1] and want[:-1] == candidate[:-1]:
-            return True  # ...RET6 vs ...RETx
+        # KiCad writes a trailing "x" where a family covers several ordering
+        # codes (STM32G474RETx answers a request for STM32G474RET6). That
+        # tolerance is for the WILDCARD only: without the x-test it also made
+        # TMP101 satisfy a request for TMP100 — two different parts, silently
+        # substituted, which is the failure this whole function exists to stop.
+        if (
+            want[:-1]
+            and want[:-1] == candidate[:-1]
+            and "X" in (want[-1], candidate[-1])
+        ):
+            return True
     return False
 
 

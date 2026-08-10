@@ -4,7 +4,7 @@ from circuitgen.ir import CircuitIR, Component, PinDef, SymbolDef
 from circuitgen.normalize import (
     complete_known_device_pins,
     ensure_dc_power_entry,
-    enforce_requested_stm32_variant,
+    enforce_requested_part_variants,
     ensure_stm32g4_power_network,
     normalize_common_symbol_aliases,
     sanitize_known_device_nets,
@@ -78,7 +78,13 @@ def test_ac_module_is_replaced_by_fused_dc_battery_entry():
     assert notes
 
 
-def test_explicit_stm32g474ret6_request_migrates_smaller_variant_by_pin_name():
+def test_a_named_variant_replaces_its_sibling_and_moves_nets_by_pin_name():
+    """The rule is general: an ordering code the user named is a requirement,
+    and swapping packages must move connections by PIN NAME because the
+    numbers differ between them. It used to fire on a literal regex for one
+    board's MCU and write that board's part number into the value field."""
+    from circuitgen.partindex import PartIndex
+
     old_id = "MCU_ST_STM32G4:STM32G474CBTx"
     old = _sym(old_id, [
         (8, "PA0", PinType.BIDIR), (13, "PA5", PinType.BIDIR),
@@ -88,14 +94,59 @@ def test_explicit_stm32g474ret6_request_migrates_smaller_variant_by_pin_name():
     ir.add(Component("U1", old_id, "STM32G474CBTx"))
     ir.connect("PWM", ("U1", "13"))
     ir.connect("+3V3", ("U1", "24"))
-    notes = enforce_requested_stm32_variant(ir, "STM32G474RET6 board", {old_id: old})
-    assert ir.components["U1"].lib_id == "MCU_ST_STM32G4:STM32G474RETx"
+    notes = enforce_requested_part_variants(
+        ir, "STM32G474RET6 board", {old_id: old}, PartIndex()
+    )
+    assert ir.components["U1"].lib_id == "MCU_ST_STM32G4:STM32G474RETx", notes
     assert ir.components["U1"].value == "STM32G474RET6"
     # LQFP64 PA5=19 and first VDD=16 in the official KiCad symbol.
     by_net = {n.name: set(n.nodes) for n in ir.nets}
     assert ("U1", "19") in by_net["PWM"]
     assert ("U1", "16") in by_net["+3V3"]
     assert notes
+    # idempotent: the board now holds the requested part, so nothing repeats
+    assert enforce_requested_part_variants(
+        ir, "STM32G474RET6 board", {old_id: old}, PartIndex()
+    ) == []
+
+
+def test_the_same_rule_applies_to_a_part_it_was_never_written_for():
+    """The point of the rewrite: no branch names a device. A request for a
+    temperature sensor variant migrates the same way the MCU did."""
+    from circuitgen.partindex import PartIndex
+
+    parts = PartIndex()
+    old_id = "Sensor_Temperature:TMP101"
+    try:
+        old = parts.load_symbols([old_id])[old_id]
+    except Exception:
+        import pytest
+        pytest.skip("bundled library lacks TMP101")
+    ir = CircuitIR("sensor")
+    ir.add(Component("U1", old_id, "TMP101"))
+    ir.connect("SDA", ("U1", old.pins[0].number))
+    notes = enforce_requested_part_variants(
+        ir, "TMP100 센서를 씁니다", {old_id: old}, parts
+    )
+    assert ir.components["U1"].lib_id.endswith("TMP100"), notes
+
+
+def test_an_unrelated_part_is_never_migrated_onto_the_request():
+    """Same-library and a family-length shared prefix are what keep this from
+    rewiring a device that merely happens to be in the circuit."""
+    from circuitgen.partindex import PartIndex
+
+    parts = PartIndex()
+    other_id = "Device:R"
+    other = _sym(other_id, [(1, "", PinType.PASSIVE), (2, "", PinType.PASSIVE)])
+    ir = CircuitIR("unrelated")
+    ir.add(Component("R1", other_id, "10k"))
+    ir.connect("SIG", ("R1", "1"))
+    notes = enforce_requested_part_variants(
+        ir, "STM32G474RET6 board", {other_id: other}, parts
+    )
+    assert ir.components["R1"].lib_id == other_id, notes
+    assert notes == []
 
 
 def test_known_as5048_power_test_and_pwm_completion():

@@ -1874,7 +1874,7 @@ class Agent:
         from .normalize import (
             ensure_dc_power_entry,
             ensure_i2c_pullups,
-            enforce_requested_stm32_variant,
+            enforce_requested_part_variants,
             normalize_common_symbol_aliases,
             sanitize_known_device_nets,
         )
@@ -2041,7 +2041,7 @@ class Agent:
             ensure_i2c_pullups,
             ensure_relay_flyback,
             ensure_stm32g4_power_network,
-            enforce_requested_stm32_variant,
+            enforce_requested_part_variants,
             mark_documented_no_connects,
             normalize_common_symbol_aliases,
             resolve_unknown_symbols,
@@ -2059,7 +2059,7 @@ class Agent:
         # can load is invisible to all of them and to the emitter, and the
         # board then measured is not the board on disk
         notes += resolve_unknown_symbols(ir, self.parts)
-        notes += enforce_requested_stm32_variant(ir, prompt, syms())
+        notes += enforce_requested_part_variants(ir, prompt, syms(), self.parts)
         notes += sanitize_known_device_nets(ir, syms())
         # the parts that ended up in the circuit decide which rails it needs:
         # a pattern supplies its own MCU, so the requirement may list no logic

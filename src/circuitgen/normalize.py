@@ -146,52 +146,109 @@ def unify_stacked_pins(ir: CircuitIR, symbols: dict[str, SymbolDef]) -> list[str
     return notes
 
 
-def enforce_requested_stm32_variant(
-    ir: CircuitIR, prompt: str, symbols: dict[str, SymbolDef]
-) -> list[str]:
-    """Honor an explicit STM32G474RET6 request and migrate nets by pin name."""
-    if not re.search(r"STM32G474RE(?:T6)?", prompt, re.I):
-        return []
-    target_id = "MCU_ST_STM32G4:STM32G474RETx"
-    from .symbols import load_symbols
+#: how much of two symbol names must agree before one may be migrated onto
+#: the other. Ordering codes differ in their tail (STM32G474CBTx vs
+#: STM32G474RETx, AS5048A vs AS5048B), so a family prefix is long; anything
+#: shorter is coincidence and migrating pins across it would be vandalism.
+_VARIANT_PREFIX = 5
 
-    target = load_symbols([target_id], strict=False).get(target_id)
-    if target is None:
-        return [f"requested {target_id}, but its KiCad symbol is unavailable"]
+
+def _shared_prefix(a: str, b: str) -> int:
+    n = 0
+    for x, y in zip(a, b):
+        if x != y:
+            break
+        n += 1
+    return n
+
+
+def enforce_requested_part_variants(
+    ir: CircuitIR, prompt: str, symbols: dict[str, SymbolDef], parts
+) -> list[str]:
+    """Put the exact part the user named on the board, migrating nets by name.
+
+    The rule is real and general: a request for a specific ordering code is a
+    requirement, and swapping one package of a part for another must move the
+    connections by PIN NAME, because the numbers differ between packages.
+
+    What was hardcoded was only WHICH part. This function used to fire on
+    `re.search(r"STM32G474RE(?:T6)?", prompt)`, hold "MCU_ST_STM32G4:
+    STM32G474RETx" as a literal, and write the value "STM32G474RET6" — one
+    board's part number in three places, which `docs/working-rules.md` §2
+    calls exactly what to delete. The parts the user named already come from
+    `compliance.requested_part_numbers`, catalog-verified, and the catalog
+    already knows which symbol answers a given ordering code.
+
+    A component is only migrated onto the requested symbol when it comes from
+    the SAME library and shares a family-length prefix with it, so the swap
+    stays inside one part family and never rewires unrelated devices.
+    """
+    from .compliance import part_present, requested_part_numbers
+
     notes: list[str] = []
-    for ref, comp in ir.components.items():
-        if "STM32G474" not in comp.lib_id.upper() or comp.lib_id == target_id:
+    for token in requested_part_numbers(prompt, parts):
+        if any(part_present(token, c.lib_id) for c in ir.components.values()):
+            continue  # the requested part is already on the board
+        target_id = next(
+            (
+                hit["lib_id"] for hit in parts.search_parts(token, 8)
+                if hit.get("lib_id") and part_present(token, hit["lib_id"])
+            ),
+            None,
+        )
+        if target_id is None:
+            continue  # nothing in the catalog answers this request
+        try:
+            target = parts.load_symbols([target_id])[target_id]
+        except Exception:
+            notes.append(f"requested {token}: {target_id} could not be loaded")
             continue
-        old = symbols.get(comp.lib_id)
+
+        library = target_id.split(":")[0]
+        target_name = target_id.split(":")[-1].upper()
+        best, best_shared = None, 0
+        for ref, comp in ir.components.items():
+            if comp.lib_id.split(":")[0] != library or comp.lib_id == target_id:
+                continue
+            shared = _shared_prefix(comp.lib_id.split(":")[-1].upper(), target_name)
+            if shared >= _VARIANT_PREFIX and shared > best_shared:
+                best, best_shared = ref, shared
+        if best is None:
+            continue  # no same-family part to migrate; synthesis owns adding one
+        old = symbols.get(ir.components[best].lib_id)
         if old is None:
             continue
+
         target_by_name: dict[str, list[str]] = {}
         for pin in target.pins:
             target_by_name.setdefault(pin.name.upper(), []).append(pin.number)
         used_by_name: dict[str, int] = {}
         mapping: dict[str, str] = {}
         for pin in old.pins:
-            name = pin.name.upper()
-            choices = target_by_name.get(name, [])
+            choices = target_by_name.get(pin.name.upper(), [])
             if not choices:
                 continue
-            index = used_by_name.get(name, 0)
+            index = used_by_name.get(pin.name.upper(), 0)
             mapping[pin.number] = choices[min(index, len(choices) - 1)]
-            used_by_name[name] = index + 1
+            used_by_name[pin.name.upper()] = index + 1
         for net in ir.nets:
             net.nodes = [
-                (r, mapping.get(str(pin), str(pin)) if r == ref else str(pin))
+                (r, mapping.get(str(pin), str(pin)) if r == best else str(pin))
                 for r, pin in net.nodes
             ]
         ir.nc_pins = [
-            (r, mapping.get(str(pin), str(pin)) if r == ref else str(pin))
+            (r, mapping.get(str(pin), str(pin)) if r == best else str(pin))
             for r, pin in ir.nc_pins
         ]
+        comp = ir.components[best]
         old_id = comp.lib_id
         comp.lib_id = target_id
-        comp.value = "STM32G474RET6"
+        comp.value = token
         comp.footprint = target.properties.get("Footprint", "")
-        notes.append(f"{ref}: {old_id} -> {target_id}; migrated {len(mapping)} pins by name")
+        notes.append(
+            f"{best}: requested {token} -> {old_id} replaced by {target_id}; "
+            f"migrated {len(mapping)} pins by name"
+        )
     return notes
 
 
