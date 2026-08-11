@@ -127,3 +127,38 @@ def test_the_commit_stamp_marks_an_edited_tree():
     commit alone, and the report must not imply otherwise."""
     stamp = webapp._commit()
     assert stamp and stamp != "", stamp
+
+
+def test_a_rendered_sheet_is_served_as_an_image(client, monkeypatch, tmp_path):
+    """The page listed three drawings and the browser drew three broken-image
+    icons: sheets are requested by NAME ("circuit-MCU"), and the handler keyed
+    the content type on the literal "svg", so every sheet went out as
+    application/octet-stream."""
+    job_dir = webapp.OUT_ROOT
+    job_dir.mkdir(parents=True, exist_ok=True)
+
+    def fake(job):
+        d = webapp.OUT_ROOT / job.id / "svg"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "circuit-MCU.svg").write_text("<svg xmlns='http://www.w3.org/2000/svg'/>")
+        (webapp.OUT_ROOT / job.id / "circuit.kicad_sch").write_text("(kicad_sch)")
+        job.result = {
+            "ok": True, "log": [], "blocking": [], "warnings": [],
+            "files": webapp._artifacts(webapp.OUT_ROOT / job.id),
+            "pages": webapp._pages(webapp.OUT_ROOT / job.id),
+        }
+
+    monkeypatch.setattr(webapp, "_run_job", fake)
+    job_id = client.post("/api/jobs", json={"prompt": "x"}).json()["id"]
+    body = _wait(client, job_id)
+    assert [p["name"] for p in body["result"]["pages"]] == ["circuit-MCU"]
+
+    resp = client.get(f"/api/jobs/{job_id}/file/circuit-MCU")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("image/svg+xml"), resp.headers
+    # an attachment disposition stops an <img> from rendering it
+    assert "attachment" not in resp.headers.get("content-disposition", "")
+
+    # a non-image artefact still downloads
+    resp = client.get(f"/api/jobs/{job_id}/file/schematic")
+    assert resp.headers["content-type"].startswith("application/octet-stream")

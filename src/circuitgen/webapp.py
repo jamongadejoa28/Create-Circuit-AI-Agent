@@ -321,8 +321,17 @@ def get_file(job_id: str, kind: str):
     path = (OUT_ROOT / job_id / rel).resolve()
     if not path.is_file() or OUT_ROOT.resolve() not in path.parents:
         raise HTTPException(404, "file is gone")
-    media = "image/svg+xml" if kind == "svg" else "application/octet-stream"
-    return FileResponse(path, media_type=media, filename=path.name)
+    # The type comes from the FILE, not from the key. Sheets are requested by
+    # name now ("circuit-MCU"), and keying on the literal "svg" served every
+    # one of them as application/octet-stream: the page listed three drawings
+    # and the browser drew three broken-image icons. `filename=` sets
+    # Content-Disposition: attachment, which stops an <img> rendering even
+    # with the right type, so it is set for downloads only.
+    if path.suffix == ".svg":
+        return FileResponse(path, media_type="image/svg+xml")
+    return FileResponse(
+        path, media_type="application/octet-stream", filename=path.name
+    )
 
 
 @app.get("/", response_class=HTMLResponse)
