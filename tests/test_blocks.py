@@ -412,3 +412,39 @@ def test_a_duplicate_reference_is_renamed_not_fatal():
     assert any("renamed to BATMON2" in n for n in notes), notes
     # the nets stay with the first, so the copy is visibly unconnected
     assert [n.nodes for n in ir.nets] == [[("BATMON1", "1")]]
+
+
+def test_the_nets_the_model_did_not_assign_are_wired_anyway():
+    """Measured: 36 interface nets needed a controller pin, the assignment
+    schema caps the model at 24, and the deterministic fallback only ran when
+    the model returned NOTHING. Twelve nets were left alone on their nets in
+    silence — SCK1..4, PWM_C1..4, CAN_TX/RX — and every one of the nine
+    blocking issues on that run traced back to this."""
+    from circuitgen.agent import Agent
+    from circuitgen.ir import CircuitIR, Component
+    from circuitgen.partindex import PartIndex
+
+    hub_id = "MCU_ST_STM32G4:STM32G474RETx"
+
+    class AnswersOnlyTwo:
+        def complete_json(self, messages, schema, **kw):
+            return {"assignments": [{"net": "SIG0", "pin": "20"},
+                                    {"net": "SIG1", "pin": "21"}]}
+
+    agent = object.__new__(Agent)
+    agent.parts = PartIndex()
+    agent.llm = AnswersOnlyTwo()
+
+    ir = CircuitIR("partial")
+    ir.add(Component("U1", hub_id, "STM32G474"))
+    ir.add(Component("U2", "Driver_Motor:DRV8311H", "DRV"))
+    catalog = [{"net": f"SIG{i}"} for i in range(8)]
+    for c in catalog:
+        ir.connect(c["net"], ("U2", "15"))
+
+    notes = agent.wire_mcu_interfaces(ir, catalog)
+    wired = {
+        net.name for net in ir.nets if "U1" in {r for r, _ in net.nodes}
+    }
+    assert wired == {f"SIG{i}" for i in range(8)}, wired
+    assert any("model left it unassigned" in n for n in notes), notes

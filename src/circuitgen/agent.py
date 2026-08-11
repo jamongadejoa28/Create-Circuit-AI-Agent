@@ -1212,18 +1212,39 @@ class Agent:
             assignments = reply.get("assignments", [])
         except Exception:
             assignments = []
-        if not assignments:  # deterministic fallback
-            assignments = [{"net": n, "pin": p} for n, p in zip(sorted(dangling), free)]
-
         taken: set[str] = set()
+        done: set[str] = set()
+
+        def attach(net_name: str, pin: str, how: str) -> None:
+            ir.nc_pins = [x for x in ir.nc_pins if x != (hub, pin)]
+            ir.connect(net_name, (hub, pin))
+            taken.add(pin)
+            done.add(net_name)
+            notes.append(f"wired {hub}.{pin} to dangling interface net {net_name}{how}")
+
         for a in assignments:
             net_name, pin = a.get("net"), str(a.get("pin"))
             if net_name not in dangling or pin not in free or pin in taken:
                 continue
-            ir.nc_pins = [x for x in ir.nc_pins if x != (hub, pin)]
-            ir.connect(net_name, (hub, pin))
-            taken.add(pin)
-            notes.append(f"wired {hub}.{pin} to dangling interface net {net_name}")
+            attach(net_name, pin, "")
+
+        # The model answers at most maxItems assignments — 24 — and this board
+        # had 36 nets waiting. The deterministic fallback only ran when the
+        # model returned NOTHING, so a partial answer left the remainder
+        # silently unwired: SCK1..4, PWM_C1..4 and CAN_TX/RX ended up alone on
+        # their nets, and every one of the nine blocking issues on that run
+        # traced back here. Whatever the model does not cover is assigned in
+        # order, and said so.
+        spare = [p for p in free if p not in taken]
+        for net_name, pin in zip(sorted(set(dangling) - done), spare):
+            attach(net_name, pin, " (model left it unassigned)")
+        remaining = sorted(set(dangling) - done)
+        if remaining:
+            notes.append(
+                f"{len(remaining)} interface net(s) still have no {hub} pin: "
+                + ", ".join(remaining[:8])
+                + (" ..." if len(remaining) > 8 else "")
+            )
         return notes
 
     def resolve_pin_names(self, ir: CircuitIR) -> list[str]:
