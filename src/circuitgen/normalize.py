@@ -953,8 +953,8 @@ def ensure_stm32g4_power_network(
 ) -> list[str]:
     """Build the STM32G4 supply network exactly as its datasheet specifies.
 
-    Source: STM32G474xB/xC/xE datasheet DS12288 Rev 6 (DS_stm32g474ve.pdf in
-    this repository), section 5.1.6 "Power supply scheme", Figure 16, pdf page
+    Source: STM32G474xB/xC/xE datasheet DS12288 Rev 6
+    (data/datasheets/stm32g474xB-xC-xE_DS12288_rev6.pdf), section 5.1.6 "Power supply scheme", Figure 16, pdf page
     index 80 / printed 81. The datasheet does not leave this to judgement —
     section 5.3.19 states "Power supply decoupling must be performed as shown
     in Figure 16", and Figure 16 gives:

@@ -13,6 +13,10 @@
 /DS_*.pdf
 /dvk-*.pdf
 /*.png
+# Manufacturer datasheets: kept on disk so citations can be verified with
+# PyMuPDF, never redistributed. data/datasheets/README.md records the official
+# URL of each one so anyone can fetch their own copy.
+/data/datasheets/*.pdf
 
 # --- python ---
 .venv/
