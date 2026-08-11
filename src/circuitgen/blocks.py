@@ -228,12 +228,24 @@ def validate_plan(plan: list[dict], spec: dict) -> tuple[list[dict], list[str]]:
         # Requirement quantities are ground truth.  A small model often
         # remembers the four motors but silently collapses four encoders to
         # one in the block plan.
-        requested = [
-            int(p.get("quantity", 1))
-            for p in spec.get("parts_needed", [])
-            if p["role"] in b["roles"]
-        ]
-        expected = max(requested, default=1)
+        #
+        # How many depends on HOW the requirement said it. One role with
+        # quantity 4 and four roles of quantity 1 are the same board, and
+        # max() only reads the first: a spec listing BLDC_Motor_1..4, each
+        # quantity 1, put all four roles in one block and max() said count=1,
+        # so a four-motor request came out with one driver and the other
+        # three deleted as duplicates. Roles that ask for the SAME PART —
+        # identical search_query — are one repeated channel and their
+        # quantities add up; roles asking for different parts (a controller
+        # and its reset button) are one instance holding both, so the groups
+        # do not.
+        by_query: dict[str, int] = {}
+        for part in spec.get("parts_needed", []):
+            if part["role"] not in b["roles"]:
+                continue
+            key = str(part.get("search_query", part["role"])).strip().lower()
+            by_query[key] = by_query.get(key, 0) + max(1, int(part.get("quantity", 1) or 1))
+        expected = max(by_query.values(), default=1)
         if int(b.get("count", 1)) != expected:
             notes.append(
                 f"block {b['id']}: count {b.get('count', 1)} corrected to requirement quantity {expected}"

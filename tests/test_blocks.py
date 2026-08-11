@@ -485,3 +485,39 @@ def test_a_signal_pin_alone_on_its_net_is_offered_a_controller_pin():
     assert "U1" in on("CAN_TX") and "U1" in on("CAN_RX"), notes
     assert on("UART_TX") == {"U1"}, "a net holding only the hub gains nothing"
     assert on("VCC_ONLY") == {"U10"}, "a supply pin is not offered a GPIO"
+
+
+def test_four_roles_of_one_are_four_instances_not_one():
+    """Measured with the gemma model: the spec expressed four motors as four
+    ROLES — BLDC_Motor_1..4, each quantity 1 — instead of one role with
+    quantity 4. Both describe the same board. max() read only the first, so
+    the block that owned all four came out count=1, three of the four drivers
+    were deleted as duplicates, and a four-motor request produced one motor.
+
+    Roles asking for the SAME PART are one repeated channel and add up; roles
+    asking for different parts (a controller and its reset button) sit in one
+    instance together and must not.
+    """
+    from circuitgen.blocks import validate_plan
+
+    spec = {"parts_needed": [
+        {"role": "STM32G474_MCU", "search_query": "STM32G474", "quantity": 1},
+        {"role": "reset_button", "search_query": "tactile switch", "quantity": 1},
+        *[{"role": f"BLDC_Motor_{i}", "search_query": "BLDC motor", "quantity": 1}
+          for i in range(1, 5)],
+        {"role": "encoder", "search_query": "AS5048A", "quantity": 4},
+    ]}
+    plan = [
+        {"id": "MCU", "count": 1, "roles": ["STM32G474_MCU", "reset_button"],
+         "interface_nets": [{"name": "SWDIO"}]},
+        {"id": "MOTOR", "count": 1,
+         "roles": [f"BLDC_Motor_{i}" for i in range(1, 5)],
+         "interface_nets": [{"name": "PWM{n}"}]},
+        {"id": "ENC", "count": 1, "roles": ["encoder"],
+         "interface_nets": [{"name": "CS{n}"}]},
+    ]
+    fixed, notes = validate_plan(plan, spec)
+    counts = {b["id"]: b["count"] for b in fixed}
+    assert counts["MOTOR"] == 4, notes      # four roles, one part
+    assert counts["ENC"] == 4, notes        # one role, quantity four
+    assert counts["MCU"] == 1, notes        # two roles, two different parts
