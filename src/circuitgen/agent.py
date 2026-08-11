@@ -45,7 +45,7 @@ from .llm_client import (
     output_budget,
 )
 from .pipeline import PipelineResult, generate
-from .schemas import BLOCK_PLAN, CIRCUIT_IR, REPAIR_PATCH, REQUIREMENT_SPEC
+from .schemas import BLOCK_PLAN, CIRCUIT_IR, NETLIST_ONLY, REPAIR_PATCH, REQUIREMENT_SPEC
 from .netnames import GROUND_NAMES, logic_rail, supply_voltage
 
 MAX_REPAIRS = 3
@@ -268,6 +268,18 @@ class Agent:
                         "an interrupt line, a chip select: these go in `signals`, never "
                         "in parts_needed. parts_needed is only for physical devices "
                         "that appear in a bill of materials.\n\n"
+                        "When the request names a part with a designator — '입력 "
+                        "커넥터 (J1)', 'LDO 레귤레이터 (U1)', 'MCU (U1)' — put that "
+                        "designator in `reference` on the matching parts_needed item. "
+                        "Every designator that appears in the net list must have one "
+                        "parts_needed item carrying it.\n"
+                        "If the request already LISTS the connections — a net list "
+                        "naming references and pins — transcribe it into `netlist` "
+                        "exactly as written, every net and every node, and give each "
+                        "parts_needed item the `reference` the request uses for it. "
+                        "That list is the design; do not improve it, complete it or "
+                        "reorder it. Leave `netlist` empty when the request describes "
+                        "what the circuit should DO instead of how it is wired.\n\n"
                         "Every parts_needed item must include quantity. Preserve explicit "
                         "counts such as four motors AND four encoders; use quantity=1 when "
                         "no count is stated. Give every item a UNIQUE role id — protection "
@@ -278,6 +290,59 @@ class Agent:
             ],
             schema=REQUIREMENT_SPEC,
         ))
+        # A request whose parts all carry designators is one that LISTED its
+        # connections; if `netlist` came back empty anyway, the model answered
+        # the other questions and dropped this one. Ask it again on its own —
+        # measured on the NE555 request, where every reference was filled and
+        # the net list was not.
+        # One focused question answers reliably where the combined one does
+        # not: the same model that filled every `reference` and dropped the
+        # net list on one request dropped every `reference` on the next.
+        # Both halves of a transcription — which part each designator is, and
+        # what connects to what — are asked here, together, and nowhere else.
+        if "Net" in prompt or "netlist" in prompt.lower() or "연결" in prompt:
+            try:
+                reply = _with_retry(lambda: self.llm.complete_json(
+                    [
+                        {"role": "system", "content": _SYSTEM},
+                        {
+                            "role": "user",
+                            "content": (
+                                "Transcribe what this request already specifies. "
+                                "`parts`: every designator it names and what that "
+                                "part is. `netlist`: every net, every reference, "
+                                "every pin, exactly as written — do not add, "
+                                "complete or reorder anything. Return empty lists "
+                                "if the request does not list its connections.\n\n"
+                                f"REQUEST: {prompt}"
+                            ),
+                        },
+                    ],
+                    schema=NETLIST_ONLY,
+                    max_tokens=3072,
+                ))
+            except Exception:
+                reply = {}
+            nets = reply.get("netlist") or []
+            if nets:
+                spec["netlist"] = nets
+                by_ref = {
+                    str(p.get("reference", "")).strip().upper(): p
+                    for p in (reply.get("parts") or [])
+                    if p.get("reference")
+                }
+                if by_ref:
+                    spec["parts_needed"] = [
+                        {
+                            "reference": ref,
+                            "role": ref.lower(),
+                            "search_query": str(part.get("part") or "").strip(),
+                            "value": str(part.get("value") or "").strip(),
+                            "quantity": 1,
+                        }
+                        for ref, part in sorted(by_ref.items())
+                    ]
+
         spec = _normalize_rails(spec)
         self._ensure_explicit_voltage_rails(prompt, spec)
         self._normalize_part_roles(spec)
@@ -1887,6 +1952,63 @@ class Agent:
         else:
             rec.approve("requirements", "auto", "no approver configured — auto-approved")
 
+        # A request that already carries its net list is not a design job.
+        # Measured on three fully specified requests, every stage after
+        # extraction only lost information: the planner turned "SOT-223" and
+        # "22uF" into roles and then into blocks, and two of the three runs
+        # ended with no schematic at all. Transcribe it and check it against
+        # what was written — a question with an exact answer, unlike "is this
+        # a good design?".
+        transcribed = bool(spec.get("netlist"))
+        if transcribed:
+            res.stage = "transcription"
+            ir, tnotes = self.transcribe(spec, name)
+            res.log.extend(tnotes)
+            ctx = {"candidates": {}, "contracts": [], "transcribed": True}
+            missing = self.verify_transcription(spec, ir)
+            if missing:
+                res.log.append(
+                    f"transcription: {len(missing)} node(s) the request wrote are not "
+                    f"in the circuit: {', '.join(missing[:8])}"
+                    + (" ..." if len(missing) > 8 else "")
+                )
+            rec.event("transcribed", nets=len(spec.get("netlist") or []), missing=len(missing))
+            res.spec = spec
+            res.ir = ir
+            # verified BEFORE normalization, and only there: resolve_pin_names
+            # rewrites D1.K into D1.1 faithfully, and re-checking afterwards
+            # looks for a pin name that has correctly stopped existing.
+            res.log.extend(self._normalize(ir, spec, prompt, transcribed=True))
+            pr = self._generate(ir, name)
+            res.pipeline = pr
+            res.auto_connections = diff_connections(
+                connection_set(None), connection_set(ir), set(), nc_set(ir)
+            )
+            res.candidates = {}
+            res.compliance = check_compliance(
+                ir, self._resolve_symbols(ir), prompt, self.parts, spec, {},
+                transcribed=True,
+            )
+            for issue in res.compliance.issues:
+                res.log.append(f"compliance {issue.severity} {issue.rule}: {issue.message}")
+            res.ok = pr.ok and res.compliance.ok and not missing
+            if res.ok:
+                res.stage = "done"
+            from .ir_json import ir_to_json
+
+            rec.set("ir", ir_to_json(ir))
+            rec.set("compliance", res.compliance.as_dict())
+            rec.set("result", {
+                "ok": res.ok, "stage": res.stage,
+                "compliance_ok": res.compliance.ok,
+                "kicad_erc_violations": len(pr.kicad_erc.violations) if pr.kicad_erc else None,
+                "connectivity_ok": pr.connectivity_ok,
+                "visual_issues": len(pr.visual_issues),
+                "schematic": str(pr.sch_path) if pr.sch_path else None,
+            })
+            rec.save()
+            return res
+
         # Cited-pattern fast path: a textbook topology instantiated
         # deterministically beats a free-form 7B netlist whenever exactly
         # one pattern matches; any failure falls back to LLM synthesis.
@@ -2239,7 +2361,158 @@ class Agent:
         rec.save()
         return res
 
-    def _normalize(self, ir: CircuitIR, spec: dict, prompt: str) -> list[str]:
+    #: designator -> the generic symbol that class of part is, when the
+    #: request named no catalog part (IEEE 315 letters, the same ground truth
+    #: the pattern binder and the sheet partitioner already use)
+    _GENERIC_BY_PREFIX = {
+        "R": "Device:R", "C": "Device:C", "L": "Device:L",
+        "D": "Device:D", "Y": "Device:Crystal", "SW": "Switch:SW_Push",
+    }
+
+    def transcribe(self, spec: dict, name: str) -> tuple[CircuitIR, list[str]]:
+        """Build the circuit the request already specified, connection for connection.
+
+        When someone hands over a finished net list — "Net 'VIN': J1 Pin 1,
+        U1 Pin 3, C1 Pin 1" — the design is done and every inference this
+        pipeline can make is a way to lose it. Measured on three fully
+        specified requests: the block planner turned "SOT-223" (a package),
+        "22uF" and "1k" (values) into roles, then into blocks, then tried to
+        design a sub-circuit for each; two of the three runs ended with no
+        schematic at all.
+
+        So this path makes no design decisions. It binds each reference the
+        request names to a symbol, writes the nets exactly as given, and
+        reports anything it could not place. Nothing is added, nothing is
+        completed, nothing is repaired — SKiDL's contract, which is that the
+        person who wrote the connections meant them.
+        """
+        import re as _re
+
+        nets = spec.get("netlist") or []
+        notes: list[str] = []
+        wanted: dict[str, dict] = {}
+        for part in spec.get("parts_needed", []):
+            ref = str(part.get("reference") or "").strip().upper()
+            if ref:
+                wanted.setdefault(ref, part)
+
+        refs = []
+        for net in nets:
+            for node in net.get("nodes", []):
+                ref = str(node.get("reference", "")).strip().upper()
+                if ref and ref not in refs:
+                    refs.append(ref)
+
+        ir = CircuitIR(name)
+        for ref in refs:
+            part = wanted.get(ref, {})
+            prefix = (_re.match(r"[A-Za-z]+", ref) or [""])[0].upper()
+            query = str(part.get("search_query") or part.get("role") or "").strip()
+            # The request says which pins of this part it uses, and that is a
+            # hard constraint, not a hint: a header wired to pins 1..6 is a
+            # 1x6, and offering a 2x10 leaves fourteen pins dangling. Measured
+            # on a transcribed ATmega board — SW1 "tactile switch" bound to a
+            # five-pin RotaryEncoder_Switch, Y1 "16MHz crystal" to a three-pin
+            # resonator, J2 "1x6 header" to Conn_02x10 — every one of them
+            # reported afterwards as a part that does no work.
+            used_pins = {
+                str(n.get("pin", "")).strip()
+                for net in nets for n in net.get("nodes", [])
+                if str(n.get("reference", "")).strip().upper() == ref
+                and str(n.get("pin", "")).strip()
+            }
+            lib_id = None
+            fits: list[tuple[int, str]] = []
+            for hit in (self.parts.search_parts(query, 24) if query else []):
+                candidate = hit.get("lib_id")
+                if not candidate or hit.get("is_power"):
+                    continue
+                try:
+                    sym = self.parts.load_symbols([candidate])[candidate]
+                except Exception:
+                    continue
+                if sym.reference_prefix.upper() != prefix:
+                    continue
+                names = {p.number for p in sym.pins} | {
+                    p.name.upper() for p in sym.pins if p.name
+                }
+                if used_pins - {u.upper() for u in names} - {u for u in used_pins if u in names}:
+                    continue  # cannot carry a pin the request uses
+                fits.append((len([p for p in sym.pins if not p.hidden]), candidate))
+            if fits:
+                # the smallest part that carries every pin the request uses:
+                # extra pins are pins the reader has to account for
+                fits.sort()
+                lib_id = fits[0][1]
+            if lib_id is None and prefix == "J":
+                # a connector's size is not a guess: the request's own net list
+                # says which pins of it are used, and the highest is how many
+                # ways it has to have
+                used = [
+                    int(n["pin"]) for net in nets for n in net.get("nodes", [])
+                    if str(n.get("reference", "")).strip().upper() == ref
+                    and str(n.get("pin", "")).strip().isdigit()
+                ]
+                if used:
+                    candidate = f"Connector_Generic:Conn_01x{max(used):02d}"
+                    try:
+                        self.parts.symbol_source(candidate)
+                        lib_id = candidate
+                        notes.append(
+                            f"{ref}: no catalog part matched {query!r}; the request "
+                            f"uses pins up to {max(used)}, so drawn as {lib_id}"
+                        )
+                    except KeyError:
+                        pass
+            if lib_id is None:
+                lib_id = self._GENERIC_BY_PREFIX.get(prefix)
+                if lib_id:
+                    notes.append(
+                        f"{ref}: no catalog part matched {query!r} with designator "
+                        f"{prefix}; drawn as {lib_id}"
+                    )
+            if lib_id is None:
+                lib_id = "Conceptual:" + _re.sub(r"[^A-Za-z0-9_]+", "_", query or ref).strip("_")
+                notes.append(f"{ref}: nothing in the catalog answers {query!r} — drawn as {lib_id}")
+            ir.add(Component(ref, lib_id, str(part.get("value") or "")))
+
+        for net in nets:
+            nodes = [
+                (str(n.get("reference", "")).strip().upper(), str(n.get("pin", "")).strip())
+                for n in net.get("nodes", [])
+            ]
+            nodes = [(r, p) for r, p in nodes if r in ir.components and p]
+            if nodes:
+                ir.connect(str(net.get("name", "NET")), *nodes)
+        notes.append(
+            f"transcribed {len(nets)} net(s) and {len(refs)} part(s) from the request; "
+            f"no connection was inferred"
+        )
+        return ir, notes
+
+    def verify_transcription(self, spec: dict, ir: CircuitIR) -> list[str]:
+        """Every node the request wrote must be in the circuit, by name.
+
+        The whole point of this path: unlike "is this a good design?", this
+        question has an exact answer, and it is checkable against the words
+        the user typed.
+        """
+        have = {
+            (ref.upper(), str(pin)) for net in ir.nets for ref, pin in net.nodes
+        }
+        missing = []
+        for net in spec.get("netlist") or []:
+            for node in net.get("nodes", []):
+                ref = str(node.get("reference", "")).strip().upper()
+                pin = str(node.get("pin", "")).strip()
+                if ref and pin and (ref, pin) not in have:
+                    missing.append(f"{net.get('name')}: {ref}.{pin}")
+        return missing
+
+
+    def _normalize(
+        self, ir: CircuitIR, spec: dict, prompt: str, transcribed: bool = False
+    ) -> list[str]:
         """The deterministic normalization sequence. ONE of them.
 
         There used to be two: thirty-one passes after synthesis and twelve
@@ -2297,19 +2570,27 @@ class Agent:
         notes += self.attach_power_symbols(ir, spec)
 
         rails = [r["name"] for r in spec.get("power", {}).get("rails", [])]
-        notes += complete_known_device_pins(ir, syms(), rails)
-        # the residual of that device table: supply pins on parts nobody wrote
-        # a rule for. A 7B left 28 of a 132-pin MCU's supply pins dangling.
-        notes += complete_generic_power_pins(ir, syms(), rails)
-        if "+3V3" in rails:
-            notes += ensure_stm32g4_power_network(ir, syms(), "+3V3")
-        notes += mark_documented_no_connects(ir, syms())
-        notes += ensure_relay_flyback(ir, syms())
+        # Everything below ADDS to the circuit — supply pins wired to rails,
+        # datasheet decoupling, a flyback diode, I2C pull-ups. That is the
+        # design work, and it is exactly what must not happen when the request
+        # already carried its own net list: the person who wrote "Net 'VIN':
+        # J1 Pin 1, U1 Pin 3, C1 Pin 1" said what the circuit is, and adding
+        # to it is contradicting them, not helping.
+        if not transcribed:
+            notes += complete_known_device_pins(ir, syms(), rails)
+            # the residual of that device table: supply pins on parts nobody
+            # wrote a rule for. A 7B left 28 of a 132-pin MCU's supply pins
+            # dangling.
+            notes += complete_generic_power_pins(ir, syms(), rails)
+            if "+3V3" in rails:
+                notes += ensure_stm32g4_power_network(ir, syms(), "+3V3")
+            notes += mark_documented_no_connects(ir, syms())
+            notes += ensure_relay_flyback(ir, syms())
+            logic = logic_rail(rails)
+            if logic:
+                notes += ensure_i2c_pullups(ir, syms(), logic)
         notes += self.resolve_pin_names(ir)
         notes += unify_stacked_pins(ir, syms())
-        logic = logic_rail(rails)
-        if logic:
-            notes += ensure_i2c_pullups(ir, syms(), logic)
         notes += self._fix_footprints(ir)
         return notes
 

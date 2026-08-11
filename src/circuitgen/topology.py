@@ -175,7 +175,9 @@ def _series_elements(ir: CircuitIR, symbols: dict[str, SymbolDef]) -> set[str]:
     return out
 
 
-def analyze_conduction(ir: CircuitIR, symbols: dict[str, SymbolDef]) -> ConductionReport:
+def analyze_conduction(
+    ir: CircuitIR, symbols: dict[str, SymbolDef], every_pin: bool = True
+) -> ConductionReport:
     """Is each component wired so that current can flow through it?
 
     "Is the role present" answers a different question than "is the role doing
@@ -254,7 +256,12 @@ def analyze_conduction(ir: CircuitIR, symbols: dict[str, SymbolDef]) -> Conducti
             )
             continue
         unwired = sorted(num for num, name in live.items() if not name)
-        if unwired:
+        # `every_pin` is false when the circuit was TRANSCRIBED from a net
+        # list the user wrote. Then an unused pin is not a defect, it is the
+        # design: a minimal ATmega board leaves seventeen GPIOs free on
+        # purpose, and calling each of them a dead component buries the real
+        # findings. What still counts is a part that reaches nothing at all.
+        if unwired and (every_pin or not any(live.values())):
             report.dead[ref] = f"pin {', '.join(unwired)} is on no net at all"
             continue
         nets = {name for name in live.values() if name}

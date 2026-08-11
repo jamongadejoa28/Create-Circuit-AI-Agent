@@ -176,9 +176,29 @@ def part_present(token: str, lib_id: str, value: str = "") -> bool:
 
 
 def check_requirements(
-    ir: CircuitIR, prompt: str = "", parts=None
+    ir: CircuitIR, prompt: str = "", parts=None, transcribed: bool = False
 ) -> tuple[list[ValidationIssue], list[str], list[str], list[str]]:
-    """Every part number the request named must appear in the circuit."""
+    """Every part number the request named must appear in the circuit.
+
+    `transcribed` says the circuit was written from a net list the user
+    supplied, and then a component's VALUE is theirs too — they wrote "C1:
+    10uF" and the transcription copied it. Reading it is safe here for the
+    same reason it is unsafe elsewhere: everywhere else the value is written
+    by the pipeline, which is how Relay:RM50-xx21 labelled "G5V-1" once
+    counted as a G5V-1. Without this, "10uF", "22pF", "100k", "SOT-223" and
+    "2-pin" are all shaped like part numbers, the catalog has something for
+    each, and three transcribed boards that were otherwise ERC-clean reported
+    them as missing parts.
+    """
+    if transcribed:
+        # The net list IS the requirement here, and `verify_transcription`
+        # checks it exactly: every reference and pin the user wrote, present
+        # or named as absent. Scanning the prose for part-number-SHAPED
+        # tokens is the design-mode gate, and on a transcribed board it only
+        # invents work — "2-pin", "SOT-223", "10uF", "100k" are a pin count,
+        # a package and two values, the catalog has something for each, and
+        # three otherwise ERC-clean boards reported them as missing parts.
+        return [], [], [], []
     requested = requested_part_numbers(prompt, parts)
     satisfied: list[str] = []
     missing: list[str] = []
@@ -188,6 +208,8 @@ def check_requirements(
                 ref
                 for ref, comp in ir.components.items()
                 if part_present(token, comp.lib_id, comp.value)
+                or (transcribed and comp.value
+                    and _norm(token) and _norm(token) in _norm(comp.value))
             ),
             None,
         )
@@ -523,9 +545,12 @@ def check_compliance(
     parts=None,
     spec: dict | None = None,
     candidates: dict | None = None,
+    transcribed: bool = False,
 ) -> ComplianceReport:
     """Requirement compliance + power integrity over the finished circuit."""
-    req_issues, requested, satisfied, missing = check_requirements(ir, prompt, parts)
+    req_issues, requested, satisfied, missing = check_requirements(
+        ir, prompt, parts, transcribed=transcribed
+    )
     pwr_issues, checked = check_power_integrity(ir, symbols)
 
     # A role the requirement asked for and the board does not contain means the
@@ -574,7 +599,7 @@ def check_compliance(
     # MCU. Conduction is a fact about the finished board — a pin that reaches
     # nothing, a part shorted across one net, two ends at the same potential —
     # so unlike the role paraphrase above it is reported as an ERROR.
-    conduction = analyze_conduction(ir, symbols)
+    conduction = analyze_conduction(ir, symbols, every_pin=not transcribed)
     role_judged, role_working, role_broken = role_jobs_done(
         spec or {}, ir, symbols, candidates, conduction.dead
     )

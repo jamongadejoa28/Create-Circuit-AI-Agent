@@ -1090,3 +1090,79 @@ def test_duplicate_removal_keeps_the_better_wired_copy():
     assert {n.name for n in ir.nets} == {
         "MOTOR1_PWM_A", "MOTOR2_PWM_A", "ENC1_CS", "ENC2_CS"
     }
+
+
+def test_a_request_that_carries_its_netlist_is_transcribed_not_designed():
+    """Three fully specified requests — an LDO, an NE555 astable, an ATmega
+    minimal board — each handed over a complete net list, and each was put
+    through the design pipeline: the planner turned "SOT-223" (a package) and
+    "22uF" (a value) into roles, then into blocks, then tried to synthesize a
+    sub-circuit for each. Two of the three ended with no schematic at all.
+
+    SKiDL's contract is the right one here: the person who wrote
+    `vin & r1 & vout` meant it. Transcription makes no design decision, and
+    unlike "is this a good design?" its correctness has an exact answer —
+    every reference and pin the user wrote is either in the circuit or named
+    as absent.
+    """
+    from circuitgen.partindex import PartIndex
+
+    agent = object.__new__(Agent)
+    agent.parts = PartIndex()
+    spec = {
+        "parts_needed": [
+            {"reference": "U1", "role": "reg", "search_query": "AMS1117-3.3"},
+            {"reference": "C1", "role": "cin", "search_query": "capacitor", "value": "10uF"},
+            {"reference": "R1", "role": "res", "search_query": "resistor", "value": "1k"},
+            {"reference": "D1", "role": "led", "search_query": "LED"},
+            {"reference": "J1", "role": "in", "search_query": "terminal block"},
+        ],
+        "netlist": [
+            {"name": "VIN", "nodes": [{"reference": "J1", "pin": "1"},
+                                      {"reference": "U1", "pin": "3"},
+                                      {"reference": "C1", "pin": "1"}]},
+            {"name": "GND", "nodes": [{"reference": "J1", "pin": "2"},
+                                      {"reference": "U1", "pin": "1"},
+                                      {"reference": "C1", "pin": "2"},
+                                      {"reference": "D1", "pin": "K"}]},
+            {"name": "3V3", "nodes": [{"reference": "U1", "pin": "2"},
+                                      {"reference": "R1", "pin": "1"}]},
+            {"name": "LED_NET", "nodes": [{"reference": "R1", "pin": "2"},
+                                          {"reference": "D1", "pin": "A"}]},
+        ],
+    }
+    ir, notes = agent.transcribe(spec, "ldo")
+
+    assert set(ir.components) == {"U1", "C1", "R1", "D1", "J1"}
+    assert ir.components["U1"].lib_id == "Regulator_Linear:AMS1117-3.3"
+    assert ir.components["C1"].lib_id == "Device:C"
+    # the request uses pins 1 and 2 of J1, so a two-way part — not whatever
+    # the catalog ranked first, which on this query is a 47-way flex header
+    j1 = agent.parts.load_symbols([ir.components["J1"].lib_id])
+    assert len(j1[ir.components["J1"].lib_id].pins) == 2, ir.components["J1"].lib_id
+    assert {n.name for n in ir.nets} == {"VIN", "GND", "3V3", "LED_NET"}
+    assert agent.verify_transcription(spec, ir) == []
+    assert any("no connection was inferred" in n for n in notes), notes
+
+
+def test_a_reference_only_the_netlist_names_still_becomes_a_part():
+    """The net list is the requirement, so a designator that appears only
+    there is a part the user meant — placed, and reported as generic rather
+    than dropped. The verification gate is what makes this path worth
+    having: it is checkable against the words the user typed."""
+    from circuitgen.partindex import PartIndex
+
+    agent = object.__new__(Agent)
+    agent.parts = PartIndex()
+    spec = {
+        "parts_needed": [{"reference": "R1", "role": "r", "search_query": "resistor"}],
+        "netlist": [
+            {"name": "A", "nodes": [{"reference": "R1", "pin": "1"}]},
+            {"name": "B", "nodes": [{"reference": "R1", "pin": "2"},
+                                    {"reference": "R9", "pin": "1"}]},
+        ],
+    }
+    ir, notes = agent.transcribe(spec, "partial")
+    assert set(ir.components) == {"R1", "R9"}, ir.components
+    assert ir.components["R9"].lib_id == "Device:R", notes
+    assert agent.verify_transcription(spec, ir) == []

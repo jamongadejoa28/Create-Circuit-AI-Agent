@@ -43,6 +43,8 @@ REQUIREMENT_SPEC = {
                 "additionalProperties": False,
                 "properties": {
                     "role": {"type": "string", "description": "short role id, e.g. mcu, led1, btn1"},
+                    "reference": {"type": "string", "maxLength": 8,
+                                  "description": "the designator the REQUEST gives this part (U1, J2, C3); omit if the request does not name one"},
                     "search_query": {"type": "string", "maxLength": 48, "description": "part-index search terms, English"},
                     "value": {"type": "string", "maxLength": 24, "description": "component value if applicable, e.g. 330R"},
                     "quantity": {"type": "integer", "minimum": 1, "maximum": 16,
@@ -67,6 +69,38 @@ REQUIREMENT_SPEC = {
                 "Interface SIGNALS the board must expose. A signal is a net, not a "
                 "part to buy: TX, RX, SDA, an interrupt line and a chip select all "
                 "belong here and NEVER in parts_needed."
+            ),
+        },
+        "netlist": {
+            "type": "array",
+            "maxItems": 40,
+            "items": {
+                "type": "object",
+                "required": ["name", "nodes"],
+                "additionalProperties": False,
+                "properties": {
+                    "name": {"type": "string", "maxLength": 24},
+                    "nodes": {
+                        "type": "array",
+                        "maxItems": 24,
+                        "items": {
+                            "type": "object",
+                            "required": ["reference", "pin"],
+                            "additionalProperties": False,
+                            "properties": {
+                                "reference": {"type": "string", "maxLength": 8},
+                                "pin": {"type": "string", "maxLength": 12,
+                                        "description": "pin NUMBER when the request gives one, else its name (VOUT, K, A)"},
+                            },
+                        },
+                    },
+                },
+            },
+            "description": (
+                "TRANSCRIBE a net list the request already contains, exactly as "
+                "written — every net, every reference, every pin. Leave EMPTY when "
+                "the request describes what the circuit should do rather than "
+                "listing its connections. Never invent a connection here."
             ),
         },
         "connections_intent": {
@@ -281,5 +315,36 @@ BLOCK_PLAN = {
                 },
             },
         }
+    },
+}
+
+
+#: the net list on its own. Asking for everything at once let a model fill
+#: every `reference` and still leave `netlist` empty (measured: the NE555
+#: request, whose connections were listed as plainly as the two that worked).
+#: One question, one answer.
+NETLIST_ONLY = {
+    "type": "object",
+    "required": ["parts", "netlist"],
+    "additionalProperties": False,
+    "properties": {
+        "parts": {
+            "type": "array",
+            "maxItems": 40,
+            "items": {
+                "type": "object",
+                "required": ["reference", "part"],
+                "additionalProperties": False,
+                "properties": {
+                    "reference": {"type": "string", "maxLength": 8,
+                                  "description": "the designator: U1, R3, C2, J1"},
+                    "part": {"type": "string", "maxLength": 48,
+                             "description": "what to search the catalog for: a part number when the request gives one (AMS1117-3.3, NE555D, ATmega328P-AU), else the generic type (resistor, capacitor, LED, pin header)"},
+                    "value": {"type": "string", "maxLength": 24,
+                              "description": "the value printed on it: 10uF, 1k, 22pF, green"},
+                },
+            },
+        },
+        "netlist": REQUIREMENT_SPEC["properties"]["netlist"],
     },
 }
