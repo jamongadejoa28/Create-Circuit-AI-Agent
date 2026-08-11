@@ -1258,3 +1258,58 @@ def merge_duplicate_placeholders(
             )
     ir.nets = [n for n in ir.nets if n.nodes]
     return notes
+
+
+def free_driver_pins_from_rails(
+    ir: CircuitIR, symbols: dict[str, SymbolDef]
+) -> list[str]:
+    """A pin that DRIVES cannot sit on a supply or ground rail.
+
+    Pin-type arithmetic, not judgement: an OUTPUT, TRISTATE, OPENCOLL or
+    OPENEMIT pin on GND is a short from that driver to ground, and on a
+    supply it is a short to the supply. `agent._filter_ops` has refused
+    exactly this for repair ops since the encoder incident ("A/B/INDEX
+    outputs to GND, ERC 21 -> 58") — but nothing ever applied it to what
+    SYNTHESIS produces, and synthesis is where it now happens.
+
+    Measured on a 4-motor board: the MOTOR block declared no interface net,
+    so the model had nothing to connect its driver to and put every pin on
+    GND — including VM, the motor supply, and OUTA/OUTB/OUTC, the three
+    phase outputs. Four drivers, each shorted to ground on every terminal,
+    and nothing complained: the pins were on a net, so conduction called
+    them connected and ERC saw only passive-looking members.
+
+    The pin is removed from the rail and left unconnected, which is honest:
+    where a phase output belongs is a question this cannot answer, and the
+    conduction check now reports it by name.
+    """
+    from .erc import net_kind
+
+    driver = {"OUTPUT", "TRISTATE", "OPENCOLL", "OPENEMIT"}
+    notes: list[str] = []
+    for net in ir.nets:
+        kind = net_kind(ir, symbols, net)
+        if kind not in ("gnd", "power"):
+            continue
+        keep = []
+        for ref, pin in net.nodes:
+            comp = ir.components.get(ref)
+            sym = symbols.get(comp.lib_id) if comp else None
+            if sym is None or sym.is_power:
+                keep.append((ref, pin))
+                continue
+            try:
+                etype = sym.pin(str(pin)).etype.name
+            except KeyError:
+                keep.append((ref, pin))
+                continue
+            if etype in driver:
+                notes.append(
+                    f"{ref}.{pin} ({sym.pin(str(pin)).name or etype}) removed from "
+                    f"{net.name}: a {etype} pin on a rail is a short, not a connection"
+                )
+            else:
+                keep.append((ref, pin))
+        net.nodes = keep
+    ir.nets = [n for n in ir.nets if n.nodes]
+    return notes

@@ -143,3 +143,40 @@ def test_a_lone_placeholder_is_left_alone():
     resolve_conceptual(ir, symbols)
     assert merge_duplicate_placeholders(ir, symbols) == []
     assert "U1" in ir.components
+
+
+def test_a_driver_pin_on_a_rail_is_a_short_and_is_removed():
+    """Measured on a 4-motor board: the MOTOR block declared no interface net,
+    so the model had nothing to connect its driver to and put EVERY pin on GND
+    — including OUTA/OUTB/OUTC, the three phase outputs. Four drivers, each
+    shorted to ground on every terminal, and nothing complained: the pins were
+    on a net, so the conduction check called them connected.
+
+    agent._filter_ops has refused exactly this for repair ops since the encoder
+    incident (A/B/INDEX outputs to GND, ERC 21 -> 58). It had never been
+    applied to what synthesis produces, which is where it happens.
+    """
+    from circuitgen.normalize import free_driver_pins_from_rails
+    from circuitgen.partindex import PartIndex
+
+    parts = PartIndex()
+    lib = "Driver_Motor:DRV8311H"
+    symbols = parts.load_symbols([lib, "power:GND"])
+    ir = CircuitIR("shorted")
+    ir.add(Component("U2", lib, "DRV8311H"))
+    ir.add(Component("#PWR01", "power:GND", "GND"))
+    sym = symbols[lib]
+    ir.connect("GND", ("#PWR01", "1"), *[(("U2"), p.number) for p in sym.pins])
+
+    notes = free_driver_pins_from_rails(ir, symbols)
+    left = {p for net in ir.nets for r, p in net.nodes if r == "U2"}
+    driver_pins = {
+        p.number for p in sym.pins
+        if p.etype.name in ("OUTPUT", "TRISTATE", "OPENCOLL", "OPENEMIT")
+    }
+    assert driver_pins, "the fixture needs driver pins to be meaningful"
+    assert not (driver_pins & left), sorted(driver_pins & left)
+    assert any("OUTA" in n for n in notes), notes
+    # inputs and supply pins are left where they are — tying those is legal
+    assert "15" in left  # INHA, an INPUT
+    assert free_driver_pins_from_rails(ir, symbols) == []
