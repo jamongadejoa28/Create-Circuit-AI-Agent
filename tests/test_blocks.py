@@ -448,3 +448,40 @@ def test_the_nets_the_model_did_not_assign_are_wired_anyway():
     }
     assert wired == {f"SIG{i}" for i in range(8)}, wired
     assert any("model left it unassigned" in n for n in notes), notes
+
+
+def test_a_signal_pin_alone_on_its_net_is_offered_a_controller_pin():
+    """Measured: the plan declared the CAN BUS (CAN_H/CAN_L) as the COMM
+    block's interface, so CAN_TX and CAN_RX — the transceiver's logic side,
+    the pins an MCU actually drives — were never candidates and stayed alone
+    on their nets to the end. A signal pin alone on its net reaches nothing,
+    which is the same fact analyze_conduction reports as a dead component.
+
+    A net holding only the HUB is left alone: its peripheral is missing, and a
+    second controller pin would not fix that.
+    """
+    from circuitgen.agent import Agent
+    from circuitgen.ir import CircuitIR, Component
+    from circuitgen.partindex import PartIndex
+
+    class Refuses:
+        def complete_json(self, *a, **k):
+            raise RuntimeError("no model in this test")
+
+    agent = object.__new__(Agent)
+    agent.parts = PartIndex()
+    agent.llm = Refuses()
+
+    ir = CircuitIR("logic-side")
+    ir.add(Component("U1", "MCU_ST_STM32G4:STM32G474RETx", "STM32G474"))
+    ir.add(Component("U10", "Interface_CAN_LIN:TJA1051T", "TJA1051T"))
+    ir.connect("CAN_TX", ("U10", "1"))          # TXD, INPUT, alone
+    ir.connect("CAN_RX", ("U10", "4"))          # RXD, OUTPUT, alone
+    ir.connect("UART_TX", ("U1", "24"))         # only the hub — not our problem
+    ir.connect("VCC_ONLY", ("U10", "3"))        # PWRIN, not a signal pin
+
+    notes = agent.wire_mcu_interfaces(ir, [{"net": "CAN_H"}])
+    on = lambda name: {r for net in ir.nets if net.name == name for r, _ in net.nodes}
+    assert "U1" in on("CAN_TX") and "U1" in on("CAN_RX"), notes
+    assert on("UART_TX") == {"U1"}, "a net holding only the hub gains nothing"
+    assert on("VCC_ONLY") == {"U10"}, "a supply pin is not offered a GPIO"

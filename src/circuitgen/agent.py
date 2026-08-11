@@ -1115,6 +1115,32 @@ class Agent:
             n for n in cat_names
             if net_sizes.get(n, 0) >= 1 and hub not in on_net.get(n, set())
         ]
+        # A signal pin alone on its net reaches nothing — the same fact
+        # `topology.analyze_conduction` reports as a dead component, so the
+        # checker and the fixer share one definition. Measured: the plan
+        # declared the CAN bus (CAN_H/CAN_L) as the interface, so CAN_TX and
+        # CAN_RX — the transceiver's logic side, the pins an MCU actually
+        # drives — were never candidates and sat alone to the end. Only pins
+        # that are NOT the hub's own count: a net holding just the hub is
+        # missing its peripheral, which is a different problem and not one a
+        # second hub pin would fix.
+        alone = []
+        for net in ir.nets:
+            if len(net.nodes) != 1 or net.name in dangling:
+                continue
+            ref, pin = net.nodes[0]
+            comp = ir.components.get(ref)
+            candidate_sym = symbols.get(comp.lib_id) if comp else None
+            if ref == hub or candidate_sym is None:
+                continue
+            try:
+                etype = candidate_sym.pin(str(pin)).etype.name
+            except KeyError:
+                continue
+            if etype in ("INPUT", "OUTPUT", "BIDIR", "TRISTATE", "OPENCOLL", "OPENEMIT"):
+                alone.append(net.name)
+        if alone:
+            dangling += alone
         if not dangling:
             return []
         sym = symbols[ir.components[hub].lib_id]
