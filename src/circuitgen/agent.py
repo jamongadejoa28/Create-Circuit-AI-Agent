@@ -1303,6 +1303,23 @@ class Agent:
                 new = pin[-1:]
                 notes.append(f"resolved {ref}.{pin} -> two-pin terminal {new}")
                 return new
+            # A PERIPHERAL FUNCTION name — USART1_TX, FDCAN1_RX — is what an
+            # engineer writes and what the model copies, and no symbol has a
+            # pin called that: an MCU pin is PA9. The datasheet says which
+            # port pin can carry the function and the symbol says which
+            # number that port pin is, so the whole chain is grounded and
+            # package-aware (PA9 is 43 on the LQFP64 and 31 on the LQFP48).
+            # Until now these tokens produced phantom pins that self-ERC
+            # reported round after round and no pass could fix.
+            from .pinfunctions import resolve_function_pin
+
+            used = {p for net in ir.nets for r, p in net.nodes if r == ref}
+            used |= {p for r, p in ir.nc_pins if r == ref}
+            found = resolve_function_pin(comp.lib_id, sym, pin, used)
+            if found:
+                new, why = found
+                notes.append(f"resolved {ref}.{pin} -> pin {new}: {why}")
+                return new
             return pin
 
         def expand(ref: str, pin: str) -> list[str]:

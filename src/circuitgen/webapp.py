@@ -232,7 +232,10 @@ def _run_job(job: Job) -> None:
         "seed": job.seed,
         "commit": _commit(),
         "prompt_sha256": hashlib.sha256(job.prompt.encode()).hexdigest()[:16],
-        "model": getattr(llm, "model", None),
+        # populated lazily on the first request, so read AFTER the run — the
+        # model is a variable like any other, and a run made with a different
+        # one is not comparable however identical the commit and seed are
+        "model": llm._resolve_model(),
     }
 
 
@@ -397,8 +400,8 @@ function render(id,j){
   if(why.length){h+='<div class="card"><b>왜 이렇게 설계했는가</b><ul>'+
      why.map(x=>`<li><b>${esc(x.title)}</b> — ${esc(x.detail)}</li>`).join('')+'</ul></div>'}
   const run=r.run||{};
-  h+=`<div class="card"><b>이 실행</b> <span class="mono">commit ${esc(run.commit||'?')} · seed ${run.seed??'?'} · prompt ${esc(run.prompt_sha256||'?')}</span>
-      <br><small>같은 commit·seed·prompt면 같은 결과가 나옵니다. 결과가 달라졌다면 이 세 값 중 하나가 달라진 것입니다.</small></div>`;
+  h+=`<div class="card"><b>이 실행</b> <span class="mono">commit ${esc(run.commit||'?')} · seed ${run.seed??'?'} · prompt ${esc(run.prompt_sha256||'?')}<br>model ${esc(run.model||'?')}</span>
+      <br><small>같은 commit·seed·prompt·model이면 같은 결과가 나옵니다. 결과가 달라졌다면 이 네 값 중 하나가 달라진 것입니다.</small></div>`;
   const e=r.erc||{};
   h+=`<div class="card"><b>검증</b><ul>
       <li>KiCad ERC 위반: ${e.kicad_violations??'—'}</li>
