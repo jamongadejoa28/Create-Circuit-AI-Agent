@@ -9,10 +9,35 @@ from __future__ import annotations
 from .ir import CircuitIR, Component
 
 
-def ir_from_json(data: dict) -> CircuitIR:
+def ir_from_json(data: dict, notes: list[str] | None = None) -> CircuitIR:
+    """Model JSON -> CircuitIR, repairing what only the model can get wrong.
+
+    A duplicate reference used to raise, and the caller turned that into a
+    dead stop: measured on a real run, the model wrote BATMON1 twice, the
+    block was retried with the identical prompt at temperature 0 so it failed
+    identically, and the user got NO schematic at all — for a name collision.
+    The first component keeps the reference and the rest are renamed; nets
+    stay with the first, so the renamed part arrives unconnected and the
+    conduction check reports it, which is a board you can look at instead of
+    an error message.
+    """
     ir = CircuitIR(name=data["name"])
+    seen: set[str] = set()
     for c in data.get("components", []):
-        ir.add(Component(c["ref"], c["lib_id"], c.get("value", ""), c.get("footprint", ""), c.get("group", "")))
+        ref = str(c["ref"])
+        if ref in seen:
+            base = ref.rstrip("0123456789") or ref
+            index = 2
+            while f"{base}{index}" in seen:
+                index += 1
+            if notes is not None:
+                notes.append(
+                    f"duplicate reference {ref} renamed to {base}{index}; its nets "
+                    f"stayed with the first {ref}, so the copy arrives unconnected"
+                )
+            ref = f"{base}{index}"
+        seen.add(ref)
+        ir.add(Component(ref, c["lib_id"], c.get("value", ""), c.get("footprint", ""), c.get("group", "")))
     for n in data.get("nets", []):
         ir.connect(n["name"], *[(nd["ref"], str(nd["pin"])) for nd in n["nodes"]])
     ir.nc_pins = [(nc["ref"], str(nc["pin"])) for nc in data.get("nc_pins", [])]

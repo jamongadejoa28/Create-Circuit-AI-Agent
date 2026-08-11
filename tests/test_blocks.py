@@ -387,3 +387,28 @@ def test_when_no_package_in_the_family_fits_it_says_what_to_decide():
     joined = " ".join(notes)
     assert "no package of" in joined and "the largest available is" in joined
     assert "Split the board" in joined
+
+
+def test_a_duplicate_reference_is_renamed_not_fatal():
+    """Measured: the model wrote BATMON1 twice, CircuitIR.add raised, the block
+    was retried with the identical prompt at temperature 0 so it failed
+    identically, and the user got NO schematic at all — for a name collision.
+    A board you can look at beats an error message."""
+    from circuitgen.ir_json import ir_from_json
+
+    data = {
+        "name": "batmon",
+        "components": [
+            {"ref": "BATMON1", "lib_id": "Device:Battery", "value": "Battery"},
+            {"ref": "BATMON1", "lib_id": "Device:R", "value": "10k"},
+        ],
+        "nets": [{"name": "BAT_V", "nodes": [{"ref": "BATMON1", "pin": "1"}]}],
+        "nc_pins": [],
+    }
+    notes: list[str] = []
+    ir = ir_from_json(data, notes)
+    assert set(ir.components) == {"BATMON1", "BATMON2"}
+    assert ir.components["BATMON1"].lib_id == "Device:Battery"  # first keeps it
+    assert any("renamed to BATMON2" in n for n in notes), notes
+    # the nets stay with the first, so the copy is visibly unconnected
+    assert [n.nodes for n in ir.nets] == [[("BATMON1", "1")]]

@@ -821,8 +821,10 @@ class Agent:
             schema=CIRCUIT_IR,
             max_tokens=4096,
         ))
-        return ir_from_json(data), {
+        ir_notes: list[str] = []
+        return ir_from_json(data, ir_notes), {
             "candidates": candidates, "knowledge": snippets, "contracts": contracts,
+            "notes": ir_notes,
         }
 
     # ---- stage 2b: block decomposition (board scale, plan §7.2) ----
@@ -986,8 +988,9 @@ class Agent:
             )
 
         data = _with_retry(ask, tries=_MAX_TRIM_LEVEL + 1 - start_level, pass_attempt=True)
-        ir = ir_from_json(data)
-        notes = self._limit_template_copies(ir, candidates)
+        ir_notes: list[str] = []
+        ir = ir_from_json(data, ir_notes)
+        notes = ir_notes + self._limit_template_copies(ir, candidates)
         if accepted_level:
             # a degraded attempt loses the knowledge rules and the alternate
             # candidates; the audit record must not imply it had them
@@ -1894,6 +1897,15 @@ class Agent:
                         block_error = str(e)
                         if isinstance(e, (TruncatedCompletionError, PromptTooLargeError)):
                             start_level = _MAX_TRIM_LEVEL
+                        else:
+                            # The model is greedy at temperature 0: an identical
+                            # prompt returns an identical answer, so a retry
+                            # that changes nothing fails identically. Measured:
+                            # "duplicate reference BATMON1" twice in a row, then
+                            # the whole run stopped with no schematic at all.
+                            contract_feedback = (contract_feedback or []) + [
+                                f"the previous attempt was rejected: {e}"
+                            ]
                         res.log.append(
                             f"block {block['id']} synthesis attempt {attempt} failed: {e}"
                         )
