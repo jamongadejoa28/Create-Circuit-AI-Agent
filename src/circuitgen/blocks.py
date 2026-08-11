@@ -409,7 +409,35 @@ def validate_block_template(
         hits = candidates.get(role, [])
         allowed = {h.get("lib_id") for h in hits if h.get("lib_id")}
         if allowed:
-            if not (allowed & present_ids):
+            # Exact lib_id equality is too brittle: the package sizer and the
+            # requested-variant pass both swap a component for a same-family
+            # part that was never in the candidate list, and the gate then
+            # declared the role missing and rejected EVERY repair round.
+            # Measured: the hub was grown from STM32G474CBTx to RBTx because
+            # the board needed 50 I/O, after which "required role 'controller'
+            # has no catalog device" blocked the repair that would have moved
+            # four VDD pins off signal nets.
+            # The test is exactly what the sizer is allowed to do: same
+            # library, family-length shared name. Anything looser would let
+            # an unrelated part answer the role.
+            from .normalize import _VARIANT_PREFIX, _shared_prefix
+
+            def same_family(cand: str, have: str) -> bool:
+                # only the package/ordering suffix may differ — those run 2-4
+                # characters, so everything before them must agree. A plain
+                # prefix length is not enough: STM32G474 and STM32G431 share
+                # seven characters and are different parts.
+                a, b = cand.split(":")[-1].upper(), have.split(":")[-1].upper()
+                need = max(_VARIANT_PREFIX, len(a) - 4)
+                return (
+                    cand.split(":")[0] == have.split(":")[0]
+                    and _shared_prefix(a, b) >= need
+                )
+
+            satisfied = bool(allowed & present_ids) or any(
+                same_family(cand, have) for cand in allowed for have in present_ids
+            )
+            if not satisfied:
                 issues.append(
                     f"block {block.get('id')}: required role {role!r} has no catalog device"
                 )

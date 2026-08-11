@@ -554,3 +554,32 @@ def test_a_repeated_block_template_holds_one_channel_not_all_of_them():
         mixed, ir, {}, {"BLDC_Motor_1": "BLDC motor", "servo": "STS3215 servo"}
     )
     assert issues and "2 uncatalogued part(s)" in issues[0], issues
+
+
+def test_a_package_swap_does_not_make_the_role_look_missing():
+    """Measured on the Qwen run: the hub was grown from STM32G474CBTx to RBTx
+    because the board needed 50 I/O pins, and from that moment the gate said
+    "required role 'controller' has no catalog device" — the new lib_id was
+    never in the candidate list — so EVERY repair round was rejected and four
+    MCU VDD pins stayed on signal nets with no chance of being fixed.
+
+    The gate accepts what the sizer is allowed to do and nothing looser: same
+    library, and only the package/ordering suffix may differ. A plain shared
+    prefix is not enough — STM32G474 and STM32G431 agree on seven characters
+    and are different parts.
+    """
+    from circuitgen.blocks import validate_block_template
+    from circuitgen.ir import CircuitIR, Component
+
+    block = {"id": "CIRCUIT", "count": 1, "roles": ["controller"]}
+    cands = {"controller": [{"lib_id": "MCU_ST_STM32G4:STM32G474CBTx"}]}
+
+    def check(lib):
+        ir = CircuitIR("t")
+        ir.add(Component("U1", lib, "x"))
+        return validate_block_template(block, ir, cands)
+
+    assert check("MCU_ST_STM32G4:STM32G474RBTx") == []   # grown package
+    assert check("MCU_ST_STM32G4:STM32G474RETx") == []   # another package
+    assert check("MCU_ST_STM32G4:STM32G431CBTx")         # different family
+    assert check("Device:R")                             # not a controller
