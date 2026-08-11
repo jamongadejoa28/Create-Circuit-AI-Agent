@@ -595,6 +595,7 @@ def emit_schematic(
     file_uuid: str | None = None,
     instance_path: str | None = None,
     global_nets: set[str] | None = None,
+    hier_nets: set[str] | None = None,
     include_sheet_instances: bool = True,
     extra_body: str = "",
 ) -> str:
@@ -629,6 +630,7 @@ def emit_schematic(
     root_uuid = file_uuid or uuid_for(project, ir.name)
     inst_path = instance_path or f"/{root_uuid}"
     global_nets = global_nets or set()
+    hier_nets = hier_nets or set()
     out: list[str] = []
     w = out.append
 
@@ -674,6 +676,19 @@ def emit_schematic(
         )
 
     for text, x, y, rot, justify in plan.labels:
+        if text in hier_nets:
+            # this net leaves the sheet through a pin on the parent's sheet
+            # symbol; the pair is what makes the root a block diagram instead
+            # of a row of unconnected rectangles
+            w(
+                f'\t(hierarchical_label "{_esc(text)}"\n'
+                f"\t\t(shape bidirectional)\n"
+                f"\t\t(at {_fmt(x)} {_fmt(y)} {rot})\n"
+                f"\t\t(effects\n\t\t\t(font\n\t\t\t\t(size 1.27 1.27)\n\t\t\t)\n"
+                f"\t\t\t(justify {justify})\n\t\t)\n"
+                f'\t\t(uuid "{uuid_for(project, ir.name, "hlabel", text, _fmt(x), _fmt(y))}")\n\t)\n'
+            )
+            continue
         if text in global_nets:
             # cross-sheet net: global_label connects project-wide
             w(

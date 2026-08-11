@@ -81,9 +81,16 @@ def test_hierarchical_emission_erc_clean_and_roundtrips():
     ok, msg = compare_connectivity(ir, exported)
     assert ok, msg
 
-    # cross-sheet signals are global labels; rails are power symbols per sheet
+    # A net that leaves the sheet does so through a hierarchical label paired
+    # with a pin on the root's sheet symbol. Global labels are positionless,
+    # which left the root a row of empty rectangles: no pins, no wires, every
+    # name already printed on the sheet it pointed at.
     sensor_text = res["children"]["SENSOR"].read_text()
-    assert '(global_label "SDA"' in sensor_text
+    assert '(hierarchical_label "SDA"' in sensor_text
+    root_text = res["root"].read_text()
+    assert '(pin "SDA" bidirectional' in root_text
+    assert root_text.count("(wire") >= 2, "the root must draw the interconnect"
+    assert "(junction" in root_text, "a stub meeting a trunk needs a junction"
     assert 'power:+3V3' in sensor_text
     # exactly one PWR_FLAG instance per rail project-wide (PWROUT x PWROUT otherwise)
     flags = sum(

@@ -109,19 +109,43 @@ def _safe_name(raw: str | None) -> str:
 
 
 def _artifacts(run_dir: Path) -> dict[str, str]:
-    """Whatever the pipeline actually wrote, found rather than assumed."""
+    """Whatever the pipeline actually wrote, found rather than assumed.
+
+    The root schematic first — a hierarchical board has one root plus a file
+    per sheet, and the root is the one KiCad opens.
+    """
     found: dict[str, str] = {}
-    for key, pattern in (
-        ("schematic", "*.kicad_sch"),
-        ("project", "*.kicad_pro"),
-        ("netlist", "*.net"),
-        ("svg", "svg/*.svg"),
-        ("erc", "*.erc.json"),
+    sheets = sorted(run_dir.glob("*.kicad_sch"))
+    root = min(sheets, key=lambda p: (len(p.stem), p.stem)) if sheets else None
+    for key, hit in (
+        ("schematic", root),
+        ("project", next(iter(sorted(run_dir.glob("*.kicad_pro"))), None)),
+        ("netlist", next(iter(sorted(run_dir.glob("*.net"))), None)),
+        ("erc", next(iter(sorted(run_dir.glob("*.erc.json"))), None)),
     ):
-        hit = sorted(run_dir.glob(pattern))
-        if hit:
-            found[key] = hit[0].name if "/" not in pattern else f"svg/{hit[0].name}"
+        if hit is not None:
+            found[key] = hit.name
     return found
+
+
+def _pages(run_dir: Path) -> list[dict]:
+    """Every rendered sheet, root first — not just whichever sorted first.
+
+    A hierarchical board renders one SVG per sheet. Handing back
+    `sorted(...)[0]` showed the user a single page, alphabetically chosen: on
+    a 13-sheet board that was circuit-BATTERY.svg, one battery on an otherwise
+    empty frame, from which they reasonably concluded the MCU had never been
+    generated. Every sheet is offered, in reading order.
+    """
+    svgs = sorted(run_dir.glob("svg/*.svg"))
+    if not svgs:
+        return []
+    root = min(svgs, key=lambda p: (len(p.stem), p.stem))
+    ordered = [root] + [p for p in svgs if p != root]
+    return [
+        {"name": p.stem, "file": f"svg/{p.name}", "root": p == root}
+        for p in ordered
+    ]
 
 
 def _report(res, run_dir: Path, prompt: str = "", parts=None, symbols=None) -> dict:
@@ -161,6 +185,8 @@ def _report(res, run_dir: Path, prompt: str = "", parts=None, symbols=None) -> d
         "repairs": res.repairs,
         "log": res.log,
         "files": _artifacts(run_dir),
+        # every rendered sheet, not whichever one sorted first
+        "pages": _pages(run_dir),
     }
 
 
@@ -285,6 +311,11 @@ def get_file(job_id: str, kind: str):
     if job is None or not job.result:
         raise HTTPException(404, "no such job, or it has not finished")
     rel = job.result.get("files", {}).get(kind)
+    if rel is None:
+        rel = next(
+            (p["file"] for p in job.result.get("pages", []) if p["name"] == kind),
+            None,
+        )
     if not rel:
         raise HTTPException(404, f"this run produced no {kind}")
     path = (OUT_ROOT / job_id / rel).resolve()
@@ -365,7 +396,10 @@ function render(id,j){
       <li>자체 ERC 오류/경고: ${e.self_errors??'—'} / ${e.self_warnings??'—'}</li>
       <li>넷리스트 왕복 일치: ${e.netlist_round_trip_ok?'예':'아니오'}</li>
       <li>배선 대 라벨 비율: ${(r.wiring&&r.wiring.wired_ratio)??'—'}</li></ul></div>`;
-  if(f.svg){h+=`<div class="card"><b>도면</b><br><img src="/api/jobs/${id}/file/svg"></div>`}
+  const pages=r.pages||[];
+  if(pages.length){h+='<div class="card"><b>도면 '+pages.length+'장</b>'+
+     pages.map(p=>`<div style="margin:.8rem 0"><div class="mono">${esc(p.name)}${p.root?' (루트)':''}</div>`+
+       `<img src="/api/jobs/${id}/file/${encodeURIComponent(p.name)}"></div>`).join('')+'</div>'}
   const links=Object.keys(f).map(k=>`<a href="/api/jobs/${id}/file/${k}">${k}</a>`).join(' · ');
   if(links){h+=`<div class="card"><b>파일</b><br>${links}</div>`}
   h+=`<details class="card"><summary>실행 로그 ${r.log.length}줄</summary><div class="mono">${esc(r.log.join('\\n'))}</div></details>`;
