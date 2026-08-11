@@ -375,6 +375,7 @@ def validate_block_template(
     block: dict,
     ir: CircuitIR,
     candidates: dict[str, list[dict]],
+    role_query: dict[str, str] | None = None,
 ) -> list[str]:
     """Check that a synthesized template still represents its requirements.
 
@@ -393,7 +394,17 @@ def validate_block_template(
     conceptual_count = sum(
         c.lib_id.startswith("Conceptual:") for c in ir.components.values()
     )
-    conceptual_needed = 0
+    # A repeated block is synthesized ONCE and stamped `count` times, so its
+    # template holds one channel. Counting one device per ROLE demanded four
+    # motors inside the single template of a four-instance block and stopped
+    # the run with no schematic at all. Roles asking for the same part are
+    # that repetition — group them, and require one device per group.
+    # ...but ONLY for a repeated block. A count=1 block, and the pseudo-block
+    # the flat path checks the whole circuit against, must hold every role it
+    # owns: four motors on a flat board really are four motors.
+    repeated = int(block.get("count", 1) or 1) > 1
+    role_query = role_query or {}
+    uncatalogued: set[str] = set()
     for role in block.get("roles", []):
         hits = candidates.get(role, [])
         allowed = {h.get("lib_id") for h in hits if h.get("lib_id")}
@@ -403,10 +414,14 @@ def validate_block_template(
                     f"block {block.get('id')}: required role {role!r} has no catalog device"
                 )
         else:
-            conceptual_needed += 1
-    if conceptual_count < conceptual_needed:
+            uncatalogued.add(
+                str(role_query.get(role, role)).strip().lower()
+                if repeated else str(role)
+            )
+    if conceptual_count < len(uncatalogued):
         issues.append(
-            f"block {block.get('id')}: {conceptual_needed} uncatalogued role(s) but "
-            f"only {conceptual_count} conceptual device(s)"
+            f"block {block.get('id')}: {len(uncatalogued)} uncatalogued part(s) "
+            f"({', '.join(sorted(uncatalogued))}) but only {conceptual_count} "
+            f"conceptual device(s)"
         )
     return issues

@@ -135,6 +135,14 @@ def _reconcile_rails(ir: "CircuitIR", spec: dict) -> list[str]:
     return notes
 
 
+def _role_queries(spec: dict) -> dict[str, str]:
+    """role -> the part it asks for, so roles wanting the same part group."""
+    return {
+        str(p.get("role", "")): str(p.get("search_query", p.get("role", "")))
+        for p in (spec or {}).get("parts_needed", [])
+    }
+
+
 def _normalize_rails(spec: dict) -> dict:
     """Deterministic rail-name normalization: '5V' → '+5V', '3.3V' → '+3V3'.
 
@@ -1928,7 +1936,7 @@ class Agent:
                             res.log,
                         )
                         issues = validate_block_template(
-                            block, bir, bctx.get("candidates", {})
+                            block, bir, bctx.get("candidates", {}), _role_queries(spec)
                         )
                         if not issues and bctx.get("contracts"):
                             from .contracts import repair_contracts, validate_contracts

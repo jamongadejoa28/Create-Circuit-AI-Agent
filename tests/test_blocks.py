@@ -521,3 +521,36 @@ def test_four_roles_of_one_are_four_instances_not_one():
     assert counts["MOTOR"] == 4, notes      # four roles, one part
     assert counts["ENC"] == 4, notes        # one role, quantity four
     assert counts["MCU"] == 1, notes        # two roles, two different parts
+
+
+def test_a_repeated_block_template_holds_one_channel_not_all_of_them():
+    """Measured right after the count fix landed: the MOTOR block correctly
+    became count=4, and then the completeness gate demanded four motors inside
+    its single template — "4 uncatalogued role(s) but only 2 conceptual
+    device(s)" — twice, and the run stopped with no schematic at all.
+
+    A repeated block is synthesized once and stamped count times, so its
+    template is ONE channel. A count=1 block, and the pseudo-block the flat
+    path checks the whole circuit against, must still hold every role.
+    """
+    from circuitgen.blocks import validate_block_template
+    from circuitgen.ir import CircuitIR, Component
+
+    roles = {f"BLDC_Motor_{i}": "BLDC motor" for i in range(1, 5)}
+    ir = CircuitIR("template")
+    ir.add(Component("MOTOR1", "Conceptual:motor", "motor"))
+
+    repeated = {"id": "MOTOR", "count": 4, "roles": list(roles)}
+    assert validate_block_template(repeated, ir, {}, roles) == []
+
+    flat = {"id": "CIRCUIT", "count": 1, "roles": list(roles)}
+    issues = validate_block_template(flat, ir, {}, roles)
+    assert issues and "4 uncatalogued part(s)" in issues[0], issues
+
+    # two different uncatalogued parts in one repeated block still need two
+    mixed = {"id": "MIXED", "count": 4,
+             "roles": ["BLDC_Motor_1", "servo"], }
+    issues = validate_block_template(
+        mixed, ir, {}, {"BLDC_Motor_1": "BLDC motor", "servo": "STS3215 servo"}
+    )
+    assert issues and "2 uncatalogued part(s)" in issues[0], issues
