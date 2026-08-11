@@ -79,3 +79,67 @@ def test_a_substitute_that_cannot_carry_the_used_pins_is_refused():
     ir.connect("SIG", ("U1", "7"))
     notes = resolve_unknown_symbols(ir, parts)
     assert ir.components["U1"].lib_id.startswith("Conceptual:"), notes
+
+
+def test_a_placeholder_beside_the_real_part_is_removed():
+    """Measured on a real 4-motor board: a second STM32G474 appeared as
+    Conceptual:STM32G474 next to the real MCU_ST_STM32G4:STM32G474CBTx.
+    _limit_main_device_copies compares lib_ids and those spellings differ, so
+    nothing caught it — the phantom reached the schematic, the sheet split and
+    the design explanation."""
+    from circuitgen.normalize import merge_duplicate_placeholders
+    from circuitgen.partindex import PartIndex
+
+    parts = PartIndex()
+    real_id = "MCU_ST_STM32G4:STM32G474CBTx"
+    ir = CircuitIR("two-mcus")
+    ir.add(Component("U1", real_id, "STM32G474"))
+    ir.add(Component("U11", "Conceptual:STM32G474", "STM32G474"))
+    ir.connect("UART_TX", ("U11", "UART_TX"))
+    ir.connect("+3V3", ("U11", "VDD"), ("U1", "1"))
+
+    symbols = parts.load_symbols([real_id])
+    from circuitgen.conceptual import resolve_conceptual
+    resolve_conceptual(ir, symbols)
+
+    notes = merge_duplicate_placeholders(ir, symbols)
+    assert "U11" not in ir.components, notes
+    # VDD exists on the real symbol, so that connection moves
+    assert ("U1", "1") in [n for net in ir.nets if net.name == "+3V3" for n in net.nodes]
+    # UART_TX does not, and that is said out loud rather than dropped quietly
+    assert any("UART_TX" in n and "no pin of that name" in n for n in notes), notes
+    assert merge_duplicate_placeholders(ir, symbols) == []
+
+
+def test_two_boxes_for_one_device_collapse_onto_the_wired_one():
+    """Three mechanisms drew the same STS3215 servo bus on one board: the
+    role-restore block, the uncatalogued-role injection, and the model's own
+    component. The copy carrying the connections is the one that survives."""
+    from circuitgen.conceptual import resolve_conceptual
+    from circuitgen.normalize import merge_duplicate_placeholders
+
+    ir = CircuitIR("three-uarts")
+    ir.add(Component("STS3215_UART1", "Conceptual:STS3215_UART", "STS3215"))
+    ir.add(Component("U12", "Conceptual:STS3215_UART", "STS3215"))
+    ir.connect("UART_TX", ("U12", "TXD"))
+    ir.connect("UART_RX", ("U12", "RXD"))
+
+    symbols: dict = {}
+    resolve_conceptual(ir, symbols)
+    notes = merge_duplicate_placeholders(ir, symbols)
+    assert set(ir.components) == {"U12"}, notes
+    assert any("carries the most connections" in n for n in notes), notes
+
+
+def test_a_lone_placeholder_is_left_alone():
+    """A box with no real part behind it is the whole point of the mechanism."""
+    from circuitgen.conceptual import resolve_conceptual
+    from circuitgen.normalize import merge_duplicate_placeholders
+
+    ir = CircuitIR("one-box")
+    ir.add(Component("U1", "Conceptual:MY_CUSTOM_RADIO", "RADIO"))
+    ir.connect("UART_TX", ("U1", "TX"))
+    symbols: dict = {}
+    resolve_conceptual(ir, symbols)
+    assert merge_duplicate_placeholders(ir, symbols) == []
+    assert "U1" in ir.components

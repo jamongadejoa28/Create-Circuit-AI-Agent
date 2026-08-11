@@ -1176,3 +1176,85 @@ def resolve_unknown_symbols(ir: CircuitIR, parts) -> list[str]:
             )
             comp.lib_id = box
     return notes
+
+
+def merge_duplicate_placeholders(
+    ir: CircuitIR, symbols: dict[str, SymbolDef]
+) -> list[str]:
+    """One device, one component — a Conceptual box is only a placeholder.
+
+    A conceptual symbol exists for exactly one reason: no library part was
+    available. So if a real part for the same device IS on the board, the box
+    is redundant by construction, and two boxes for the same device are
+    redundant by construction whatever produced them.
+
+    Measured on a real 4-motor board, three different mechanisms drew the same
+    STS3215 servo bus — the role-restore block, the uncatalogued-role
+    injection, and the model's own component — and a second STM32G474 appeared
+    as `Conceptual:STM32G474` beside the real `MCU_ST_STM32G4:STM32G474CBTx`.
+    Nothing caught either: `_limit_main_device_copies` compares lib_ids, and
+    those spellings differ.
+
+    Connections move by PIN NAME, which is what a conceptual box has. A
+    membership the keeper cannot accept — a real STM32 has no pin called
+    "UART_TX" — is dropped and REPORTED, because a net one member short is a
+    fact the reader can act on and a phantom controller is not.
+    """
+    from .compliance import part_present
+    from .conceptual import PREFIX as CONCEPTUAL
+
+    notes: list[str] = []
+    boxes: dict[str, list[str]] = {}
+    for ref, comp in sorted(ir.components.items()):
+        if comp.lib_id.startswith(CONCEPTUAL):
+            boxes.setdefault(comp.lib_id.split(":", 1)[1].upper(), []).append(ref)
+
+    def memberships(ref: str) -> list[tuple[str, str]]:
+        return [(n.name, str(p)) for n in ir.nets for r, p in n.nodes if r == ref]
+
+    for name, refs in sorted(boxes.items()):
+        real = [
+            r for r, c in sorted(ir.components.items())
+            if not c.lib_id.startswith(CONCEPTUAL) and part_present(name, c.lib_id)
+        ]
+        if real:
+            keeper, drop = real[0], list(refs)
+            why = f"{ir.components[keeper].lib_id} already provides it"
+        elif len(refs) > 1:
+            ranked = sorted(refs, key=lambda r: (-len(memberships(r)), r))
+            keeper, drop = ranked[0], ranked[1:]
+            why = f"{keeper} carries the most connections"
+        else:
+            continue
+
+        keeper_pins = {
+            p.name.upper(): p.number
+            for p in (symbols.get(ir.components[keeper].lib_id) or SymbolDef("", "", [])).pins
+        }
+        for ref in drop:
+            moved, stranded = 0, []
+            for net_name, pin in memberships(ref):
+                target = keeper_pins.get(str(pin).upper())
+                for net in ir.nets:
+                    if net.name != net_name:
+                        continue
+                    net.nodes = [n for n in net.nodes if n != (ref, pin)]
+                    if target is not None and (keeper, target) not in net.nodes:
+                        net.nodes.append((keeper, target))
+                if target is not None:
+                    moved += 1
+                else:
+                    stranded.append(f"{net_name} (pin {pin})")
+            ir.components.pop(ref, None)
+            ir.nc_pins = [n for n in ir.nc_pins if n[0] != ref]
+            notes.append(
+                f"{ref}: duplicate placeholder for {name} removed — {why}; "
+                f"{moved} connection(s) moved to {keeper}"
+                + (
+                    f"; {', '.join(stranded)} could not move because {keeper} has "
+                    f"no pin of that name and now need one"
+                    if stranded else ""
+                )
+            )
+    ir.nets = [n for n in ir.nets if n.nodes]
+    return notes

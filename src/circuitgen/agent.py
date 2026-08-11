@@ -2182,6 +2182,7 @@ class Agent:
             ensure_stm32g4_power_network,
             enforce_requested_part_variants,
             mark_documented_no_connects,
+            merge_duplicate_placeholders,
             normalize_common_symbol_aliases,
             resolve_unknown_symbols,
             sanitize_known_device_nets,
@@ -2198,6 +2199,9 @@ class Agent:
         # can load is invisible to all of them and to the emitter, and the
         # board then measured is not the board on disk
         notes += resolve_unknown_symbols(ir, self.parts)
+        # every lib_id is settled now, so a box that duplicates a real part
+        # or another box can be recognised
+        notes += merge_duplicate_placeholders(ir, syms())
         notes += enforce_requested_part_variants(ir, prompt, syms(), self.parts)
         notes += sanitize_known_device_nets(ir, syms())
         # the parts that ended up in the circuit decide which rails it needs:
