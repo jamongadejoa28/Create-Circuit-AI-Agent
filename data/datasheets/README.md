@@ -23,6 +23,7 @@ PyMuPDF로 읽어 확인할 수 있어야 합니다. 검증 불가능한 인용�
 | 파일 | 문서 | 쪽 | 공식 출처 |
 |---|---|---|---|
 | `stm32g474xB-xC-xE_DS12288_rev6.pdf` | DS12288 Rev 6 | 236 | [st.com](https://www.st.com/resource/en/datasheet/stm32g474ve.pdf) |
+| `stm32g4_RM0440_rev9.pdf` | RM0440 Rev 9 | 2140 | [st.com](https://www.st.com/resource/en/reference_manual/rm0440-stm32g4-series-advanced-armbased-32bit-mcus-stmicroelectronics.pdf) |
 | `esp32_datasheet_en.pdf` | ESP32 Series, Version 5.3 | 78 | [espressif.com](https://www.espressif.com/sites/default/files/documentation/esp32_datasheet_en.pdf) |
 | `esp32-s2_datasheet_en.pdf` | ESP32-S2 Series, Version 1.9 | 65 | [espressif.com](https://www.espressif.com/sites/default/files/documentation/esp32-s2_datasheet_en.pdf) |
 | `esp32-s3_datasheet_en.pdf` | ESP32-S3 Series, Version 2.2 | 87 | [espressif.com](https://www.espressif.com/sites/default/files/documentation/esp32-s3_datasheet_en.pdf) |
@@ -46,10 +47,24 @@ PyMuPDF로 읽어 확인할 수 있어야 합니다. 검증 불가능한 인용�
 
 | 문서 | 왜 필요한가 | URL |
 |---|---|---|
-| **RM0440** STM32G4 시리즈 레퍼런스 매뉴얼 | 대체 기능(AF) 표 — `USART1_TX`가 몇 번 핀인지 아는 유일한 근거. 지금 MCU 핀을 **이름**으로 연결하려다 실패하는 문제의 해답 | [st.com](https://www.st.com/resource/en/reference_manual/rm0440-stm32g4-series-advanced-armbased-32bit-mcus-stmicroelectronics.pdf) |
 | STM32F103 데이터시트 | 가장 흔한 입문 MCU | [st.com](https://www.st.com/resource/en/datasheet/stm32f103c8.pdf) |
 | STM32H743 데이터시트 | 고성능 대안 | [st.com](https://www.st.com/resource/en/datasheet/stm32h743vi.pdf) |
 | AN2867 크리스탈 발진기 설계 | 크리스탈 부하 커패시터 값의 근거 | [st.com](https://www.st.com/resource/en/application_note/an2867-oscillator-design-guide-for-stm8afals-stm32-mcus-and-mpus-stmicroelectronics.pdf) |
 
 파일을 넣으신 뒤 이 표에 파일명·개정판·쪽수를 추가해 주시면 됩니다.
-`scripts/check_datasheets.py`가 폴더 전체를 열어 확인합니다.
+`scripts/check_datasheets.py`가 폴더 전체를 열어 확인하고, 같은 문서가 두 이름으로
+들어오면 잡아냅니다.
+
+## 정정: 대체 기능(AF) 매핑표는 RM0440이 아니라 데이터시트에 있습니다
+
+제가 RM0440을 1순위로 요청드리면서 "AF 표가 거기 있다"고 했는데 **틀렸습니다.**
+RM0440에 있는 것은 AF **레지스터**(GPIOx_AFRL/AFRH) 설명뿐이고, 어느 핀이 어느 기능을
+지원하는지 적은 **매핑표는 DS12288 Table 13**, 이 저장소의
+`stm32g474xB-xC-xE_DS12288_rev6.pdf` **pdf 페이지 인덱스 72~78**에 있습니다.
+
+```
+PB6 ... TIM4_CH1 ... TIM8_CH1 ... USART1_TX ... FDCAN2_TX ...
+```
+
+RM0440도 버리지 않았습니다 — 페리페럴 동작·클럭 트리·부팅 구성의 근거가 필요할 때
+쓸 유일한 문서입니다.

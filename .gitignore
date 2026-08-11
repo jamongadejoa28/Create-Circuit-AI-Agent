@@ -17,6 +17,8 @@
 # PyMuPDF, never redistributed. data/datasheets/README.md records the official
 # URL of each one so anyone can fetch their own copy.
 /data/datasheets/*.pdf
+# NTFS alternate-data-stream leftovers from downloading through Windows
+*:Zone.Identifier
 
 # --- python ---
 .venv/

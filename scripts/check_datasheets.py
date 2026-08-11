@@ -13,6 +13,7 @@ Exit 0 when every PDF opens and every DS-number cited in the source tree has a
 file behind it.
 """
 
+import hashlib
 import re
 import sys
 from pathlib import Path
@@ -36,8 +37,12 @@ def main() -> int:
         return 1
 
     ids: set[str] = set()
+    digests: dict[str, list[str]] = {}
     bad = 0
     for pdf in pdfs:
+        digests.setdefault(
+            hashlib.md5(pdf.read_bytes()).hexdigest(), []
+        ).append(pdf.name)
         try:
             doc = pymupdf.open(pdf)
             first = " ".join(doc[0].get_text().split())
@@ -52,6 +57,13 @@ def main() -> int:
         ids.update(re.findall(r"(?:DS|RM)\d{4,6}", first))
         print(f"  ok {pdf.name:52} {pages:>4}p  {ident}")
 
+    # the same document under two names is 40 MB of confusion about which one
+    # a citation means — found immediately: stm32g474ve.pdf and
+    # stm32g474xB-xC-xE_DS12288_rev6.pdf were byte-identical
+    dupes = {d: names for d, names in digests.items() if len(names) > 1}
+    for names in dupes.values():
+        print(f"  DUPLICATE (identical bytes): {', '.join(sorted(names))}")
+
     # every DS/RM number the source tree cites must have a file behind it
     cited: dict[str, list[str]] = {}
     for path in sorted((ROOT / "src").rglob("*.py")) + sorted((ROOT / "data").glob("*.json")):
@@ -64,8 +76,9 @@ def main() -> int:
         print(f"  CITED BUT ABSENT {doc_id} — referenced by {', '.join(where)}")
 
     print(f"\n{len(pdfs) - bad}/{len(pdfs)} readable; "
-          f"{len(cited) - len(missing)}/{len(cited)} cited documents present")
-    return 0 if not bad and not missing else 2
+          f"{len(cited) - len(missing)}/{len(cited)} cited documents present"
+          + (f"; {len(dupes)} duplicated" if dupes else ""))
+    return 0 if not bad and not missing and not dupes else 2
 
 
 if __name__ == "__main__":
