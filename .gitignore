@@ -50,4 +50,4 @@ golden/*.net
 /kicad-templates/
 
 # --- docs ---
-./docs/*
+/docs/*.md
