@@ -48,3 +48,6 @@ golden/*.net
 /kicad-packages3D/
 /kicad-packages3D-source/
 /kicad-templates/
+
+# --- docs ---
+./docs/*
