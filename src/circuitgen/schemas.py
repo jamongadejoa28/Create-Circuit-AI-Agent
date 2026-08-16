@@ -11,9 +11,17 @@ context budget is ~8k tokens (plan §4).
 
 REQUIREMENT_SPEC = {
     "type": "object",
-    "required": ["summary", "power", "parts_needed", "connections_intent"],
+    "required": ["mode", "summary", "power", "parts_needed", "connections_intent"],
     "additionalProperties": False,
     "properties": {
+        "mode": {
+            "type": "string",
+            "enum": ["transcription", "design"],
+            "description": (
+                "transcription only when the request supplies explicit net members; "
+                "design when it asks the system to decide connections or values"
+            ),
+        },
         "summary": {"type": "string", "maxLength": 160, "description": "one-line normalized requirement"},
         "power": {
             "type": "object",
@@ -65,6 +73,10 @@ REQUIREMENT_SPEC = {
                     "value": {"type": "string", "maxLength": 24, "description": "component value if applicable, e.g. 330R"},
                     "quantity": {"type": "integer", "minimum": 1, "maximum": 16,
                                  "description": "physical copies requested; default 1"},
+                    "polarized": {
+                        "type": "boolean",
+                        "description": "true only when explicitly polarized or electrolytic",
+                    },
                 },
             },
         },
@@ -351,7 +363,7 @@ NETLIST_ONLY = {
             "maxItems": 40,
             "items": {
                 "type": "object",
-                "required": ["reference", "part", "value", "package"],
+                "required": ["reference", "part", "value", "package", "polarized"],
                 "additionalProperties": False,
                 "properties": {
                     "reference": {"type": "string", "maxLength": 8,
@@ -362,6 +374,8 @@ NETLIST_ONLY = {
                               "description": "REQUIRED string: the electrical value or marking printed on this exact reference (10uF, 1k, 22pF, green); connector dimensions such as 1x2 and 2x3 are part types, not values; use an empty string when no printed value is given"},
                     "package": {"type": "string", "maxLength": 48,
                                 "description": "REQUIRED: exact physical package or pitch the request assigns to this reference, such as SOT-23, SOD-123, SOIC-8, TQFP-32, SMD 0805, or 2.54mm pitch; empty when unspecified"},
+                    "polarized": {"type": "boolean",
+                                  "description": "true only for explicitly polarized/electrolytic capacitors"},
                 },
             },
         },

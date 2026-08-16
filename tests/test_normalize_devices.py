@@ -465,6 +465,28 @@ def test_unresolvable_footprint_is_cleared_rather_than_blocking_the_build():
     assert check_footprints(ir, symbols, parts) == []
 
 
+def test_named_crystal_and_pin_header_packages_select_the_requested_family():
+    from circuitgen.fp_checks import assign_footprints
+    from circuitgen.partindex import PartIndex
+
+    parts = PartIndex()
+    if not parts.has_footprints():
+        pytest.skip("footprint index not built")
+    symbols = parts.load_symbols(["Device:Crystal", "Connector_Generic:Conn_02x03_Odd_Even"])
+    ir = CircuitIR("named_packages")
+    ir.add(Component("Y1", "Device:Crystal", "16MHz"))
+    ir.add(Component("J1", "Connector_Generic:Conn_02x03_Odd_Even", "ICSP"))
+
+    assign_footprints(
+        ir, symbols, parts,
+        requested_packages={"Y1": "HC-49/SD SMD", "J1": "2x3 Pin Header"},
+    )
+
+    assert "HC49-SD" in ir.components["Y1"].footprint
+    assert "PINHEADER" in ir.components["J1"].footprint.upper()
+    assert "P2.54MM" in ir.components["J1"].footprint.upper()
+
+
 # ---- guards found by adversarial review (each has a reproduced counterexample)
 
 

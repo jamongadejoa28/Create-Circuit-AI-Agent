@@ -1,0 +1,59 @@
+{
+  "id": "i2c_bus_pullup",
+  "function": "I2C open-drain bus pull-up resistors to logic rail for SCL and SDA signals",
+  "applicability": {
+    "required_part_kinds": {
+      "i2c_pullup_resistor": 2
+    },
+    "forbidden_part_kinds": [],
+    "min_non_ground_rails": 1,
+    "requires_distinct_supply_voltages": false
+  },
+  "roles": {
+    "RP_SCL": {
+      "component_kind": "resistor",
+      "requirement_kind": "i2c_pullup_resistor",
+      "lib_id": "Device:R",
+      "parameter": "Rpullup",
+      "default_value": "4.7kΩ"
+    },
+    "RP_SDA": {
+      "component_kind": "resistor",
+      "requirement_kind": "i2c_pullup_resistor",
+      "lib_id": "Device:R",
+      "parameter": "Rpullup",
+      "default_value": "4.7kΩ"
+    }
+  },
+  "ports": {
+    "VCC": {"kind": "power_input", "rail_selector": "lowest_supply"},
+    "SCL": {"kind": "signal"},
+    "SDA": {"kind": "signal"}
+  },
+  "edges": [
+    {"from": "RP_SCL.1", "to": "VCC", "relation": "same_net"},
+    {"from": "RP_SCL.2", "to": "SCL", "relation": "same_net"},
+    {"from": "RP_SDA.1", "to": "VCC", "relation": "same_net"},
+    {"from": "RP_SDA.2", "to": "SDA", "relation": "same_net"}
+  ],
+  "constraints": {
+    "forbidden_same_net": [
+      ["SCL", "SDA"],
+      ["SCL", "VCC"],
+      ["SDA", "VCC"]
+    ]
+  },
+  "parameters": {
+    "Rpullup": "4.7kΩ standard pull-up for 100kHz/400kHz I2C bus speeds; 2.2kΩ-10kΩ allowed"
+  },
+  "placement": {"inputs": ["VCC"], "outputs": ["SCL", "SDA"]},
+  "evidence": {
+    "document": "Practical Electronics for Inventors, 4th Ed. (Scherz & Monk)",
+    "file": "이론지식/Practical-Electronics-for-Inventors_-Fourth-Edition.pdf",
+    "section": "13.3 Digital Communications — I2C (TWI), open-drain lines require pull-up resistors",
+    "pdf_page_index": 1378,
+    "tier": "A",
+    "provenance": "textbook"
+  },
+  "status": "draft"
+}

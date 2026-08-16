@@ -176,6 +176,190 @@ def _classify(ir: CircuitIR, symbols: dict[str, SymbolDef]):
     return roles, decouple_target
 
 
+def _localize_dense_ic_support(
+    ir: CircuitIR,
+    symbols: dict[str, SymbolDef],
+    placements: dict[str, dict[int, Placement]],
+) -> dict[str, str]:
+    """Gather topology-linked support parts around a dense IC.
+
+    A shelf gives every part enough space but destroys the visual meaning of
+    MCU support circuits: a crystal, its load capacitors, reset parts and an
+    ICSP header can land in opposite page corners.  This pass uses only final
+    connectivity and pin geometry.  Parts sharing an IC pin are placed just
+    outside that pin side; no reference names or net-name vocabulary is used.
+
+    Returns a cluster map used by later collision passes so a local support
+    part cannot be nudged away from its owner independently.
+    """
+    from .interfaces import analyze_interfaces
+
+    interfaces = analyze_interfaces(ir, symbols)
+    net_of: dict[tuple[str, str], str] = {}
+    nodes_of: dict[str, list[tuple[str, str]]] = {}
+    for net in ir.nets:
+        nodes_of[net.name] = [(r, str(p)) for r, p in net.nodes]
+        for node in nodes_of[net.name]:
+            net_of[node] = net.name
+
+    clusters: dict[str, str] = {}
+    for owner in sorted(ir.components):
+        owner_sym = symbols[ir.components[owner].lib_id]
+        # Larger MCU/module pin fields need unit/power-domain-aware clustering;
+        # applying this compact-board pass to ESP32/64-pin STM32 regressions
+        # displaced their established bypass/rail layout. Keep the proven
+        # first scope to compact 17..32-pin ICs.
+        if owner not in placements or not (16 < len(owner_sym.pins) <= 32):
+            continue
+        owner_units = placements[owner]
+        cid = f"local:{owner}"
+        edge_ports: set[str] = set()
+        candidates: dict[str, list] = {}
+        for pin in owner_sym.pins:
+            net_name = net_of.get((owner, pin.number))
+            if not net_name:
+                continue
+            for ref, _pin_no in nodes_of[net_name]:
+                if ref == owner or ref not in placements:
+                    continue
+                sym = symbols[ir.components[ref].lib_id]
+                if sym.is_power:
+                    continue
+                # Local support is deliberately bounded: passives, switches,
+                # crystals and connectors. Another IC sharing a bus is a peer,
+                # not a satellite of this one.
+                if len(sym.pins) > 8 and sym.reference_prefix != "J":
+                    continue
+                candidates.setdefault(ref, []).append((pin, net_name))
+
+        by_side: dict[tuple[int, int], list[tuple[str, object]]] = {}
+        for ref, links in candidates.items():
+            # Prefer signal/control pins for reset, oscillator and headers;
+            # pure rail bypass capacitors naturally fall back to a power pin.
+            signal_links = [
+                row for row in links if interfaces[row[1]].kind == "signal"
+            ]
+            # A programming/debug header sharing several MCU signals is a
+            # local support interface. A general I/O header with only UART
+            # RX/TX is a board edge port and stays in the global flow; pulling
+            # it into the pin field caused RESET/UART crossings and unreadable
+            # connector text on the ATmega transcription.
+            ref_sym = symbols[ir.components[ref].lib_id]
+            if (ref_sym.reference_prefix == "J"
+                    and len({net for _pin, net in signal_links}) < 3):
+                edge_ports.add(ref)
+                continue
+            chosen = signal_links or links
+            pin = sorted(chosen, key=lambda row: (row[0].unit, row[0].number))[0][0]
+            unit = pin.unit if pin.unit in owner_units else next(iter(owner_units))
+            direction = pin_outward_dir(owner_units[unit], pin)
+            side = (
+                int(round(direction[0])), int(round(direction[1]))
+            )
+            if side == (0, 0):
+                side = (-1, 0)
+            by_side.setdefault(side, []).append((ref, pin))
+
+        owner_boxes = [
+            _body_box(owner_sym, unit, place)
+            for unit, place in owner_units.items()
+        ]
+        left = min(box[0] for box in owner_boxes)
+        right = max(box[2] for box in owner_boxes)
+        top = min(box[1] for box in owner_boxes)
+        bottom = max(box[3] for box in owner_boxes)
+        center_x = (left + right) / 2
+        center_y = (top + bottom) / 2
+        for side, rows in sorted(by_side.items()):
+            rows.sort(key=lambda row: (
+                pin_absolute_position(
+                    owner_units[
+                        row[1].unit if row[1].unit in owner_units else next(iter(owner_units))
+                    ], row[1]
+                )[1 if side[0] else 0],
+                row[0],
+            ))
+            if side[0] and len(rows) > 4:
+                # Dense MCU left/right pin fields commonly have reset,
+                # oscillator and analog-reference support on one side. One
+                # seven-part column forced an otherwise compact ATmega sheet
+                # from A4 to A3. Keep the first control group and last analog
+                # support item in the inner column; the contiguous middle
+                # group (typically the two-pin oscillator network) occupies
+                # the outer column without crossing the last IC pin's route.
+                split = (len(rows) + 1) // 2
+                inner = rows[:split - 1] + rows[-1:]
+                outer = rows[split - 1:-1]
+                for column, chunk in enumerate((inner, outer)):
+                    chunk_extents = []
+                    for ref, _pin in chunk:
+                        unit = next(iter(placements[ref]))
+                        ex, ey = _unit_extent(symbols[ir.components[ref].lib_id], unit)
+                        chunk_extents.append((max(2 * ex, 20.32), max(2 * ey, 15.24)))
+                    gap = 5.08
+                    height_total = sum(h for _w, h in chunk_extents)
+                    height_total += max(0, len(chunk) - 1) * gap
+                    cursor_y = max(20.32, center_y - height_total / 2)
+                    max_width = max((w for w, _h in chunk_extents), default=20.32)
+                    for (ref, _pin), (width, height) in zip(chunk, chunk_extents):
+                        outward = 20.32 + column * (max_width + gap)
+                        x = (
+                            left - width / 2 - outward
+                            if side[0] < 0 else right + width / 2 + outward
+                        )
+                        y = cursor_y + height / 2
+                        cursor_y += height + gap
+                        unit = next(iter(placements[ref]))
+                        placements[ref] = {
+                            unit: Placement(_snap(max(20.32, x)), _snap(max(20.32, y)), 0)
+                        }
+                        clusters[ref] = cid
+                continue
+            extents = []
+            for ref, _pin in rows:
+                unit = next(iter(placements[ref]))
+                ex, ey = _unit_extent(symbols[ir.components[ref].lib_id], unit)
+                extents.append((max(2 * ex, 20.32), max(2 * ey, 15.24)))
+            total = sum((h if side[0] else w) for w, h in extents)
+            gap = 5.08
+            total += max(0, len(rows) - 1) * gap
+            cursor = max(
+                20.32,
+                (center_y - total / 2) if side[0] else (center_x - total / 2),
+            )
+            for (ref, pin), (width, height) in zip(rows, extents):
+                if side[0]:
+                    y = cursor + height / 2
+                    x = (left - width / 2 - 20.32) if side[0] < 0 else (right + width / 2 + 20.32)
+                    cursor += height + gap
+                else:
+                    x = cursor + width / 2
+                    y = (top - height / 2 - 5.08) if side[1] < 0 else (bottom + height / 2 + 5.08)
+                    cursor += width + gap
+                unit = next(iter(placements[ref]))
+                placements[ref] = {
+                    unit: Placement(_snap(max(20.32, x)), _snap(max(20.32, y)), 0)
+                }
+                clusters[ref] = cid
+        # Keep general board-edge ports outside the newly formed local
+        # columns. Their original shelf slot can otherwise sit exactly under
+        # oscillator/reset value text even when symbol bodies do not overlap.
+        for index, ref in enumerate(sorted(edge_ports)):
+            unit = next(iter(placements[ref]))
+            old = placements[ref][unit]
+            placements[ref] = {
+                unit: Placement(
+                    _snap(max(25.4, left - 116.84)),
+                    _snap(max(25.4, center_y + index * 35.56)),
+                    old.rotation,
+                    old.mirror,
+                )
+            }
+        if by_side:
+            clusters[owner] = cid
+    return clusters
+
+
 # --- signal-flow layered placement (topology-based, replaces shelf order) ---
 
 def _signal_edges(ir: CircuitIR, symbols: dict[str, SymbolDef], refs: set[str]):
@@ -316,6 +500,7 @@ def align_chains(
     symbols: dict[str, SymbolDef],
     placements: dict[str, dict[int, Placement]],
     roles: dict[str, str],
+    protected: set[str] | None = None,
 ) -> dict[str, str]:
     """Re-place 2-pin passives that sit on 2-node signal nets so their pins
     face the neighbour across a small gap: series/filter chains (sense R →
@@ -336,6 +521,7 @@ def align_chains(
     field: silent stacked-pin merges + pin_to_pin ERC).
     """
     net_nodes = {net.name: [(r, str(p)) for r, p in net.nodes] for net in ir.nets}
+    protected = protected or set()
     net_of: dict[tuple[str, str], str] = {}
     for name, nodes in net_nodes.items():
         for key in nodes:
@@ -348,6 +534,7 @@ def align_chains(
         sym = symbols[comp.lib_id]
         return (
             not sym.is_power
+            and ref not in protected
             and len(sym.pins) == 2
             and len(placements[ref]) == 1
             and roles.get(ref) not in ("ic", "input")
@@ -462,7 +649,11 @@ def align_chains(
             out = pin_outward_dir(place, src)
             if abs(out[0]) + abs(out[1]) < 0.5:
                 return
-            target = (round(pos[0] + out[0] * _CHAIN_GAP, 4), round(pos[1] + out[1] * _CHAIN_GAP, 4))
+            chain_gap = _CHAIN_GAP
+            target = (
+                round(pos[0] + out[0] * chain_gap, 4),
+                round(pos[1] + out[1] * chain_gap, 4),
+            )
             nxt_sym = symbols[ir.components[nxt[0]].lib_id]
             nxt_pin = nxt_sym.pin(nxt[1])
             if not try_place(nxt[0], nxt_pin, out, target):
@@ -521,14 +712,16 @@ def heuristic_place(
     for items in grouped.values():
         items.sort(key=lambda ru: (role_order.get(roles.get(ru[0], "mid"), 3), ru[0], ru[1]))
 
-    # A2 has ample horizontal space but limited usable height.  Wider tiles
-    # keep repeated motor/encoder sections on fewer rows.  Earlier 145 mm
-    # tiles plus 15.24 mm gaps pushed a 69-part board below the A2 border.
-    TILE_CONTENT_W = 140.0
+    # A2/A3 sheets have ample horizontal space. Adaptive tile width allows single-group
+    # and medium boards to spread horizontally (target aspect ratio ~1.4) instead of
+    # collapsing into a narrow vertical strip.
     SHEET_RIGHT = 570.0
     H_GAP, V_GAP = 7.62, 7.62
 
     def local_tile(items: list[tuple[str, int]]):
+        # Dynamically scale tile width according to part count so 10-20 part circuits
+        # distribute evenly across 2-3 wider rows rather than 5-6 narrow rows.
+        content_w = min(320.0, max(140.0, len(items) * 16.0)) if len(grouped) <= 2 else 140.0
         local: list[tuple[str, int, float, float]] = []
         x = y = 0.0
         row_h = 0.0
@@ -536,7 +729,7 @@ def heuristic_place(
         for ref, unit in items:
             ex, ey = _unit_extent(symbols[ir.components[ref].lib_id], unit)
             width, height = max(2 * ex, 20.32), max(2 * ey, 15.24)
-            if x and x + width > TILE_CONTENT_W:
+            if x and x + width > content_w:
                 x = 0.0
                 y += row_h + 5.08
                 row_h = 0.0
@@ -581,12 +774,11 @@ def heuristic_place(
         width = x - 7.62
         # Connectivity layers can collapse many passive/support parts into
         # one enormous column. Preserve the flow order only while it remains
-        # a readable tile; otherwise the bounded shelf is more informative
-        # than an A1/A2 vertical strip with mostly empty paper.
+        # a readable tile; otherwise the bounded shelf is more informative.
         if (width > SHEET_RIGHT - 50.8
-                or max_h > 160.0
-                or max_h > 2.0 * max(width, 1.0)):
-            return None  # a flow this wide reads worse than the shelf
+                or max_h > 240.0
+                or (max_h > 2.5 * max(width, 1.0) and width < 60.0)):
+            return None  # a flow this tall/narrow reads worse than the shelf
         return local, max(width, 30.48), max_h
 
     def group_key(name: str):
@@ -617,6 +809,12 @@ def heuristic_place(
         tile_x += tile_w + H_GAP
         row_height = max(row_height, tile_h)
         max_bottom = max(max_bottom, tile_y + tile_h)
+
+    # Re-form MCU support circuits that the global shelf/layering necessarily
+    # separated. The returned ownership map is descriptive; unlike a directly
+    # aligned two-pin chain, satellites may still move a grid independently
+    # when two of their labels/stubs collide inside the local arrangement.
+    _localize_dense_ic_support(ir, symbols, placements)
 
     # Local bypass capacitors belong beside the IC they serve, independent of
     # reference order or the global shelf. Choose the first clear cardinal

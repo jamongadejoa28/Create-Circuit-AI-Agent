@@ -50,6 +50,13 @@ def test_rule_selection_uses_types_and_voltage_facts_not_prompt_words():
     assert match_rules(same_voltage, rules) == []
 
 
+def test_draft_rules_do_not_enter_product_synthesis():
+    product = load_rules()
+    research = load_rules(include_unverified=True)
+    assert set(product) == {"ldo_linear_regulator"}
+    assert {"i2c_bus_pullup", "usb_c_sink_cc"} <= set(research)
+
+
 def test_rule_verifier_rejects_input_output_short():
     rule = load_rules()["ldo_linear_regulator"]
     pattern = lower_to_pattern(rule)

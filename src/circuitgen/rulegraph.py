@@ -61,7 +61,16 @@ def validate_rule(rule: dict) -> list[str]:
     return errors
 
 
-def load_rules(directory: str | Path = RULE_DIR) -> dict[str, dict]:
+def load_rules(
+    directory: str | Path = RULE_DIR, *, include_unverified: bool = False
+) -> dict[str, dict]:
+    """Load product rules whose evidence has been reviewed.
+
+    Draft rules remain useful as research artifacts, but must not silently
+    enter synthesis merely because their JSON shape and source *file* exist.
+    ``validate_rule`` checks structure; ``status == verified`` is the separate
+    human evidence gate.
+    """
     rules: dict[str, dict] = {}
     for path in sorted(Path(directory).glob("*.json")):
         rule = json.loads(path.read_text(encoding="utf-8"))
@@ -70,6 +79,8 @@ def load_rules(directory: str | Path = RULE_DIR) -> dict[str, dict]:
             raise ValueError(f"{path.name}: " + "; ".join(problems))
         if rule["id"] in rules:
             raise ValueError(f"duplicate rule id {rule['id']!r}")
+        if rule.get("status") != "verified" and not include_unverified:
+            continue
         rules[rule["id"]] = rule
     return rules
 

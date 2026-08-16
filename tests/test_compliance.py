@@ -6,6 +6,7 @@ KiCad ERC 0.
 """
 
 import json
+import pytest
 
 from circuitgen.compliance import (
     DEVICE_LIMITS_PATH,
@@ -96,6 +97,28 @@ def test_part_numbers_are_extracted_and_protocol_tokens_are_not():
     assert requested_part_numbers(prompt, parts) == ["ESP32-C3", "BME280", "SHT30"]
     # shape alone is not enough — RS485 looks like a part number and is not one
     assert "RS485" in requested_part_numbers(prompt)
+
+
+def test_short_exact_library_id_is_preserved_and_matched():
+    from circuitgen.partindex import PartIndex
+
+    parts = PartIndex()
+    requested = requested_part_numbers(
+        "부품은 Device:LED와 Switch:SW_Push로 선정했습니다.", parts
+    )
+    assert "Device:LED" in requested
+    assert part_present("Device:LED", "Device:LED")
+    assert not part_present("Device:LED", "Device:LED_Small")
+
+
+def test_standard_package_token_is_not_a_requested_part_number():
+    from circuitgen.partindex import PartIndex
+
+    requested = requested_part_numbers(
+        "AMS1117-3.3의 SOT-223 패키지를 사용합니다.", PartIndex()
+    )
+    assert "AMS1117-3" in requested
+    assert "SOT-223" not in requested
 
 
 def test_only_the_prompt_can_create_a_requirement():
@@ -342,9 +365,83 @@ def test_requested_package_mismatch_blocks_ordering():
     assert "SOD-123" in issue.message and "D_DO-35" in issue.message
 
 
+@pytest.mark.parametrize("requested,footprint", [
+    ("HC-49/SD SMD", "Crystal:Crystal_SMD_0603-2Pin_6.0x3.5mm"),
+    ("2x3 Pin Header", "Connector:Tag-Connect_TC2030-IDC-FP_2x03_P1.27mm_Vertical"),
+])
+def test_named_package_families_are_physical_constraints(requested, footprint):
+    symbols = {"Device:X": _two_pin("Device:X", "X")}
+    ir = CircuitIR("package_family")
+    ir.add(Component("X1", "Device:X", "part", footprint))
+    ir.connect("A", ("X1", "1"), ("P1", "1"))
+    ir.connect("B", ("X1", "2"), ("P2", "1"))
+    spec = {"parts_needed": [{
+        "reference": "X1", "role": "x1", "package": requested,
+    }]}
+
+    report = check_compliance(ir, symbols, spec=spec, transcribed=True)
+
+    assert any(i.rule == "requested_package_mismatch" for i in report.errors)
+
+
+def test_connector_family_in_search_query_is_a_physical_constraint():
+    from circuitgen.fp_checks import requested_footprint_constraints, requested_package_text
+
+    requested = requested_package_text({
+        "search_query": "1x2 header", "package": "", "value": "",
+    })
+    _tokens, pitches, families = requested_footprint_constraints(requested)
+    assert families == ["PINHEADER"]
+    assert pitches == [2.54]
+
+
+def test_polarized_cap_without_case_does_not_keep_arbitrary_footprint():
+    from circuitgen.fp_checks import assign_footprints
+
+    class Parts:
+        @staticmethod
+        def has_footprints():
+            return True
+
+    sym = _two_pin("Device:C_Polarized", "C")
+    ir = CircuitIR("bulk_cap")
+    ir.add(Component("C1", "Device:C_Polarized", "250uF", "Capacitor_SMD:C_0805_2012Metric"))
+    notes = assign_footprints(
+        ir, {"Device:C_Polarized": sym}, Parts(),
+        requested_packages={"C1": "SMD electrolytic capacitor 250uF"},
+    )
+    assert ir.components["C1"].footprint == ""
+    assert any("no concrete case size" in note for note in notes)
+
+
 def test_conceptual_placeholder_blocks_ordering():
     ir = CircuitIR("placeholder")
     ir.add(Component("U1", "Conceptual:ESP32_WROOM_32E", "ESP32-WROOM-32E"))
     ir.connect("GND", ("U1", "1"), ("J1", "1"))
     report = check_compliance(ir, {}, spec={}, transcribed=True)
     assert any(i.rule == "conceptual_part_unresolved" for i in report.errors)
+
+
+def test_transcription_reports_provenance_backed_pin_name_conflict():
+    symbols = {
+        "Interface_USB:CH340K": SymbolDef(
+            "Interface_USB:CH340K", "", [
+                PinDef("4", "~{DTR}", PinType.OUTPUT, 0, 0, 0, 2.54),
+            ],
+        )
+    }
+    ir = CircuitIR("ch340")
+    ir.add(Component("U1", "Interface_USB:CH340K", "CH340K", "Package_SO:SSOP-10"))
+    ir.connect("V3", ("U1", "4"))
+    spec = {
+        "parts_needed": [{"reference": "U1", "role": "usb_uart"}],
+        "netlist": [{"name": "V3", "nodes": [{
+            "reference": "U1", "pin": "4", "pin_name": "V3",
+        }]}],
+    }
+
+    report = check_compliance(ir, symbols, spec=spec, transcribed=True)
+
+    assert any(
+        issue.rule == "canonical_pin_binding_conflict" for issue in report.errors
+    )

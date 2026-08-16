@@ -1,0 +1,59 @@
+{
+  "id": "usb_c_sink_cc",
+  "function": "USB Type-C upstream-facing port (UFP/Sink) 5.1kΩ pull-down resistors on CC1 and CC2",
+  "applicability": {
+    "required_part_kinds": {
+      "usb_c_cc_resistor": 2
+    },
+    "forbidden_part_kinds": [],
+    "min_non_ground_rails": 0,
+    "requires_distinct_supply_voltages": false
+  },
+  "roles": {
+    "R_CC1": {
+      "component_kind": "resistor",
+      "requirement_kind": "usb_c_cc_resistor",
+      "lib_id": "Device:R",
+      "parameter": "Rcc",
+      "default_value": "5.1kΩ"
+    },
+    "R_CC2": {
+      "component_kind": "resistor",
+      "requirement_kind": "usb_c_cc_resistor",
+      "lib_id": "Device:R",
+      "parameter": "Rcc",
+      "default_value": "5.1kΩ"
+    }
+  },
+  "ports": {
+    "CC1": {"kind": "signal"},
+    "CC2": {"kind": "signal"},
+    "GND": {"kind": "ground"}
+  },
+  "edges": [
+    {"from": "R_CC1.1", "to": "CC1", "relation": "same_net"},
+    {"from": "R_CC1.2", "to": "GND", "relation": "same_net"},
+    {"from": "R_CC2.1", "to": "CC2", "relation": "same_net"},
+    {"from": "R_CC2.2", "to": "GND", "relation": "same_net"}
+  ],
+  "constraints": {
+    "forbidden_same_net": [
+      ["CC1", "CC2"],
+      ["CC1", "GND"],
+      ["CC2", "GND"]
+    ]
+  },
+  "parameters": {
+    "Rcc": "5.1kΩ ±1% Rd pull-down resistor per USB Type-C Cable and Connector Specification for standard 5V power sink"
+  },
+  "placement": {"inputs": ["CC1", "CC2"], "outputs": ["GND"]},
+  "evidence": {
+    "document": "Practical Electronics for Inventors, 4th Ed. (Scherz & Monk)",
+    "file": "이론지식/Practical-Electronics-for-Inventors_-Fourth-Edition.pdf",
+    "section": "UNVERIFIED — repository source for USB Type-C CC/Rd requirements not yet available",
+    "pdf_page_index": 780,
+    "tier": "A",
+    "provenance": "textbook"
+  },
+  "status": "draft"
+}
