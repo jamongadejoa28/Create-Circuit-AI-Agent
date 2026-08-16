@@ -28,7 +28,13 @@ def main() -> int:
         args.report.parent.mkdir(parents=True, exist_ok=True)
         args.report.write_text(rendered + "\n", encoding="utf-8")
     print(rendered)
-    return 0 if not report["errors"] and not report["duplicates"] and not report["split_leakage"] else 2
+    return 0 if (
+        not report["errors"]
+        and not report["duplicates"]
+        and not report["external_duplicates"]
+        and not report["split_leakage"]
+        and not report["topology_split_leakage"]
+    ) else 2
 
 
 if __name__ == "__main__":

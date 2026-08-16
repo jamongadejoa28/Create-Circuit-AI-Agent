@@ -14,7 +14,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from tests.dataset_tools import adapt_open_schematics_row, adapt_schgen_row
+from tests.dataset_tools import adapt_schgen_row
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCES = ROOT / "tests" / "datasets" / "sources.json"
@@ -42,7 +42,7 @@ def fetch_rows(source: dict, limit: int) -> list[dict]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--source", choices=("microsoft-schgen", "open-schematics"), required=True)
+    parser.add_argument("--source", choices=("microsoft-schgen",), required=True)
     parser.add_argument("--limit", type=int, default=10)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
@@ -50,8 +50,10 @@ def main() -> int:
         parser.error("--limit must be between 1 and 200")
     sources = {entry["id"]: entry for entry in json.loads(SOURCES.read_text(encoding="utf-8"))}
     source = sources[args.source]
-    adapter = adapt_schgen_row if source["adapter"] == "schgen" else adapt_open_schematics_row
-    examples = [adapter(row, revision=source["revision"]) for row in fetch_rows(source, args.limit)]
+    examples = [
+        adapt_schgen_row(row, revision=source["revision"])
+        for row in fetch_rows(source, args.limit)
+    ]
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("w", encoding="utf-8") as output:
         for example in examples:

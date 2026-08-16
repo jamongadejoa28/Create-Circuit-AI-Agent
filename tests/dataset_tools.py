@@ -83,7 +83,6 @@ def canonical_ir(ir: dict | CircuitIR | None) -> dict | None:
         "nc_pins": nc_pins,
     }
 
-
 def circuit_fingerprint(ir: dict | CircuitIR | None) -> str | None:
     canonical = canonical_ir(ir)
     if canonical is None:
@@ -172,7 +171,8 @@ def validate_example(example: dict) -> list[str]:
     declared_split = example.get("split")
     if declared_split not in SPLITS:
         errors.append("split must be train, validation or test")
-    elif provenance.get("source_project") and declared_split != stable_split(provenance["source_project"]):
+    split_group = provenance.get("split_group") or provenance.get("source_project")
+    if declared_split in SPLITS and split_group and declared_split != stable_split(split_group):
         errors.append("split does not match repository-level stable split")
 
     expected = example.get("expected")
@@ -222,7 +222,10 @@ def audit_examples(examples: Iterable[dict]) -> dict:
     errors: dict[str, list[str]] = {}
     fingerprints: dict[str, list[str]] = defaultdict(list)
     projects: dict[str, set[str]] = defaultdict(set)
+    topology_splits: dict[str, set[str]] = defaultdict(set)
     states = Counter()
+    issue_counts = Counter()
+    external_fingerprints: dict[str, list[str]] = defaultdict(list)
     for index, example in enumerate(rows):
         example_id = str(example.get("id") or f"row-{index}")
         problems = validate_example(example)
@@ -230,15 +233,31 @@ def audit_examples(examples: Iterable[dict]) -> dict:
             errors[example_id] = problems
         state = str(example.get("validation", {}).get("review_status", "invalid"))
         states[state] += 1
+        for issue in example.get("validation", {}).get("known_issues", []):
+            issue_counts[str(issue)] += 1
         fingerprint = circuit_fingerprint(example.get("expected", {}).get("canonical_ir"))
         if fingerprint:
             fingerprints[fingerprint].append(example_id)
+            topology_splits[fingerprint].add(str(example.get("split", "")))
+        external_hash = str(
+            example.get("expected", {}).get("external_representation", {}).get("sha256", "")
+        )
+        if external_hash:
+            external_fingerprints[external_hash].append(example_id)
         project = str(example.get("provenance", {}).get("source_project", ""))
         split = str(example.get("split", ""))
         if project and split:
             projects[project].add(split)
     duplicates = [ids for ids in fingerprints.values() if len(ids) > 1]
+    external_duplicates = [
+        ids for ids in external_fingerprints.values() if len(ids) > 1
+    ]
     leakage = {project: sorted(splits) for project, splits in projects.items() if len(splits) > 1}
+    topology_leakage = {
+        fingerprint: sorted(splits)
+        for fingerprint, splits in topology_splits.items()
+        if len(splits) > 1
+    }
     accepted = [
         str(row.get("id")) for row in rows
         if row.get("validation", {}).get("review_status") == "accepted"
@@ -251,7 +270,17 @@ def audit_examples(examples: Iterable[dict]) -> dict:
         "states": dict(sorted(states.items())),
         "errors": errors,
         "duplicates": duplicates,
+        "external_duplicates": external_duplicates,
         "split_leakage": leakage,
+        "topology_split_leakage": topology_leakage,
+        # A schema-clean candidate is still quarantined.  Keep the actual
+        # reasons visible so a 100-row fetch cannot be mistaken for 100 usable
+        # training examples.
+        "known_issue_counts": dict(sorted(issue_counts.items())),
+        "quarantined": sum(
+            1 for row in rows
+            if row.get("validation", {}).get("review_status") == "candidate"
+        ),
         "accepted_ids": accepted,
     }
 
@@ -325,6 +354,9 @@ def adapt_schgen_row(row: dict, *, revision: str = "unknown") -> dict:
             "relative_placement_constraints": [],
             "external_representation": {
                 "kind": "schgen-python", "sha256": hashlib.sha256(code.encode()).hexdigest(),
+                "bytes": len(code.encode("utf-8")),
+                "schematic": _text(meta.get("schematic")),
+                "style": _text(meta.get("style")),
             },
         },
         "validation": {
@@ -332,42 +364,5 @@ def adapt_schgen_row(row: dict, *, revision: str = "unknown") -> dict:
             "symbol_binding_ok": False, "netlist_round_trip_ok": False,
             "render_ok": False,
             "known_issues": ["requires sandboxed code conversion", "upstream project license unverified"],
-        },
-    }
-
-
-def adapt_open_schematics_row(row: dict, *, revision: str = "unknown") -> dict:
-    """Create a quarantined candidate without storing the large raw CAD blob."""
-    project = _text(row.get("name")) or "unknown"
-    description = _text(row.get("description"))
-    schematic = _text(row.get("schematic"))
-    example_id = "open-sch-" + hashlib.sha256((project + schematic[:512]).encode()).hexdigest()[:16]
-    return {
-        "schema_version": SCHEMA_VERSION,
-        "id": example_id,
-        "split": stable_split(project),
-        "provenance": {
-            "dataset": "bshada/open-schematics", "source_project": project,
-            "license": "CC-BY-4.0-dataset; verify-upstream-project-license",
-            "source_revision": revision, "extraction_tool": "open-schematics-adapter",
-            "kicad_version": "mixed",
-        },
-        "input": {"prompt": description or f"Reconstruct the schematic from {project}", "mode": "design"},
-        "requirements": {},
-        "expected": {
-            "canonical_ir": None,
-            "physical_bindings": [], "design_rules": [],
-            "relative_placement_constraints": [],
-            "external_representation": {
-                "kind": "kicad-schematic",
-                "sha256": hashlib.sha256(schematic.encode()).hexdigest() if schematic else "",
-                "components_used": row.get("components_used") or [],
-            },
-        },
-        "validation": {
-            "review_status": "candidate", "parse_ok": False,
-            "symbol_binding_ok": False, "netlist_round_trip_ok": False,
-            "render_ok": False,
-            "known_issues": ["raw CAD not converted", "upstream project license unverified"],
         },
     }

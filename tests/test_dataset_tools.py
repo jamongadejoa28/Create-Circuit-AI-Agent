@@ -2,7 +2,6 @@ import json
 from pathlib import Path
 
 from tests.dataset_tools import (
-    adapt_open_schematics_row,
     adapt_schgen_row,
     audit_examples,
     circuit_fingerprint,
@@ -72,6 +71,7 @@ def test_audit_detects_duplicate_circuits_and_repository_split_leakage():
     report = audit_examples([one, two, three])
     assert any(set(group) >= {"one", "two"} for group in report["duplicates"])
     assert report["split_leakage"]["vendor/project"] == sorted({one["split"], three["split"]})
+    assert report["topology_split_leakage"]
 
 
 def test_stable_split_is_repository_level_and_deterministic():
@@ -79,7 +79,7 @@ def test_stable_split_is_repository_level_and_deterministic():
     assert stable_split("owner/repo") in {"train", "validation", "test"}
 
 
-def test_external_adapters_quarantine_code_and_raw_cad():
+def test_schgen_adapter_quarantines_external_code():
     schgen = adapt_schgen_row({
         "messages": [
             {"role": "user", "content": "make a test point"},
@@ -87,15 +87,27 @@ def test_external_adapters_quarantine_code_and_raw_cad():
         ],
         "meta": {"module": "SparkFun/Board"},
     }, revision="abc")
-    opened = adapt_open_schematics_row({
-        "name": "owner/repo", "description": "UART board",
-        "schematic": "(kicad_sch ...)", "components_used": ["R", "C"],
-    }, revision="def")
     assert schgen["expected"]["canonical_ir"] is None
     assert schgen["validation"]["review_status"] == "candidate"
     assert schgen["expected"]["external_representation"]["kind"] == "schgen-python"
-    assert opened["expected"]["external_representation"]["kind"] == "kicad-schematic"
-    assert "(kicad_sch" not in json.dumps(opened)
+    assert schgen["expected"]["external_representation"]["bytes"] > 0
+
+
+def test_audit_reports_quarantine_reasons_and_external_duplicates():
+    row = {
+        "messages": [
+            {"role": "user", "content": "make a test point"},
+            {"role": "assistant", "content": "print('same code')"},
+        ],
+        "meta": {"module": "owner/project"},
+    }
+    one = adapt_schgen_row(row, revision="abc")
+    two = adapt_schgen_row(row, revision="abc")
+    two["id"] = "second-copy"
+    report = audit_examples([one, two])
+    assert report["quarantined"] == 2
+    assert report["known_issue_counts"]["requires sandboxed code conversion"] == 2
+    assert any(set(group) == {one["id"], "second-copy"} for group in report["external_duplicates"])
 
 
 def test_kicad_exported_netlist_converts_to_canonical_ir(tmp_path):

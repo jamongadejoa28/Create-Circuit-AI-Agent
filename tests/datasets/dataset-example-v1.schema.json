@@ -18,6 +18,7 @@
         "source_project": {"type": "string", "minLength": 1},
         "license": {"type": "string", "minLength": 1},
         "source_revision": {"type": "string", "minLength": 1},
+        "split_group": {"type": "string", "minLength": 1},
         "extraction_tool": {"type": "string", "minLength": 1},
         "kicad_version": {"type": "string", "minLength": 1}
       }
