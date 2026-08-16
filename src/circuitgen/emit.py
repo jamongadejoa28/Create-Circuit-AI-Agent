@@ -72,6 +72,14 @@ def route_metrics(ir: CircuitIR, symbols: dict[str, SymbolDef], plan: EmitPlan) 
         )
     ]
     wired = [n for n in signal if plan.net_routes.get(n) in ("direct", "l", "tree")]
+    power = [
+        net.name for net in ir.nets
+        if len(net.nodes) >= 2 and any(
+            symbols[ir.components[r].lib_id].is_power
+            for r, _p in net.nodes
+            if r in ir.components and ir.components[r].lib_id in symbols
+        )
+    ]
     return {
         "signal_nets": len(signal),
         "wired_nets": len(wired),
@@ -82,6 +90,11 @@ def route_metrics(ir: CircuitIR, symbols: dict[str, SymbolDef], plan: EmitPlan) 
             kind: sum(1 for n in signal if plan.net_routes.get(n) == kind)
             for kind in ("direct", "l", "tree", "stubs")
         },
+        "power_nets": len(power),
+        "wired_power_nets": sum(
+            1 for n in power if plan.net_routes.get(n) in ("direct", "l", "tree")
+        ),
+        "stub_power_nets": sum(1 for n in power if plan.net_routes.get(n) == "stubs"),
     }
 
 
@@ -325,7 +338,7 @@ def _try_tree_wire(ir, symbols, placements, net, pin_pts, boxes, corridors, rout
     if not (2 <= len(net.nodes) <= TREE_MAX_NODES):
         return None
     if any(symbols[ir.components[r].lib_id].is_power for r, _p in net.nodes):
-        return None  # rails keep the power-symbol + stub convention
+        return None  # power annotations use explicit connector attachment
     own_pins = {(r, str(p)) for r, p in net.nodes}
     terms = []
     for ref, pin_no in net.nodes:
@@ -492,6 +505,7 @@ def build_emit_plan(
     corridors = _stub_corridors(ir, symbols, placements)
     routed_cells: set[tuple[float, float]] = set()
     for net in ir.nets:
+        net_wire_start = len(plan.wires)
         direct = _try_direct_wire(ir, symbols, placements, net)
         if direct is not None:
             (x1, y1), (x2, y2) = direct
@@ -545,6 +559,23 @@ def build_emit_plan(
             units_map = placements[ref]
             place = units_map[_instance_unit(pin, units_map, ref)]
             start, end = pin_stub_end(place, pin, STUB_LEN)
+            # A power symbol deliberately placed on an already-emitted real
+            # member stub is electrically connected at that point. Emitting
+            # another stub+label from it creates the floating-looking vertical
+            # VCC/GND/PWR_FLAG text stack the placement was meant to remove.
+            if sym.is_power and any(
+                tag.startswith(f"{other_ref}.")
+                and other_ref != ref
+                and (
+                    min(a[0], b[0]) - .01 <= start[0] <= max(a[0], b[0]) + .01
+                    and min(a[1], b[1]) - .01 <= start[1] <= max(a[1], b[1]) + .01
+                    and abs((b[0] - a[0]) * (start[1] - a[1])
+                            - (b[1] - a[1]) * (start[0] - a[0])) < .02
+                )
+                for a, b, tag in plan.wires[net_wire_start:]
+                for other_ref in [tag.rpartition(".")[0]]
+            ):
+                continue
             plan.wires.append((start, end, f"{ref}.{pin_no}"))
             dx, dy = pin_outward_dir(place, pin)
             rot, justify = _label_orientation(dx, dy)
@@ -742,7 +773,10 @@ def emit_schematic(
                 ref_xy = (place.x + 2.54, place.y - 2.54)
                 val_xy = (place.x + 2.54, place.y + 2.54)
             w(_property("Reference", ref, *ref_xy, hide=sym.is_power))
-            w(_property("Value", comp.value, *val_xy, hide=False))
+            w(_property(
+                "Value", comp.value, *val_xy,
+                hide=comp.lib_id == "power:PWR_FLAG",
+            ))
             w(_property("Footprint", comp.footprint, place.x, place.y, hide=True))
             w(_property("Datasheet", "", place.x, place.y, hide=True))
             w(_property("Description", "", place.x, place.y, hide=True))

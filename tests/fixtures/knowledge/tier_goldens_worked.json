@@ -28,7 +28,7 @@
     ],
     "source": {
       "book": "circuitgen golden fixtures (kicad-cli ERC-verified)",
-      "section": "examples.py (golden 1)",
+      "section": "tests/fixtures/examples.py (golden 1)",
       "tier": "A",
       "provenance": "internal-fixture"
     },
@@ -73,7 +73,7 @@
     ],
     "source": {
       "book": "circuitgen golden fixtures (kicad-cli ERC-verified)",
-      "section": "goldens.py",
+      "section": "tests/fixtures/goldens.py",
       "tier": "A",
       "provenance": "internal-fixture"
     },
@@ -116,7 +116,7 @@
     ],
     "source": {
       "book": "circuitgen golden fixtures (kicad-cli ERC-verified)",
-      "section": "goldens.py",
+      "section": "tests/fixtures/goldens.py",
       "tier": "A",
       "provenance": "internal-fixture"
     },
@@ -160,7 +160,7 @@
     ],
     "source": {
       "book": "circuitgen golden fixtures (kicad-cli ERC-verified)",
-      "section": "goldens.py",
+      "section": "tests/fixtures/goldens.py",
       "tier": "A",
       "provenance": "internal-fixture"
     },
@@ -202,7 +202,7 @@
     ],
     "source": {
       "book": "circuitgen golden fixtures (kicad-cli ERC-verified)",
-      "section": "goldens.py",
+      "section": "tests/fixtures/goldens.py",
       "tier": "A",
       "provenance": "internal-fixture"
     },
@@ -239,7 +239,7 @@
     ],
     "source": {
       "book": "circuitgen golden fixtures (kicad-cli ERC-verified)",
-      "section": "goldens.py",
+      "section": "tests/fixtures/goldens.py",
       "tier": "A",
       "provenance": "internal-fixture"
     },
@@ -275,7 +275,7 @@
     ],
     "source": {
       "book": "circuitgen golden fixtures (kicad-cli ERC-verified)",
-      "section": "goldens.py",
+      "section": "tests/fixtures/goldens.py",
       "tier": "A",
       "provenance": "internal-fixture"
     },
@@ -311,7 +311,7 @@
     ],
     "source": {
       "book": "circuitgen golden fixtures (kicad-cli ERC-verified)",
-      "section": "goldens.py",
+      "section": "tests/fixtures/goldens.py",
       "tier": "A",
       "provenance": "internal-fixture"
     },
@@ -347,7 +347,7 @@
     ],
     "source": {
       "book": "circuitgen golden fixtures (kicad-cli ERC-verified)",
-      "section": "goldens.py",
+      "section": "tests/fixtures/goldens.py",
       "tier": "A",
       "provenance": "internal-fixture"
     },
@@ -383,7 +383,7 @@
     ],
     "source": {
       "book": "circuitgen golden fixtures (kicad-cli ERC-verified)",
-      "section": "goldens.py",
+      "section": "tests/fixtures/goldens.py",
       "tier": "A",
       "provenance": "internal-fixture"
     },

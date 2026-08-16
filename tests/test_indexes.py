@@ -44,6 +44,18 @@ def test_search_finds_canonical_parts(small_part_index):
     assert any(h.startswith("74xx:74") for h in hits)
 
 
+def test_exact_symbol_lookup_bypasses_fts_tokenization(small_part_index):
+    assert small_part_index.exact_symbol_ids("LED") == ["Device:LED"]
+    assert small_part_index.exact_symbol_ids("not-a-real-symbol") == []
+
+
+def test_exact_library_id_is_verified_without_fuzzy_search(small_part_index):
+    assert small_part_index.exact_lib_id("Device:LED") == "Device:LED"
+    assert small_part_index.exact_lib_id("device:led") == "Device:LED"
+    assert small_part_index.exact_lib_id("Nope:LED") is None
+    assert small_part_index.exact_lib_id("LED") is None
+
+
 def test_search_results_are_trimmed(small_part_index):
     hit = small_part_index.search_parts("resistor", limit=1)[0]
     assert "raw" not in hit and "sexp" not in str(hit).lower()
@@ -75,6 +87,17 @@ def test_knowledge_entries_valid():
     assert len(entries) >= 8
     ids = {e["id"] for e in entries}
     assert {"decoupling-cap-per-ic", "pullup-resistor-sizing", "led-series-resistor"} <= ids
+    assert all(e["source"].get("provenance") == "textbook" for e in entries)
+
+
+def test_internal_fixture_cannot_enter_production_knowledge(tmp_path):
+    fixture_dir = Path(__file__).resolve().parent / "fixtures" / "knowledge"
+    with pytest.raises(ValueError, match="cannot be indexed as production knowledge"):
+        load_entries(fixture_dir)
+    archived = load_entries(fixture_dir, allow_internal_fixtures=True)
+    assert archived and all(
+        e["source"].get("provenance") == "internal-fixture" for e in archived
+    )
 
 
 def test_knowledge_search(tmp_path):

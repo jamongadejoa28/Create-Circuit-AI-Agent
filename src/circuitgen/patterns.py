@@ -1,4 +1,4 @@
-"""CircuitPattern: textbook circuits as parameterized, executable IR subgraphs.
+"""CircuitPattern: cited circuits as parameterized, executable IR subgraphs.
 
 The knowledge base stores short cited statements — good for prompting, but a
 model cannot reuse a schematic from a sentence. A pattern stores what the
@@ -24,6 +24,10 @@ Pattern JSON (data/patterns/*.json):
   placement     hints (inputs/outputs lists) for future topology placement
   source        verified citation {book, section, pdf_page_index, tier}
   status        "verified" | "draft"
+
+Production patterns must cite repository-backed textbook evidence.  Archived
+ERC/golden outputs live under tests/fixtures and require an explicit opt-in;
+they may exercise this engine but can never act as design authority.
 """
 
 from __future__ import annotations
@@ -72,7 +76,7 @@ def _role_pins(pattern: dict, role: str) -> dict | None:
     return None
 
 
-def validate_pattern(pattern: dict) -> list[str]:
+def validate_pattern(pattern: dict, *, allow_internal_fixtures: bool = False) -> list[str]:
     errors: list[str] = []
     for key in ("id", "roles", "ports", "topology", "source", "status"):
         if key not in pattern:
@@ -111,23 +115,27 @@ def validate_pattern(pattern: dict) -> list[str]:
     for src_key in ("book", "section"):
         if not src.get(src_key):
             errors.append(f"source.{src_key} is required (no uncited patterns)")
-    # A pattern derived from our own ERC-verified fixture is legitimate, but it
-    # must not be indistinguishable from a textbook citation: every entry used
-    # to claim "tier A" regardless of origin, which made circular authority
-    # invisible to review.
     provenance = src.get("provenance")
-    if provenance not in ("textbook", "internal-fixture"):
-        errors.append("source.provenance must be 'textbook' or 'internal-fixture'")
+    if provenance == "internal-fixture" and not allow_internal_fixtures:
+        errors.append("internal-fixture patterns are test artifacts, not production knowledge")
+    elif provenance != "textbook" and not (
+        allow_internal_fixtures and provenance == "internal-fixture"
+    ):
+        errors.append("source.provenance must be 'textbook'")
     elif provenance == "textbook" and not src.get("pdf_page_index"):
         errors.append("source.pdf_page_index is required for a textbook citation")
     return errors
 
 
-def load_patterns(directory: str | Path = PATTERN_DIR) -> dict[str, dict]:
+def load_patterns(
+    directory: str | Path = PATTERN_DIR, *, allow_internal_fixtures: bool = False
+) -> dict[str, dict]:
     patterns: dict[str, dict] = {}
     for path in sorted(Path(directory).glob("*.json")):
         pattern = json.loads(path.read_text(encoding="utf-8"))
-        problems = validate_pattern(pattern)
+        problems = validate_pattern(
+            pattern, allow_internal_fixtures=allow_internal_fixtures
+        )
         if problems:
             raise ValueError(f"{path.name}: " + "; ".join(problems))
         patterns[pattern["id"]] = pattern

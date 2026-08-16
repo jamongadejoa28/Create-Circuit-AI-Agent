@@ -37,7 +37,10 @@ def ir_from_json(data: dict, notes: list[str] | None = None) -> CircuitIR:
                 )
             ref = f"{base}{index}"
         seen.add(ref)
-        ir.add(Component(ref, c["lib_id"], c.get("value", ""), c.get("footprint", ""), c.get("group", "")))
+        ir.add(Component(
+            ref, c["lib_id"], c.get("value", ""), c.get("footprint", ""),
+            c.get("group", ""), c.get("binding_error", ""),
+        ))
     for n in data.get("nets", []):
         ir.connect(n["name"], *[(nd["ref"], str(nd["pin"])) for nd in n["nodes"]])
     ir.nc_pins = [(nc["ref"], str(nc["pin"])) for nc in data.get("nc_pins", [])]
@@ -49,7 +52,8 @@ def ir_to_json(ir: CircuitIR) -> dict:
         "name": ir.name,
         "components": [
             {"ref": c.ref, "lib_id": c.lib_id, "value": c.value, "footprint": c.footprint,
-             **({"group": c.group} if c.group else {})}
+             **({"group": c.group} if c.group else {}),
+             **({"binding_error": c.binding_error} if c.binding_error else {})}
             for c in ir.components.values()
         ],
         "nets": [

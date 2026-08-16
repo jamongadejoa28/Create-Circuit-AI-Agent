@@ -30,14 +30,20 @@ oracle = pytest.mark.skipif(
     reason="kicad-cli.exe / bundled libraries not available",
 )
 
-OUT = Path(__file__).resolve().parent.parent / "out" / "tests" / "patterns"
+OUT = Path(__file__).resolve().parent / "artifacts" / "generated" / "patterns"
+FIXTURE_PATTERN_DIR = Path(__file__).resolve().parent / "fixtures" / "patterns"
 
 
 def test_seed_patterns_load_and_validate():
     patterns = load_patterns(PATTERN_DIR)
-    assert {"noninverting_amplifier", "inverting_amplifier",
-            "rc_lowpass_filter", "ldo_linear_regulator",
-            "i2c_temperature_sensor"} <= set(patterns)
+    assert {
+        "noninverting_amplifier", "inverting_amplifier",
+        "rc_lowpass_filter", "relay_driver",
+    } <= set(patterns)
+    assert not any(
+        p["source"].get("provenance") == "internal-fixture"
+        for p in patterns.values()
+    )
     for p in patterns.values():
         assert validate_pattern(p) == []
         assert p["source"]["book"] and p["source"]["section"]
@@ -63,14 +69,29 @@ def test_validate_rejects_broken_patterns():
     }
     assert any("explicit hub roles" in e for e in validate_pattern(unsafe_partial))
 
+    internal = {
+        "id": "fixture", "roles": {}, "ports": [], "topology": [],
+        "source": {
+            "book": "test output", "section": "fixture",
+            "provenance": "internal-fixture",
+        },
+        "status": "verified",
+    }
+    assert any("test artifacts" in e for e in validate_pattern(internal))
+    assert validate_pattern(internal, allow_internal_fixtures=True) == []
+
 
 def test_match_patterns_by_keyword():
     patterns = load_patterns(PATTERN_DIR)
     hits = match_patterns("5V 비반전 증폭 회로를 만들어줘", patterns)
     assert [p["id"] for p in hits] == ["noninverting_amplifier"]
     assert match_patterns("just an MCU board", patterns) == []
-    assert [p["id"] for p in match_patterns(
+    assert match_patterns(
         "MCU에 I2C 온도센서를 연결해줘. 풀업과 디커플링 포함", patterns
+    ) == []
+    fixtures = load_patterns(FIXTURE_PATTERN_DIR, allow_internal_fixtures=True)
+    assert [p["id"] for p in match_patterns(
+        "MCU에 I2C 온도센서를 연결해줘. 풀업과 디커플링 포함", fixtures
     )] == ["i2c_temperature_sensor"]
 
 
@@ -98,7 +119,9 @@ def bind_pattern(pattern, role_symbols):
 
 @oracle
 def test_i2c_pattern_binds_verified_mcu_sensor_pair():
-    pattern = load_patterns(PATTERN_DIR)["i2c_temperature_sensor"]
+    pattern = load_patterns(
+        FIXTURE_PATTERN_DIR, allow_internal_fixtures=True
+    )["i2c_temperature_sensor"]
     lib_ids = {role: spec["lib_id"] for role, spec in pattern["roles"].items()}
     symbols = load_symbols(sorted(set(lib_ids.values())))
     binding, errors = bind_pattern(
@@ -189,8 +212,9 @@ def test_noninverting_amplifier_binds_instantiates_and_roundtrips():
 
 @oracle
 def test_ldo_pattern_binds_ams1117():
-    patterns = load_patterns(PATTERN_DIR)
-    pattern = patterns["ldo_linear_regulator"]
+    from circuitgen.rulegraph import load_rules, lower_to_pattern
+
+    pattern = lower_to_pattern(load_rules()["ldo_linear_regulator"])
     lib_ids = {"REG": "Regulator_Linear:AMS1117-3.3", "CIN": "Device:C", "COUT": "Device:C"}
     symbols = load_symbols(sorted(set(lib_ids.values())))
     binding, errors = bind_pattern(
@@ -238,7 +262,7 @@ def test_relay_driver_binds_and_verifies():
 
 @oracle
 def test_led_switch_pattern_binds_and_verifies():
-    patterns = load_patterns(PATTERN_DIR)
+    patterns = load_patterns(FIXTURE_PATTERN_DIR, allow_internal_fixtures=True)
     pattern = patterns["led_switch_indicator"]
     lib_ids = {"SW": "Switch:SW_Push", "R": "Device:R", "D": "Device:LED"}
     symbols = load_symbols(sorted(set(lib_ids.values())))

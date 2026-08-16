@@ -208,3 +208,27 @@ def test_a_two_pin_connector_is_not_a_path_between_its_pins():
     ir.connect("CANL", ("U2", "6"), ("R1", "2"), ("J1", "2"))
     report = analyze_conduction(ir, SYMS)
     assert report.dead == {}, report.dead
+
+
+def test_parallel_passive_branches_are_not_mistaken_for_one_potential():
+    """A relay flyback diode and indicator branch share both endpoints.
+
+    Removing one branch leaves its two ends reachable through the other. That
+    proves a loop exists, not that both nets have equal voltage.
+    """
+    relay = "Relay:Generic"
+    SYMS[relay] = _sym(relay, "K", [
+        ("1", "Coil+", PinType.PASSIVE), ("2", "Coil-", PinType.PASSIVE),
+        ("3", "COM", PinType.PASSIVE), ("4", "NO", PinType.PASSIVE),
+    ])
+    ir = CircuitIR("parallel")
+    ir.add(Component("K1", relay, "5V relay"))
+    ir.add(Component("D1", "Diode:1N4148", "1N4148"))
+    ir.add(Component("R1", "Device:R", "1k"))
+    ir.add(Component("D2", "Diode:1N4148", "LED"))
+    ir.connect("VCC", ("K1", "1"), ("D1", "1"), ("R1", "1"))
+    ir.connect("COIL", ("K1", "2"), ("D1", "2"), ("D2", "2"))
+    ir.connect("LED", ("R1", "2"), ("D2", "1"))
+    # Contact pins are deliberately absent on a transcribed circuit.
+    report = analyze_conduction(ir, SYMS, every_pin=False)
+    assert not ({"D1", "D2", "R1"} & set(report.dead)), report.dead

@@ -1,0 +1,75 @@
+{
+  "id": "ldo_linear_regulator",
+  "function": "Series linear regulator with input bypass and output stability capacitor",
+  "applicability": {
+    "required_part_kinds": {
+      "voltage_regulator": 1,
+      "input_bypass_capacitor": 1,
+      "output_bypass_capacitor": 1
+    },
+    "forbidden_part_kinds": ["shunt_voltage_reference"],
+    "min_non_ground_rails": 2,
+    "requires_distinct_supply_voltages": true
+  },
+  "roles": {
+    "REG": {
+      "component_kind": "regulator",
+      "requirement_kind": "voltage_regulator",
+      "catalog_query": "regulator",
+      "pins": {
+        "IN": {"names": ["IN", "VIN", "VI", "INPUT"]},
+        "OUT": {"names": ["OUT", "VOUT", "VO", "OUTPUT"]},
+        "GND": {"names": ["GND", "VSS", "0V"]}
+      }
+    },
+    "CIN": {
+      "component_kind": "capacitor",
+      "requirement_kind": "input_bypass_capacitor",
+      "lib_id": "Device:C",
+      "parameter": "Cin",
+      "default_value": "100nF"
+    },
+    "COUT": {
+      "component_kind": "capacitor",
+      "requirement_kind": "output_bypass_capacitor",
+      "lib_id": "Device:C",
+      "parameter": "Cout",
+      "default_value": "100nF"
+    }
+  },
+  "ports": {
+    "VIN": {"kind": "power_input", "rail_selector": "highest_supply"},
+    "VOUT": {"kind": "power_output", "rail_selector": "lowest_supply"},
+    "GND": {"kind": "ground"}
+  },
+  "edges": [
+    {"from": "VIN", "to": "REG.IN", "relation": "same_net"},
+    {"from": "REG.OUT", "to": "VOUT", "relation": "same_net"},
+    {"from": "REG.GND", "to": "GND", "relation": "same_net"},
+    {"from": "CIN.1", "to": "VIN", "relation": "same_net"},
+    {"from": "CIN.2", "to": "GND", "relation": "same_net"},
+    {"from": "COUT.1", "to": "VOUT", "relation": "same_net"},
+    {"from": "COUT.2", "to": "GND", "relation": "same_net"}
+  ],
+  "constraints": {
+    "forbidden_same_net": [
+      ["REG.IN", "REG.OUT"],
+      ["REG.IN", "REG.GND"],
+      ["REG.OUT", "REG.GND"]
+    ]
+  },
+  "parameters": {
+    "Cin": "100nF near the regulator when the selected device datasheet does not require another value",
+    "Cout": "100nF or larger for output spike removal; selected-device stability requirements take precedence"
+  },
+  "placement": {"inputs": ["VIN"], "outputs": ["VOUT"]},
+  "evidence": {
+    "document": "Practical Electronics for Inventors, 4th Ed. (Scherz & Monk)",
+    "file": "이론지식/Practical-Electronics-for-Inventors_-Fourth-Edition.pdf",
+    "section": "11.1.2 Fixed Regulator with Output; Cin/Cout guidance immediately before 11.1.3",
+    "pdf_page_index": 1135,
+    "tier": "A",
+    "provenance": "textbook"
+  },
+  "status": "verified"
+}

@@ -320,6 +320,42 @@ class PartIndex:
             for r in rows
         ]
 
+    def exact_symbol_ids(self, name: str) -> list[str]:
+        """Catalog IDs whose symbol name exactly equals ``name``.
+
+        FTS tokenization treats punctuation in ordering codes as operators,
+        so exact names such as ``NE555D`` and ``ATmega328P-AU`` can be absent
+        from otherwise sensible searches. Transcription already has the part
+        identity; it should not replace it with a fuzzy neighbor.
+        """
+        text = (name or "").strip()
+        if not text:
+            return []
+        rows = self.con.execute(
+            """
+            SELECT lib_id FROM symbols
+            WHERE lower(name) = lower(?) AND unit0_mix = 0
+            ORDER BY priority, pin_count, lib_id
+            """,
+            (text,),
+        ).fetchall()
+        return [str(row["lib_id"]) for row in rows]
+
+    def exact_lib_id(self, lib_id: str) -> str | None:
+        """Return a catalog lib_id only when the full ``Library:Symbol`` exists."""
+        text = (lib_id or "").strip()
+        if ":" not in text:
+            return None
+        # A verified full ID may name a single-unit symbol whose common power
+        # pins live in unit 0 (Timer:NE555D). The emitter supports that case;
+        # fuzzy search still excludes unit0_mix so it cannot accidentally pick
+        # a structurally unusual symbol.
+        row = self.con.execute(
+            "SELECT lib_id FROM symbols WHERE lower(lib_id) = lower(?)",
+            (text,),
+        ).fetchone()
+        return str(row["lib_id"]) if row else None
+
     def _prefix_fallback(self, query: str, limit: int) -> list:
         """Part-number prefix search when FTS misses.
 

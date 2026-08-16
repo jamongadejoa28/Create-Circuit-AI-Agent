@@ -9,8 +9,8 @@ from pathlib import Path
 
 from circuitgen.knowledge import DEFAULT_DB, KnowledgeIndex
 
-ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_CASES = ROOT / "data" / "eval" / "knowledge_retrieval.json"
+ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_CASES = ROOT / "tests" / "eval" / "knowledge_retrieval.json"
 
 
 def evaluate(index: KnowledgeIndex, cases: list[dict], top_k: int) -> tuple[dict, list[dict]]:

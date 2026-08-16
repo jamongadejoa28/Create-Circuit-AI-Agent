@@ -7,7 +7,7 @@ import pytest
 
 from circuitgen.audit import approve_final, is_finally_approved, load_record, sha256_file, sha256_tree
 from circuitgen.emit import emit_schematic
-from circuitgen.examples import GOLDEN_PLACEMENTS, golden_led_button_ir
+from tests.fixtures.examples import GOLDEN_PLACEMENTS, golden_led_button_ir
 from circuitgen.kicad_cli import KICAD_CLI
 from circuitgen.normalize import ensure_pwr_flags
 from circuitgen.symbols import KICAD_SYMBOL_DIR, load_symbols

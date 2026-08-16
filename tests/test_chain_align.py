@@ -20,7 +20,7 @@ pytestmark = pytest.mark.skipif(
     reason="kicad-cli.exe / bundled libraries not available",
 )
 
-OUT = Path(__file__).resolve().parent.parent / "out" / "tests" / "chain"
+OUT = Path(__file__).resolve().parent / "artifacts" / "generated" / "chain"
 
 
 def _board() -> CircuitIR:

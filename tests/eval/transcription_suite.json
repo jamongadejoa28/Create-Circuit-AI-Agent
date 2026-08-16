@@ -1,0 +1,127 @@
+[
+  {
+    "id": "ldo_korean_pin_numbers",
+    "form": "korean, pin numbers, grouped references",
+    "prompt": "[부품]\nJ1: 2핀 입력 커넥터\nU1: AMS1117-3.3\nC1: 10uF, C2: 22uF, C3/C4: 100nF\nR1: 1kΩ\nD1: Green LED\nJ2: 1x2 출력 헤더\n[연결 명세 (Net List)]\n- Net 'VIN': J1 Pin 1, U1 Pin 3, C1 Pin 1, C3 Pin 1\n- Net 'GND': J1 Pin 2, J2 Pin 2, U1 Pin 1, C1/C2/C3/C4 Pin 2, D1 K\n- Net '3V3': U1 Pin 2, C2 Pin 1, C4 Pin 1, R1 Pin 1, J2 Pin 1\n- Net 'LED_NET': R1 Pin 2, D1 A",
+    "expected": {
+      "parts": [
+        {"reference": "J1", "part": "2-pin connector", "value": ""},
+        {"reference": "U1", "part": "AMS1117-3.3", "value": ""},
+        {"reference": "C1", "part": "capacitor", "value": "10uF"},
+        {"reference": "C2", "part": "capacitor", "value": "22uF"},
+        {"reference": "C3", "part": "capacitor", "value": "100nF"},
+        {"reference": "C4", "part": "capacitor", "value": "100nF"},
+        {"reference": "R1", "part": "resistor", "value": "1kΩ"},
+        {"reference": "D1", "part": "LED", "value": "Green LED"},
+        {"reference": "J2", "part": "1x2 pin header", "value": ""}
+      ],
+      "netlist": [
+        {"name": "VIN", "nodes": [["J1", "1"], ["U1", "3"], ["C1", "1"], ["C3", "1"]]},
+        {"name": "GND", "nodes": [["J1", "2"], ["J2", "2"], ["U1", "1"], ["C1", "2"], ["C2", "2"], ["C3", "2"], ["C4", "2"], ["D1", "K"]]},
+        {"name": "3V3", "nodes": [["U1", "2"], ["C2", "1"], ["C4", "1"], ["R1", "1"], ["J2", "1"]]},
+        {"name": "LED_NET", "nodes": [["R1", "2"], ["D1", "A"]]}
+      ]
+    }
+  },
+  {
+    "id": "ne555_mixed_pin_labels",
+    "form": "mixed numeric and named pins",
+    "prompt": "Parts: J1 1x2 header; U1 NE555D; R1 1k, R2 100k, R3 330R; C1 10uF, C2 10nF; D1 red LED.\nNetlist:\nVCC: J1(1), U1(8:VCC), U1(4:RESET), R1(1)\nGND: J1(2), U1(1:GND), C1(2), C2(2), D1(K)\nDISCHARGE: R1(2), R2(1), U1(7:DISCH)\nTRIGGER_THRESH: R2(2), U1(2:TRIG), U1(6:THRESH), C1(1)\nCTRL_FILT: U1(5:CTRL), C2(1)\nTIMER_OUT: U1(3:OUT), R3(1)\nLED_ANODE: R3(2), D1(A)",
+    "expected": {
+      "parts": [
+        {"reference": "J1", "part": "1x2 header", "value": ""},
+        {"reference": "U1", "part": "NE555D", "value": ""},
+        {"reference": "R1", "part": "resistor", "value": "1k"},
+        {"reference": "R2", "part": "resistor", "value": "100k"},
+        {"reference": "R3", "part": "resistor", "value": "330R"},
+        {"reference": "C1", "part": "capacitor", "value": "10uF"},
+        {"reference": "C2", "part": "capacitor", "value": "10nF"},
+        {"reference": "D1", "part": "LED", "value": "red"}
+      ],
+      "netlist": [
+        {"name": "VCC", "nodes": [["J1", "1"], ["U1", "8"], ["U1", "4"], ["R1", "1"]]},
+        {"name": "GND", "nodes": [["J1", "2"], ["U1", "1"], ["C1", "2"], ["C2", "2"], ["D1", "K"]]},
+        {"name": "DISCHARGE", "nodes": [["R1", "2"], ["R2", "1"], ["U1", "7"]]},
+        {"name": "TRIGGER_THRESH", "nodes": [["R2", "2"], ["U1", "2"], ["U1", "6"], ["C1", "1"]]},
+        {"name": "CTRL_FILT", "nodes": [["U1", "5"], ["C2", "1"]]},
+        {"name": "TIMER_OUT", "nodes": [["U1", "3"], ["R3", "1"]]},
+        {"name": "LED_ANODE", "nodes": [["R3", "2"], ["D1", "A"]]}
+      ]
+    }
+  },
+  {
+    "id": "named_pins_only_english",
+    "form": "English, pin names only",
+    "prompt": "Transcribe this exact circuit. Parts: U1 is a generic LDO, C1 is 4.7uF, C2 is 1uF, J1 and J2 are 1x2 connectors. Net list: VIN = J1(1), U1(VIN), C1(1); VOUT = U1(VOUT), C2(1), J2(1); GND = J1(2), U1(GND), C1(2), C2(2), J2(2).",
+    "expected": {
+      "parts": [
+        {"reference": "U1", "part": "LDO", "value": ""},
+        {"reference": "C1", "part": "capacitor", "value": "4.7uF"},
+        {"reference": "C2", "part": "capacitor", "value": "1uF"},
+        {"reference": "J1", "part": "1x2 connector", "value": ""},
+        {"reference": "J2", "part": "1x2 connector", "value": ""}
+      ],
+      "netlist": [
+        {"name": "VIN", "nodes": [["J1", "1"], ["U1", "VIN"], ["C1", "1"]]},
+        {"name": "VOUT", "nodes": [["U1", "VOUT"], ["C2", "1"], ["J2", "1"]]},
+        {"name": "GND", "nodes": [["J1", "2"], ["U1", "GND"], ["C1", "2"], ["C2", "2"], ["J2", "2"]]}
+      ]
+    }
+  },
+  {
+    "id": "repeated_resistor_bank",
+    "form": "eight same-type components",
+    "prompt": "Use eight 10k resistors R1 through R8 and a 1x8 connector J1. Exact netlist: VCC: R1(1), R2(1), R3(1), R4(1), R5(1), R6(1), R7(1), R8(1). CH1: R1(2), J1(1). CH2: R2(2), J1(2). CH3: R3(2), J1(3). CH4: R4(2), J1(4). CH5: R5(2), J1(5). CH6: R6(2), J1(6). CH7: R7(2), J1(7). CH8: R8(2), J1(8).",
+    "expected": {
+      "parts": [
+        {"reference": "R1", "part": "resistor", "value": "10k"}, {"reference": "R2", "part": "resistor", "value": "10k"},
+        {"reference": "R3", "part": "resistor", "value": "10k"}, {"reference": "R4", "part": "resistor", "value": "10k"},
+        {"reference": "R5", "part": "resistor", "value": "10k"}, {"reference": "R6", "part": "resistor", "value": "10k"},
+        {"reference": "R7", "part": "resistor", "value": "10k"}, {"reference": "R8", "part": "resistor", "value": "10k"},
+        {"reference": "J1", "part": "1x8 connector", "value": ""}
+      ],
+      "netlist": [
+        {"name": "VCC", "nodes": [["R1", "1"], ["R2", "1"], ["R3", "1"], ["R4", "1"], ["R5", "1"], ["R6", "1"], ["R7", "1"], ["R8", "1"]]},
+        {"name": "CH1", "nodes": [["R1", "2"], ["J1", "1"]]}, {"name": "CH2", "nodes": [["R2", "2"], ["J1", "2"]]},
+        {"name": "CH3", "nodes": [["R3", "2"], ["J1", "3"]]}, {"name": "CH4", "nodes": [["R4", "2"], ["J1", "4"]]},
+        {"name": "CH5", "nodes": [["R5", "2"], ["J1", "5"]]}, {"name": "CH6", "nodes": [["R6", "2"], ["J1", "6"]]},
+        {"name": "CH7", "nodes": [["R7", "2"], ["J1", "7"]]}, {"name": "CH8", "nodes": [["R8", "2"], ["J1", "8"]]}
+      ]
+    }
+  },
+  {
+    "id": "two_by_three_header",
+    "form": "2x3 connector notation",
+    "prompt": "부품은 J1 2x3 ICSP 헤더와 U1 MCU이다. 연결 명세: MISO: J1(1), U1(MISO). VCC: J1(2), U1(VCC). SCK: J1(3), U1(SCK). MOSI: J1(4), U1(MOSI). RESET: J1(5), U1(RESET). GND: J1(6), U1(GND). 이 연결만 그대로 그려라.",
+    "expected": {
+      "parts": [
+        {"reference": "J1", "part": "2x3 pin header", "value": ""},
+        {"reference": "U1", "part": "MCU", "value": ""}
+      ],
+      "netlist": [
+        {"name": "MISO", "nodes": [["J1", "1"], ["U1", "MISO"]]}, {"name": "VCC", "nodes": [["J1", "2"], ["U1", "VCC"]]},
+        {"name": "SCK", "nodes": [["J1", "3"], ["U1", "SCK"]]}, {"name": "MOSI", "nodes": [["J1", "4"], ["U1", "MOSI"]]},
+        {"name": "RESET", "nodes": [["J1", "5"], ["U1", "RESET"]]}, {"name": "GND", "nodes": [["J1", "6"], ["U1", "GND"]]}
+      ]
+    }
+  },
+  {
+    "id": "hierarchical_bus_names",
+    "form": "hierarchical-looking and indexed net names",
+    "prompt": "Transcribe exactly. Parts: U1 MCU, U2 sensor, J1 1x4 connector, R1 4.7k, R2 4.7k. Netlist: /MCU/I2C_SDA: U1(SDA), U2(SDA), R1(2), J1(3); /MCU/I2C_SCL: U1(SCL), U2(SCL), R2(2), J1(4); +3V3: U1(VCC), U2(VCC), R1(1), R2(1), J1(1); GND: U1(GND), U2(GND), J1(2); DATA[0]: U1(D0), U2(D0).",
+    "expected": {
+      "parts": [
+        {"reference": "U1", "part": "MCU", "value": ""}, {"reference": "U2", "part": "sensor", "value": ""},
+        {"reference": "J1", "part": "1x4 connector", "value": ""},
+        {"reference": "R1", "part": "resistor", "value": "4.7k"}, {"reference": "R2", "part": "resistor", "value": "4.7k"}
+      ],
+      "netlist": [
+        {"name": "/MCU/I2C_SDA", "nodes": [["U1", "SDA"], ["U2", "SDA"], ["R1", "2"], ["J1", "3"]]},
+        {"name": "/MCU/I2C_SCL", "nodes": [["U1", "SCL"], ["U2", "SCL"], ["R2", "2"], ["J1", "4"]]},
+        {"name": "+3V3", "nodes": [["U1", "VCC"], ["U2", "VCC"], ["R1", "1"], ["R2", "1"], ["J1", "1"]]},
+        {"name": "GND", "nodes": [["U1", "GND"], ["U2", "GND"], ["J1", "2"]]},
+        {"name": "DATA[0]", "nodes": [["U1", "D0"], ["U2", "D0"]]}
+      ]
+    }
+  }
+]

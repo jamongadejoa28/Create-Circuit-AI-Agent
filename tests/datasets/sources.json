@@ -1,0 +1,26 @@
+[
+  {
+    "id": "microsoft-schgen",
+    "dataset": "microsoft/SchGen_dataset",
+    "revision": "main",
+    "declared_license": "MIT",
+    "upstream_license_policy": "verify each source project before acceptance",
+    "adapter": "schgen",
+    "config": "default",
+    "split": "train",
+    "sample_limit": 100,
+    "purpose": "semantic-code and prompt baseline; never execute code in the service process"
+  },
+  {
+    "id": "open-schematics",
+    "dataset": "bshada/open-schematics",
+    "revision": "5c74c3648d22e73426bbeb4691397d9cc8053e34",
+    "declared_license": "CC-BY-4.0",
+    "upstream_license_policy": "verify each source repository before acceptance",
+    "adapter": "open_schematics",
+    "config": "default",
+    "split": "train",
+    "sample_limit": 100,
+    "purpose": "topology and relative-placement mining; raw CAD is not training truth"
+  }
+]

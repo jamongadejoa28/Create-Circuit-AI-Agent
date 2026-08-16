@@ -325,3 +325,26 @@ def test_compliance_reports_a_dead_component_as_an_error():
     assert set(report.dead_components) == {"C1", "R1"}
     assert not report.ok
     assert {i.rule for i in report.errors} == {"component_does_no_work"}
+
+
+def test_requested_package_mismatch_blocks_ordering():
+    symbols = {"Device:D": _two_pin("Device:D", "D")}
+    ir = CircuitIR("package")
+    ir.add(Component("D1", "Device:D", "1N4148", "Diode_THT:D_DO-35"))
+    ir.connect("A", ("D1", "1"), ("X1", "1"))
+    ir.connect("B", ("D1", "2"), ("X2", "1"))
+    spec = {"parts_needed": [{
+        "reference": "D1", "role": "d1", "search_query": "1N4148",
+        "package": "SOD-123", "quantity": 1,
+    }]}
+    report = check_compliance(ir, symbols, spec=spec, transcribed=True)
+    issue = next(i for i in report.errors if i.rule == "requested_package_mismatch")
+    assert "SOD-123" in issue.message and "D_DO-35" in issue.message
+
+
+def test_conceptual_placeholder_blocks_ordering():
+    ir = CircuitIR("placeholder")
+    ir.add(Component("U1", "Conceptual:ESP32_WROOM_32E", "ESP32-WROOM-32E"))
+    ir.connect("GND", ("U1", "1"), ("J1", "1"))
+    report = check_compliance(ir, {}, spec={}, transcribed=True)
+    assert any(i.rule == "conceptual_part_unresolved" for i in report.errors)

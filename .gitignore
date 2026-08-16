@@ -39,10 +39,11 @@ build/
 *.kicad_pro-bak
 *.kicad_prl
 *.erc.json
-golden/svg/
+/tests/artifacts/
+/tests/fixtures/golden/svg/
 fp-info-cache
 *.kicad-export.net
-golden/*.net
+/tests/fixtures/golden/*.net
 /kicad-symbols/
 /kicad-footprints/
 /kicad-packages3D/

@@ -4,7 +4,7 @@ its discovery notes (hidden stacked pins, BOOT0/NRST pin sharing).
 Golden 1 lives in examples.py.
 """
 
-from .ir import CircuitIR, Component
+from circuitgen.ir import CircuitIR, Component
 
 def golden2_mcu_minimal_ir() -> CircuitIR:
     ir = CircuitIR(name="golden2_mcu_minimal")

@@ -41,7 +41,25 @@ curl -s localhost:8000/api/jobs/<id>                # 상태와 리포트
 curl -s localhost:8000/api/jobs/<id>/file/schematic  # .kicad_sch
 ```
 
-CLI만 쓰려면 `scripts/run_agent.py`, 측정은 `scripts/bench_general.py`입니다.
+CLI만 쓰려면 `scripts/run_agent.py`, 측정은 `tests/benchmarks/bench_general.py`입니다.
+
+## 서비스와 테스트 자산의 경계
+
+- `src/circuitgen/`: 웹·CLI 서비스가 실행하는 제품 코드
+- `data/knowledge/`, `data/patterns/`, `data/rules/`, `data/*.json`: 실제 생성에 사용하는 지식, typed 설계 규칙, 장치 데이터
+- `scripts/`: 서비스 실행 및 런타임 인덱스 구축 도구
+- `tests/fixtures/`: 테스트 전용 고정 회로와 golden 기준 파일
+- `tests/eval/`, `tests/benchmarks/`: 평가셋과 벤치 실행기
+- `tests/artifacts/`: 테스트·벤치가 만든 산출물. Git에는 포함하지 않음
+- `tests/tools/`: golden 재생성 및 데이터시트 검증 도구
+
+제품 코드와 서비스 스크립트는 `tests`를 import하지 않습니다.
+
+공개 회로 데이터셋은 곧바로 서비스 지식이 되지 않습니다. SchGen과 Open
+Schematics는 `tests/datasets/`의 출처 manifest와 DatasetExample 스키마를 통해
+소량 샘플링한 뒤, 라이선스·중복·저장소 단위 split·핀 바인딩·넷리스트 왕복·렌더링·
+사람 검토를 각각 통과한 예제만 평가/학습 후보가 됩니다. 자세한 절차는
+[`tests/datasets/README.md`](tests/datasets/README.md)에 있습니다.
 
 ## 리포트 읽는 법
 
@@ -83,7 +101,7 @@ CLI만 쓰려면 `scripts/run_agent.py`, 측정은 `scripts/bench_general.py`입
 셋 다 **막는 문제 0건**. 부품 선택은 쓰신 넷리스트가 쓰는 핀으로 제약됩니다 —
 "택트 스위치"는 2핀 부품, "1x6 헤더"는 6핀 커넥터가 됩니다.
 
-**설계 모드** — 8개 회로군 벤치(`data/eval/general_circuit_suite.json`).
+**설계 모드** — 8개 회로군 벤치(`tests/eval/general_circuit_suite.json`).
 **단일 점수를 만들지 않습니다**; 어느 회로군이 왜 안 되는지가 유일하게 쓸모 있는 정보입니다.
 
 | 회로군 | 결과 |

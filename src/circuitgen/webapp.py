@@ -153,6 +153,23 @@ def _report(res, run_dir: Path, prompt: str = "", parts=None, symbols=None) -> d
     pr = res.pipeline
     compliance = res.compliance.as_dict() if res.compliance else None
     issues = (compliance or {}).get("issues", [])
+    pipeline_blocking = []
+    if pr:
+        pipeline_blocking.extend({
+            "rule": issue.rule, "severity": "error", "path": issue.path,
+            "message": issue.message,
+        } for issue in pr.self_erc if issue.severity == "error")
+        if pr.kicad_erc:
+            pipeline_blocking.extend({
+                "rule": str(item.get("type") or "kicad_erc"),
+                "severity": "error", "path": str(item.get("sheet") or "schematic"),
+                "message": str(item.get("description") or item.get("message") or item),
+            } for item in pr.kicad_erc.violations)
+        if not pr.connectivity_ok:
+            pipeline_blocking.append({
+                "rule": "netlist_round_trip_mismatch", "severity": "error",
+                "path": "schematic", "message": "exported KiCad netlist does not match CircuitIR",
+            })
     return {
         # `ok` is the agent's: pipeline legal AND the board answers the request
         "ok": bool(res.ok),
@@ -173,10 +190,11 @@ def _report(res, run_dir: Path, prompt: str = "", parts=None, symbols=None) -> d
             ),
             "netlist_round_trip_ok": bool(pr and pr.connectivity_ok),
         },
-        "blocking": [i for i in issues if i.get("severity") == "error"],
+        "blocking": [i for i in issues if i.get("severity") == "error"] + pipeline_blocking,
         "warnings": [i for i in issues if i.get("severity") != "error"],
         "compliance": compliance,
         "wiring": (pr.route_metrics if pr else {}) or {},
+        "interfaces": (pr.interface_metrics if pr else {}) or {},
         "visual_issues": len(pr.visual_issues) if pr else None,
         # why the board looks the way it does — computed from the artefacts,
         # not from the log, and shown above the drawing

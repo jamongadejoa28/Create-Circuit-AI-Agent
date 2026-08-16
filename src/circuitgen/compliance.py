@@ -281,6 +281,15 @@ def _role_matches(
     out: list[tuple[dict, list[str] | None]] = []
     for part in spec.get("parts_needed", []):
         role = str(part.get("role", ""))
+        reference = str(part.get("reference", "")).strip().upper()
+        # In transcription mode the reference is user-authored identity, not
+        # an LLM synonym. If the exact requested reference is on the board,
+        # its role is present. Falling through to token similarity produced
+        # role_unverifiable for J1/R1/C3 even though those exact references
+        # were visibly present and already covered by verify_transcription.
+        if reference:
+            out.append((part, [reference] if reference in physical else []))
+            continue
         query = str(part.get("search_query", "")).replace("__conceptual__", "")
         wanted = (_tokens(role) | _tokens(query)) - _GENERIC_ROLE_WORDS
         matches = [ref for ref, toks in comp_tokens.items() if _token_hit(wanted, toks)]
@@ -590,6 +599,62 @@ def check_compliance(
         for role, short in sorted(shortfall.items())
     ]
 
+    package_issues: list[ValidationIssue] = []
+    for part in (spec or {}).get("parts_needed", []):
+        ref = str(part.get("reference", "")).strip().upper()
+        requested_package = str(part.get("package", "")).strip()
+        comp = ir.components.get(ref)
+        if not ref or not requested_package or comp is None:
+            continue
+        package_upper = requested_package.upper()
+        concrete = re.findall(
+            r"SOT[- ]?\d+|SOD[- ]?\d+|SOIC[- ]?\d+|SSOP[- ]?\d+|"
+            r"TQFP[- ]?\d+|QFN[- ]?\d+|\b(?:0402|0603|0805|1206|1210)\b",
+            package_upper,
+        )
+        pitches = re.findall(r"(\d+(?:\.\d+)?)\s*MM", package_upper)
+        if not concrete and not pitches:
+            continue
+        footprint_upper = comp.footprint.upper()
+        normalized_fp = re.sub(r"[^A-Z0-9]", "", footprint_upper)
+        missing_tokens = [
+            token for token in concrete
+            if re.sub(r"[^A-Z0-9]", "", token) not in normalized_fp
+        ]
+        footprint_pitches = [
+            float(value) for value in re.findall(r"P(\d+(?:\.\d+)?)MM", footprint_upper)
+        ]
+        pitch_ok = not pitches or any(
+            abs(float(pitch) - actual) < 0.001
+            for pitch in pitches for actual in footprint_pitches
+        )
+        if not comp.footprint:
+            message = (
+                f"{ref} requests package {requested_package!r}, but no footprint "
+                "was assigned"
+            )
+        elif missing_tokens or not pitch_ok:
+            message = (
+                f"{ref} requests package {requested_package!r}, but footprint "
+                f"{comp.footprint!r} does not match it"
+            )
+        else:
+            continue
+        package_issues.append(_issue(
+            "requested_package_mismatch", "error", ref,
+            message + " — choose a matching footprint before ordering",
+        ))
+
+    conceptual_issues = [
+        _issue(
+            "conceptual_part_unresolved", "error", ref,
+            f"{ref} is only a conceptual placeholder for {comp.value or comp.lib_id.split(':', 1)[-1]!r}; "
+            "bind the requested catalog symbol and a matching footprint before ordering",
+        )
+        for ref, comp in ir.components.items()
+        if not ref.startswith("#") and comp.lib_id.startswith("Conceptual:")
+    ]
+
     # Presence was never the question the user needed answered. They arrive
     # with the parts chosen and cannot tell where the resistor goes, so a board
     # can hold every part they named and still be one they cannot order:
@@ -613,7 +678,8 @@ def check_compliance(
     ]
 
     return ComplianceReport(
-        issues=req_issues + pwr_issues + role_issues + dead_issues,
+        issues=(req_issues + pwr_issues + role_issues + package_issues
+                + conceptual_issues + dead_issues),
         requested_parts=requested,
         satisfied_parts=satisfied,
         missing_parts=missing,

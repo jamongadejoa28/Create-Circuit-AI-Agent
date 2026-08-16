@@ -6,8 +6,8 @@ build the exact same IR.
 
 from __future__ import annotations
 
-from .geometry import Placement
-from .ir import CircuitIR, Component
+from circuitgen.geometry import Placement
+from circuitgen.ir import CircuitIR, Component
 
 
 def golden_led_button_ir() -> CircuitIR:

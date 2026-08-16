@@ -1,13 +1,13 @@
 """Plan §12 completion gate: all five golden circuits (§10) must pass the
 full deterministic pipeline — self-ERC, KiCad ERC 0, SVG render, and
 netlist connectivity round-trip. Golden 1 is covered by test_pipeline.py;
-2-5 live in circuitgen.goldens."""
+2-5 live in tests.fixtures.goldens."""
 
 from pathlib import Path
 
 import pytest
 
-from circuitgen.goldens import (
+from tests.fixtures.goldens import (
     golden2_mcu_minimal_ir,
     golden3_mcu_i2c_ir,
     golden4_mcu_spi_ir,
@@ -23,7 +23,7 @@ pytestmark = pytest.mark.skipif(
     reason="kicad-cli.exe / libraries / part index not available",
 )
 
-OUT = Path(__file__).resolve().parent.parent / "out" / "tests" / "goldens"
+OUT = Path(__file__).resolve().parent / "artifacts" / "generated" / "goldens"
 
 GOLDENS = [
     ("golden2", golden2_mcu_minimal_ir),

@@ -9,7 +9,7 @@ cannot say WHICH family fails or why, and optimising against it is how special
 cases accumulate.
 
 Usage:
-  PYTHONPATH=src .venv/bin/python scripts/bench_general.py --label baseline --seed 100
+  PYTHONPATH=src .venv/bin/python tests/benchmarks/bench_general.py --label baseline --seed 100
 """
 
 import argparse
@@ -25,8 +25,8 @@ from circuitgen.compliance import part_present
 from circuitgen.evalmetrics import measure_run, summarize
 from circuitgen.topology import analyze_topology
 
-ROOT = Path(__file__).resolve().parent.parent
-SUITE = ROOT / "data" / "eval" / "general_circuit_suite.json"
+ROOT = Path(__file__).resolve().parents[2]
+SUITE = ROOT / "tests" / "eval" / "general_circuit_suite.json"
 
 
 def _contract_results(required: list[str], topology: dict) -> dict[str, bool]:
@@ -60,7 +60,7 @@ def main() -> int:
         print("llama-server unreachable")
         return 1
 
-    root_out = ROOT / "out" / "bench_general" / args.label
+    root_out = ROOT / "tests" / "artifacts" / "benchmarks" / "general" / args.label
     root_out.mkdir(parents=True, exist_ok=True)
     results = root_out.parent / f"{args.label}.jsonl"
     parts, knowledge = PartIndex(), KnowledgeIndex()

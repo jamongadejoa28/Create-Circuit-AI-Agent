@@ -38,6 +38,9 @@ class PipelineResult:
     # rather than stub+label. Implemented in emit.route_metrics since the tree
     # router landed, and until now computed by nobody.
     route_metrics: dict = field(default_factory=dict)
+    # Counts from topology + symbol pin types. This is descriptive evidence,
+    # not a pass/fail score and never changes electrical connectivity.
+    interface_metrics: dict = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
 
 
@@ -64,6 +67,10 @@ def generate(
 
     resolve_conceptual(ir, symbols)
     ensure_pwr_flags(ir, symbols)
+
+    from .interfaces import interface_metrics
+
+    res.interface_metrics = interface_metrics(ir, symbols)
 
     # 1. self ERC on the IR
     res.self_erc = check_circuit(ir, symbols)
@@ -92,7 +99,7 @@ def generate(
         draft = CircuitIR(name=ir.name)
         for r in known:
             c = ir.components[r]
-            draft.add(type(c)(r, c.lib_id, c.value, c.footprint, c.group))
+            draft.add(type(c)(r, c.lib_id, c.value, c.footprint, c.group, c.binding_error))
         for net in ir.nets:
             nodes = [(r, p) for r, p in net.nodes if r in known and pin_ok(r, p)]
             if nodes:
@@ -122,6 +129,10 @@ def generate(
         from .emit import build_emit_plan, route_metrics
 
         plan = build_emit_plan(ir, symbols, canonical_placements)
+        from .visual import check_routing
+        routing_issues = check_routing(ir, symbols, canonical_placements, plan)
+        res.visual_issues.extend(routing_issues)
+        res.errors.extend(f"visual QA {i.rule}: {i.message}" for i in routing_issues)
         res.route_metrics = route_metrics(ir, symbols, plan)
         sch_text = emit_schematic(ir, symbols, canonical_placements, plan)
     except (KeyError, ValueError) as e:
@@ -187,6 +198,10 @@ def generate_hierarchical(
         )
     resolve_conceptual(ir, symbols)
 
+    from .interfaces import interface_metrics
+
+    res.interface_metrics = interface_metrics(ir, symbols)
+
     res.self_erc = check_circuit(ir, symbols)
     if parts_index is not None:
         from .fp_checks import check_footprints
@@ -211,7 +226,7 @@ def generate_hierarchical(
         draft = CircuitIR(name=ir.name)
         for r in known:
             c = ir.components[r]
-            draft.add(type(c)(r, c.lib_id, c.value, c.footprint, c.group))
+            draft.add(type(c)(r, c.lib_id, c.value, c.footprint, c.group, c.binding_error))
         for net in ir.nets:
             nodes = [(r, p) for r, p in net.nodes if r in known and pin_ok(r, p)]
             if nodes:

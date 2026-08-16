@@ -55,20 +55,13 @@ def _classify(ir: CircuitIR, symbols: dict[str, SymbolDef]):
         for ref, pin_no in net.nodes:
             net_of[(ref, str(pin_no))] = net.name
 
+    from .interfaces import analyze_interfaces
+
+    interfaces = analyze_interfaces(ir, symbols)
+
     def kind_of_net(name: str) -> str:
-        for net in ir.nets:
-            if net.name != name:
-                continue
-            for ref, pin_no in net.nodes:
-                comp = ir.components.get(ref)
-                sym = symbols.get(comp.lib_id) if comp else None
-                if sym and sym.is_power:
-                    try:
-                        if sym.pin(pin_no).etype == PinType.PWRIN:
-                            return "gnd" if comp.value in GROUND_NAMES else "power"
-                    except KeyError:
-                        pass
-        return "gnd" if name in GROUND_NAMES else "signal"
+        interface = interfaces.get(name)
+        return interface.kind if interface else ("gnd" if name in GROUND_NAMES else "signal")
 
     roles: dict[str, str] = {}
     decouple_target: dict[str, tuple[str, int]] = {}  # cap ref -> (ic ref, unit)
@@ -93,6 +86,25 @@ def _classify(ir: CircuitIR, symbols: dict[str, SymbolDef]):
         else:
             roles[ref] = "mid"
 
+    # A connector is an output when a non-connector output pin drives one of
+    # its signal nets. Reference prefix alone previously put every J on the
+    # left, including output headers such as TIMER_OUT.
+    for ref, comp in ir.components.items():
+        sym = symbols[comp.lib_id]
+        if sym.reference_prefix != "J":
+            continue
+        driven_from_board = False
+        for net in ir.nets:
+            if not any(r == ref for r, _pin in net.nodes):
+                continue
+            interface = interfaces.get(net.name)
+            if interface and interface.kind == "signal" and any(
+                driver != ref for driver in interface.drivers
+            ):
+                driven_from_board = True
+                break
+        roles[ref] = "output" if driven_from_board else "input"
+
     # decoupling: a 2-pin C bridging a power-kind net and a gnd-kind net,
     # assigned to the IC unit holding a PWRIN pin on that power net
     for ref, comp in ir.components.items():
@@ -102,25 +114,69 @@ def _classify(ir: CircuitIR, symbols: dict[str, SymbolDef]):
         nets = [net_of.get((ref, p.number)) for p in sym.pins]
         kinds = {n: kind_of_net(n) for n in nets if n}
         power_nets = [n for n, k in kinds.items() if k == "power"]
-        if not power_nets or "gnd" not in kinds.values():
+        if not power_nets or "ground" not in kinds.values():
             continue
+        targets: list[tuple[str, int]] = []
         for ic in ics:
             ic_sym = symbols[ir.components[ic].lib_id]
             for p in ic_sym.pins:
                 if p.etype == PinType.PWRIN and net_of.get((ic, p.number)) == power_nets[0]:
-                    roles[ref] = "decouple"
-                    decouple_target[ref] = (ic, p.unit if p.unit in ic_sym.placed_units() else ic_sym.placed_units()[0])
+                    targets.append((
+                        ic,
+                        p.unit if p.unit in ic_sym.placed_units() else ic_sym.placed_units()[0],
+                    ))
                     break
-            if ref in decouple_target:
-                break
+        # A shared rail/GND pair alone does not identify which IC a capacitor
+        # serves. Moving it beside an arbitrary small peripheral made every
+        # MCU bypass capacitor pile onto the same sensor. Only localize when
+        # topology yields one unambiguous target.
+        if (len(targets) == 1
+                and len(symbols[ir.components[targets[0][0]].lib_id].pins) <= 16):
+            roles[ref] = "decouple"
+            decouple_target[ref] = targets[0]
+
+    # A two-pin capacitor from one signal net to ground is a local shunt
+    # element (timing, control filtering, reset delay, ...). When that signal
+    # reaches exactly one small IC, topology identifies a unique physical
+    # owner without relying on net names or prompt vocabulary. Treat it like
+    # a local bypass for placement; dense MCUs remain excluded above.
+    for ref, comp in ir.components.items():
+        sym = symbols[comp.lib_id]
+        if (ref in decouple_target or sym.reference_prefix != "C"
+                or len(sym.pins) != 2):
+            continue
+        pin_nets = [net_of.get((ref, p.number)) for p in sym.pins]
+        if not any(n and kind_of_net(n) == "ground" for n in pin_nets):
+            continue
+        signal_nets = [n for n in pin_nets if n and kind_of_net(n) == "signal"]
+        if len(signal_nets) != 1:
+            continue
+        signal = signal_nets[0]
+        targets = []
+        for net in ir.nets:
+            if net.name != signal:
+                continue
+            for owner, pin_no in net.nodes:
+                if owner not in ics:
+                    continue
+                owner_sym = symbols[ir.components[owner].lib_id]
+                if len(owner_sym.pins) > 16:
+                    continue
+                pin = owner_sym.pin(str(pin_no))
+                targets.append((
+                    owner,
+                    pin.unit if pin.unit in owner_sym.placed_units()
+                    else owner_sym.placed_units()[0],
+                ))
+        targets = sorted(set(targets))
+        if len(targets) == 1:
+            roles[ref] = "decouple"
+            decouple_target[ref] = targets[0]
 
     return roles, decouple_target
 
 
 # --- signal-flow layered placement (topology-based, replaces shelf order) ---
-
-_DRIVER_ETYPES = {"OUTPUT", "PWROUT", "OPENCOLL", "OPENEMIT", "TRISTATE"}
-
 
 def _signal_edges(ir: CircuitIR, symbols: dict[str, SymbolDef], refs: set[str]):
     """Component adjacency over signal nets: [(a, b, directed_a_to_b)].
@@ -128,26 +184,18 @@ def _signal_edges(ir: CircuitIR, symbols: dict[str, SymbolDef], refs: set[str]):
     Direction comes from pin electrical types: a net's driver-side member
     points toward its non-driver members. Rails (power-symbol nets, ground
     names) carry no flow information and are skipped."""
+    from .interfaces import analyze_interfaces
+
     edges: list[tuple[str, str, bool]] = []
+    interfaces = analyze_interfaces(ir, symbols)
     for net in ir.nets:
-        if net.name.upper() in GROUND_NAMES:
-            continue
-        if any(
-            symbols[c.lib_id].is_power
-            for r, _p in net.nodes
-            if (c := ir.components.get(r)) and c.lib_id in symbols
-        ):
+        interface = interfaces[net.name]
+        if interface.kind != "signal":
             continue
         members = [(r, str(p)) for r, p in net.nodes if r in refs]
         if len(members) < 2:
             continue
-        drivers = set()
-        for r, p in members:
-            try:
-                if symbols[ir.components[r].lib_id].pin(p).etype.name in _DRIVER_ETYPES:
-                    drivers.add(r)
-            except KeyError:
-                pass
+        drivers = set(interface.drivers) & refs
         seen_pairs: set[tuple[str, str]] = set()
         for i, (a, _pa) in enumerate(members):
             for b, _pb in members[i + 1:]:
@@ -336,7 +384,10 @@ def align_chains(
                 if box[0] - 0.01 <= px <= box[2] + 0.01 and box[1] - 0.01 <= py <= box[3] + 0.01:
                     return False
                 for qx, qy in pts:
-                    if abs(qx - px) < 1.27 and abs(qy - py) < 1.27:
+                    # Pins closer than two routing grids leave no room for
+                    # their standard 7.62 mm stubs; different-net stubs then
+                    # overlap even though the symbol bodies do not.
+                    if abs(qx - px) < 2 * GRID and abs(qy - py) < 2 * GRID:
                         return False
         return True
 
@@ -368,15 +419,38 @@ def align_chains(
     def walk(from_ref: str, from_pin_no: str) -> None:
         """Extend a chain outward from an already-final pin."""
         ref, pin_no = from_ref, from_pin_no
+        # Moving a satellite relative to a dense pin field requires
+        # unit/side-aware clearance, not the small-symbol chain heuristic.
+        # Even a two-node BOOT strap can otherwise make the later rigid-body
+        # collision pass shift the entire MCU over unrelated power stubs.
+        if len(symbols[ir.components[from_ref].lib_id].pins) > 16:
+            return
         cid = cluster.get(from_ref, from_ref)
         for _ in range(8):  # chain length guard
             net = net_of.get((ref, pin_no))
             if net is None:
                 return
             nodes = net_nodes[net]
-            if len(nodes) != 2:
-                return
-            nxt = next(((r, p) for r, p in nodes if r != ref), None)
+            peers = [(r, p) for r, p in nodes if r != ref]
+            if len(nodes) == 2:
+                nxt = peers[0] if peers else None
+            else:
+                # A driven output can also be tapped by a connector while one
+                # series passive begins the functional chain. When that
+                # passive is unique, align it and leave the tap in place.
+                src_sym = symbols[ir.components[ref].lib_id]
+                src_pin = src_sym.pin(pin_no)
+                if len(src_sym.pins) > 16:
+                    return
+                if src_pin.etype not in {
+                    PinType.OUTPUT, PinType.OPENCOLL,
+                    PinType.OPENEMIT, PinType.TRISTATE,
+                }:
+                    return
+                movable_peers = [
+                    rp for rp in peers if movable(rp[0]) and rp[0] not in moved
+                ]
+                nxt = movable_peers[0] if len(movable_peers) == 1 else None
             if nxt is None or nxt[0] in moved or not movable(nxt[0]):
                 return
             sym = symbols[ir.components[ref].lib_id]
@@ -422,7 +496,7 @@ def heuristic_place(
     symbols: dict[str, SymbolDef],
     origin: tuple[float, float] = (25.4, 25.4),
 ) -> dict[str, dict[int, Placement]]:
-    roles, _ = _classify(ir, symbols)
+    roles, decouple_targets = _classify(ir, symbols)
     placements: dict[str, dict[int, Placement]] = {}
 
     # Build functional tiles.  Before Component.group existed, board-scale
@@ -432,9 +506,11 @@ def heuristic_place(
     grouped: dict[str, list[tuple[str, int]]] = {}
     power_refs: list[str] = []
     for ref, comp in ir.components.items():
-        if symbols[comp.lib_id].is_power and not (
-            comp.lib_id == "power:PWR_FLAG" and comp.group
-        ):
+        # Power symbols, including block-owned PWR_FLAG annotations, are not
+        # functional tile members. They are attached to the real branch in a
+        # later pass; shelving a grouped flag is exactly how detached
+        # ``PWR_FLAG -> label`` islands were created.
+        if symbols[comp.lib_id].is_power:
             power_refs.append(ref)
             continue
         group = comp.group or "CIRCUIT"
@@ -503,7 +579,13 @@ def heuristic_place(
             x += col_w + 7.62
             max_h = max(max_h, y - 5.08)
         width = x - 7.62
-        if width > SHEET_RIGHT - 50.8:
+        # Connectivity layers can collapse many passive/support parts into
+        # one enormous column. Preserve the flow order only while it remains
+        # a readable tile; otherwise the bounded shelf is more informative
+        # than an A1/A2 vertical strip with mostly empty paper.
+        if (width > SHEET_RIGHT - 50.8
+                or max_h > 160.0
+                or max_h > 2.0 * max(width, 1.0)):
             return None  # a flow this wide reads worse than the shelf
         return local, max(width, 30.48), max_h
 
@@ -536,25 +618,152 @@ def heuristic_place(
         row_height = max(row_height, tile_h)
         max_bottom = max(max_bottom, tile_y + tile_h)
 
+    # Local bypass capacitors belong beside the IC they serve, independent of
+    # reference order or the global shelf. Choose the first clear cardinal
+    # position; electrical identity came from the power/GND topology above.
+    for ref, (target_ref, target_unit) in sorted(decouple_targets.items()):
+        if ref not in placements or target_ref not in placements:
+            continue
+        # Dense MCUs need per-power-unit placement and a larger local routing
+        # strategy; moving every bypass around their pin field after the tile
+        # is built can create stacked-pin connections. Keep this compact
+        # adjustment to small analog/digital ICs.
+        if len(symbols[ir.components[target_ref].lib_id].pins) > 16:
+            continue
+        target = placements[target_ref][target_unit]
+        # Prefer the input/left side; output-side timing capacitors commonly
+        # occupy the right side of a timer/op-amp and their value text needs
+        # more clearance than the body box alone shows.
+        candidate_offsets = ((-25.4, 0), (25.4, 0), (0, -25.4), (0, 25.4))
+        sym = symbols[ir.components[ref].lib_id]
+        unit = next(iter(placements[ref]))
+        for dx, dy in candidate_offsets:
+            candidate = Placement(_snap(target.x + dx), _snap(target.y + dy), 0)
+            box = _body_box(sym, unit, candidate)
+            blocked = False
+            for other, other_units in placements.items():
+                if other == ref:
+                    continue
+                other_sym = symbols[ir.components[other].lib_id]
+                for other_unit, other_place in other_units.items():
+                    ob = _body_box(other_sym, other_unit, other_place)
+                    if (box[2] > ob[0] and box[0] < ob[2]
+                            and box[3] > ob[1] and box[1] < ob[3]):
+                        blocked = True
+                        break
+                if blocked:
+                    break
+            if not blocked:
+                placements[ref] = {unit: candidate}
+                break
+
     # Supply symbols form short horizontal rails around the content instead
-    # of another component column.  Place grounds at the bottom with ample
-    # title-block clearance.
+    # of another component column. Grounds sit below the content. PWR_FLAGs
+    # are attached to a real member's stub in the second pass below.
     rail_x = gnd_x = origin[0]
     top_y = max(20.32, origin[1] - 15.24)
     bottom_y = max_bottom + 7.62
     for ref in sorted(power_refs):
-        role = roles.get(ref)
-        if role == "gnd_sym":
+        if roles.get(ref) == "gnd_sym":
             placements.setdefault(ref, {})[1] = Placement(_snap(gnd_x), _snap(bottom_y), 0)
             gnd_x += 20.32
         else:
             placements.setdefault(ref, {})[1] = Placement(_snap(rail_x), _snap(top_y), 0)
             rail_x += 20.32
 
+    # A flag is an ERC annotation, not a separate functional block. Put its
+    # pin exactly on the end of a real source/connector stub so the drawing
+    # shows what it declares instead of a detached PWR_FLAG island.
+    for ref in power_refs:
+        is_flag = ir.components[ref].lib_id == "power:PWR_FLAG"
+        net = next((n for n in ir.nets if any(r == ref for r, _ in n.nodes)), None)
+        anchors = [
+            (r, str(pin)) for r, pin in (net.nodes if net else [])
+            if r in placements and not symbols[ir.components[r].lib_id].is_power
+            and len(symbols[ir.components[r].lib_id].pins) == 2
+            and (symbols[ir.components[r].lib_id].reference_prefix in {"J", "BT"}
+                 or symbols[ir.components[r].lib_id].is_source)
+        ]
+        anchors.sort(key=lambda rp: (
+            0 if roles.get(rp[0]) == ("input" if is_flag else "output") else 1,
+            0 if roles.get(rp[0]) == "ic" else 1,
+            rp,
+        ))
+        # Without an explicit input/source, choosing an arbitrary IC merely
+        # moves the ERC annotation into a dense signal pin field.
+        anchors = [
+            rp for rp in anchors
+            if roles.get(rp[0]) == ("input" if is_flag else "output")
+        ]
+        if not anchors:
+            continue
+        anchor_ref, anchor_pin_no = anchors[0]
+        anchor_pin = symbols[ir.components[anchor_ref].lib_id].pin(anchor_pin_no)
+        anchor_units = placements[anchor_ref]
+        anchor_unit = anchor_pin.unit if anchor_pin.unit in anchor_units else next(iter(anchor_units))
+        target = pin_stub_end(anchor_units[anchor_unit], anchor_pin, 7.62)[1]
+        flag_sym = symbols[ir.components[ref].lib_id]
+        flag_pin = flag_sym.pin("1")
+        zero = pin_absolute_position(Placement(0.0, 0.0, 0), flag_pin)
+        placements[ref] = {1: Placement(_snap(target[0] - zero[0]), _snap(target[1] - zero[1]), 0)}
+
     # Gather series/filter chains into facing rows so the wire router can
     # draw them as real wires (runs before the label-endpoint pass, which
     # remains the final electrical-safety net for anything it nudges).
     clusters = align_chains(ir, symbols, placements, roles)
+
+    # Bring a two-pin output connector to the end of the signal chain it
+    # exposes. Layering correctly classifies it as an output, but a later
+    # series-chain alignment can move the resistor/load while leaving the
+    # connector in its old row. Use the driven signal topology, not names.
+    from .interfaces import analyze_interfaces
+    interfaces = analyze_interfaces(ir, symbols)
+    for ref in sorted(ir.components):
+        sym = symbols[ir.components[ref].lib_id]
+        if (roles.get(ref) != "output" or sym.reference_prefix != "J"
+                or len(sym.pins) != 2 or ref not in placements):
+            continue
+        signal_net = next((
+            net for net in ir.nets
+            if interfaces[net.name].kind == "signal"
+            and interfaces[net.name].drivers
+            and any(r == ref for r, _p in net.nodes)
+        ), None)
+        if signal_net is None:
+            continue
+        peers = [r for r, _p in signal_net.nodes if r != ref and r in placements]
+        if not peers:
+            continue
+        peer_boxes = [
+            _body_box(symbols[ir.components[r].lib_id], u, p)
+            for r in peers for u, p in placements[r].items()
+        ]
+        peer_pins = []
+        for r, pin_no in signal_net.nodes:
+            if r == ref or r not in placements:
+                continue
+            pin = symbols[ir.components[r].lib_id].pin(str(pin_no))
+            units = placements[r]
+            unit = pin.unit if pin.unit in units else next(iter(units))
+            peer_pins.append(pin_absolute_position(units[unit], pin))
+        if not peer_pins:
+            continue
+        y = _snap(sum(p[1] for p in peer_pins) / len(peer_pins))
+        x = _snap(max(b[2] for b in peer_boxes) + 15.24)
+        unit = next(iter(placements[ref]))
+        candidate = Placement(x, y, 0)
+        box = _body_box(sym, unit, candidate)
+        blocked = any(
+            box[2] > ob[0] and box[0] < ob[2]
+            and box[3] > ob[1] and box[1] < ob[3]
+            for other, units in placements.items() if other != ref
+            for other_unit, other_place in units.items()
+            for ob in [_body_box(
+                symbols[ir.components[other].lib_id], other_unit, other_place
+            )]
+        )
+        if not blocked:
+            placements[ref] = {unit: candidate}
 
     # Labels are electrical objects in KiCad: two different labels at the
     # exact same stub endpoint silently merge their nets. Body-overlap QA
@@ -596,5 +805,108 @@ def heuristic_place(
                 unit: Placement(_snap(p.x + 2 * GRID), p.y, p.rotation, p.mirror)
                 for unit, p in placements[mr].items()
             }
+
+    # A stub can pass through a nearby pin even when bodies and label
+    # endpoints are distinct. KiCad may render this as a misleading overlap;
+    # keep a two-grid corridor around every foreign-net pin. Move rigid chain
+    # clusters together so improving clearance cannot break a direct chain.
+    for _ in range(48):
+        pin_rows: list[tuple[str, str, str, tuple[float, float], tuple[float, float]]] = []
+        for net in ir.nets:
+            for ref, pin_no in net.nodes:
+                if ref not in placements:
+                    continue
+                sym = symbols[ir.components[ref].lib_id]
+                try:
+                    pin = sym.pin(str(pin_no))
+                except KeyError:
+                    continue
+                units = placements[ref]
+                unit = pin.unit if pin.unit in units else next(iter(units))
+                start, end = pin_stub_end(units[unit], pin, 7.62)
+                pin_rows.append((net.name, ref, str(pin_no), start, end))
+
+        collision = None
+        wire_collision = False
+        for net, ref, pin_no, start, end in pin_rows:
+            for other_net, other_ref, other_pin, point, _other_end in pin_rows:
+                if net == other_net or ref == other_ref:
+                    continue
+                if (min(start[0], end[0]) - .01 <= point[0] <= max(start[0], end[0]) + .01
+                        and min(start[1], end[1]) - .01 <= point[1] <= max(start[1], end[1]) + .01
+                        and abs((end[0] - start[0]) * (point[1] - start[1])
+                                - (end[1] - start[1]) * (point[0] - start[0])) < .02):
+                    collision = (ref, other_ref)
+                    break
+            if collision:
+                break
+        # Two orthogonal/collinear stubs from different nets can cross
+        # between pins without touching either pin point. KiCad then joins
+        # the nets even though pin-corridor QA sees nothing (measured on an
+        # MCU NRST capacitor crossing a nearby VREF+ stub).
+        if collision is None:
+            for i, (net, ref, _pin, a, b) in enumerate(pin_rows):
+                for other_net, other_ref, _other_pin, c, d in pin_rows[i + 1:]:
+                    if net == other_net or ref == other_ref:
+                        continue
+                    ax0, ax1 = sorted((a[0], b[0]))
+                    ay0, ay1 = sorted((a[1], b[1]))
+                    cx0, cx1 = sorted((c[0], d[0]))
+                    cy0, cy1 = sorted((c[1], d[1]))
+                    if (max(ax0, cx0) <= min(ax1, cx1) + .01
+                            and max(ay0, cy0) <= min(ay1, cy1) + .01):
+                        collision = (ref, other_ref)
+                        wire_collision = True
+                        break
+                if collision:
+                    break
+        if collision is None:
+            break
+        candidates = sorted(
+            collision,
+            key=lambda r: (r not in clusters, roles.get(r) == "ic", r),
+        )
+        target = candidates[0]
+        cid = clusters.get(target)
+        move_refs = [r for r in placements if clusters.get(r) == cid] if cid else [target]
+        for mr in move_refs:
+            placements[mr] = {
+                unit: Placement(
+                    p.x if wire_collision else _snap(p.x + 2 * GRID),
+                    _snap(p.y + 2 * GRID) if wire_collision else p.y,
+                    p.rotation,
+                    p.mirror,
+                )
+                for unit, p in placements[mr].items()
+            }
+
+    # Collision passes may nudge the zero-body power annotation away from the
+    # connector stub it was attached to. Re-establish that exact coordinate
+    # last; otherwise KiCad quite correctly reports the apparently touching
+    # PWR_FLAG as unconnected.
+    for ref in power_refs:
+        is_flag = ir.components[ref].lib_id == "power:PWR_FLAG"
+        net = next((n for n in ir.nets if any(r == ref for r, _ in n.nodes)), None)
+        anchors = [
+            (r, str(pin)) for r, pin in (net.nodes if net else [])
+            if r in placements and not symbols[ir.components[r].lib_id].is_power
+            and len(symbols[ir.components[r].lib_id].pins) == 2
+            and (symbols[ir.components[r].lib_id].reference_prefix in {"J", "BT"}
+                 or symbols[ir.components[r].lib_id].is_source)
+            and roles.get(r) == ("input" if is_flag else "output")
+        ]
+        anchors.sort()
+        if not anchors:
+            continue
+        anchor_ref, anchor_pin_no = anchors[0]
+        anchor_pin = symbols[ir.components[anchor_ref].lib_id].pin(anchor_pin_no)
+        anchor_units = placements[anchor_ref]
+        anchor_unit = anchor_pin.unit if anchor_pin.unit in anchor_units else next(iter(anchor_units))
+        target = pin_stub_end(anchor_units[anchor_unit], anchor_pin, 7.62)[1]
+        power_pin = symbols[ir.components[ref].lib_id].pin("1")
+        zero = pin_absolute_position(Placement(0.0, 0.0, 0), power_pin)
+        placements[ref] = {
+            1: Placement(_snap(target[0] - zero[0]), _snap(target[1] - zero[1]), 0)
+        }
 
     return placements
