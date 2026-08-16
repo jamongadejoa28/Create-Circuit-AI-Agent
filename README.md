@@ -13,12 +13,26 @@
 
 ## 실행
 
-필요한 것:
+Windows에서 추론 서버와 KiCad CLI를 띄운 뒤, WSL2에서 에이전트를 실행합니다.
+에이전트는 llama-server를 기동하지 않습니다 (WSL에서 실행하면 exit 53).
 
-- Windows 쪽 `llama-server.exe` (Qwen2.5-Coder-7B, `--temp 0`) — WSL2에서
-  `http://localhost:PORT`로 접근됩니다 (`.wslconfig`의 `networkingMode=mirrored`)
-- Windows 쪽 KiCad 10 (`kicad-cli.exe`)
-- 부품/지식 인덱스: `scripts/build_part_index.py`, `scripts/build_knowledge_index.py`
+**Windows `llama-server.exe`** (슬롯 1, ctx 8192). 온도는 클라이언트가 0으로 고정합니다.
+
+```text
+llama-server.exe -m Qwen2.5-Coder-7B-Instruct-Q5_K_M.gguf --host 127.0.0.1 --port 8080 --ctx-size 8192 -ngl 99 --parallel 1
+```
+
+빌드 위치 예: `C:\Users\hajun\llama.cpp\build\bin\Release\llama-server.exe`.
+WSL2는 `.wslconfig`의 `networkingMode=mirrored`로 `http://127.0.0.1:8080`에 붙습니다.
+
+**Windows KiCad 10** `kicad-cli.exe`는 `C:\Program Files\KiCad\10.0\bin\`입니다. 에이전트가 `wslpath -w`로 경로를 변환합니다.
+
+부품/지식 인덱스:
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/build_part_index.py
+PYTHONPATH=src .venv/bin/python scripts/build_knowledge_index.py
+```
 
 ```bash
 .venv/bin/pip install -e ".[web]"     # 한 번만. 이걸 빼면 ModuleNotFoundError: circuitgen
@@ -63,9 +77,14 @@ Schematics는 `tests/datasets/`의 출처 manifest와 DatasetExample 스키마�
 
 ## 리포트 읽는 법
 
+웹·CLI 리포트는 캠페인과 같은 순서로 읽습니다. **ERC는 마지막입니다.**
+
 | 항목 | 뜻 |
 |---|---|
-| **막는 문제(blocking)** | 요청한 부품이 없음 / 전원 핀이 레일에 닿지 않음 / 부품에 전류가 흐를 수 없음. **하나라도 있으면 발주 금지** |
+| 선택한 부품 | 사용자가 고른 부품이 보드에 있는지. 없으면 발주 금지 |
+| 역할 동작 (`role_working` / `role_total`) | 부품이 놓여 있어도 전류가 흐를 수 없으면 동작하지 않은 것 |
+| 커넥터 접점 | 요청 행·열·접점 수 vs 심볼 핀 수 vs footprint 패드 수 |
+| **막는 문제(blocking)** | 위 불일치와 전원 핀이 레일에 안 닿는 것. **하나라도 있으면 발주 금지** |
 | 확인 필요(warnings) | 요청서 해석 단계의 판단이라 사람이 확인해야 하는 항목 |
 | KiCad ERC 위반 | 배선이 규칙에 맞는지. **0이라고 회로가 맞는 것은 아닙니다** |
 | 넷리스트 왕복 일치 | 그린 도면이 의도한 연결과 같은지 |
