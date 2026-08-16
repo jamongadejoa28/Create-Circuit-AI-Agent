@@ -14,6 +14,7 @@ def _as_spec(expected: dict) -> dict:
                 "reference": part["reference"],
                 "search_query": part["part"],
                 "value": part["value"],
+                **({"polarized": part["polarized"]} if "polarized" in part else {}),
             }
             for part in expected["parts"]
         ],
@@ -35,7 +36,7 @@ def test_transcription_suite_has_distinct_expected_circuits():
     assert len(cases) >= 6
     assert len({case["id"] for case in cases}) == len(cases)
     forms = " ".join(case["form"] for case in cases).lower()
-    for required in ("english", "named", "same-type", "2x3", "hierarchical"):
+    for required in ("english", "named", "same-type", "2x3", "hierarchical", "polarized"):
         assert required in forms
     for case in cases:
         measured = compare_expected_spec(case["expected"], _as_spec(case["expected"]))
@@ -43,6 +44,7 @@ def test_transcription_suite_has_distinct_expected_circuits():
         assert measured["netlist_exact"], case["id"]
         assert not measured["values_missing"], case["id"]
         assert not measured["values_wrong"], case["id"]
+        assert not measured.get("polarized_wrong"), case["id"]
 
 
 def test_expected_comparison_separates_net_and_value_failures():
@@ -59,3 +61,18 @@ def test_expected_comparison_separates_net_and_value_failures():
     assert measured["parts_exact"]
     assert not measured["netlist_exact"]
     assert measured["values_wrong"] == ["R1: expected '4.7k', got '10k'"]
+
+
+def test_expected_comparison_flags_polarized_mismatch():
+    expected = {
+        "parts": [
+            {"reference": "C1", "part": "capacitor", "value": "100uF", "polarized": True},
+        ],
+        "netlist": [{"name": "A", "nodes": [["C1", "1"]]}],
+    }
+    spec = _as_spec(expected)
+    spec["parts_needed"][0]["polarized"] = False
+    measured = compare_expected_spec(expected, spec)
+    assert measured["polarized_wrong"] == [
+        "C1: expected polarized=True, got False"
+    ]

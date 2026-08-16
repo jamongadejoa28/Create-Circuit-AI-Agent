@@ -80,6 +80,17 @@ def compare_expected_spec(expected: dict, spec: dict) -> dict:
         else:
             wrong_values.append(f"{ref}: expected {wanted_value!r}, got {actual_value!r}")
 
+    polarized_wrong: list[str] = []
+    for ref, wanted in wanted_parts.items():
+        if "polarized" not in wanted:
+            continue
+        actual = actual_parts.get(ref, {})
+        if bool(wanted.get("polarized")) != bool(actual.get("polarized")):
+            polarized_wrong.append(
+                f"{ref}: expected polarized={wanted.get('polarized')!r}, "
+                f"got {actual.get('polarized')!r}"
+            )
+
     missing_connections = list((wanted_connections - actual_connections).elements())
     unexpected_connections = list((actual_connections - wanted_connections).elements())
     return {
@@ -97,4 +108,5 @@ def compare_expected_spec(expected: dict, spec: dict) -> dict:
         "values_matched": value_matches,
         "values_missing": missing_values,
         "values_wrong": wrong_values,
+        "polarized_wrong": polarized_wrong,
     }

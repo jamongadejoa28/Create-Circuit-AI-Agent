@@ -123,5 +123,22 @@
         {"name": "DATA[0]", "nodes": [["U1", "D0"], ["U2", "D0"]]}
       ]
     }
+  },
+  {
+    "id": "polarized_electrolytic_values",
+    "form": "korean, polarized electrolytic values",
+    "prompt": "[부품]\nJ1: 1x2 헤더\nC1: 100uF 전해\nC2: 100nF 세라믹\nR1: 1k\n[연결 명세 (Net List)]\n- Net 'VCC': J1 Pin 1, C1 Pin 1, C2 Pin 1, R1 Pin 1\n- Net 'GND': J1 Pin 2, C1 Pin 2, C2 Pin 2, R1 Pin 2",
+    "expected": {
+      "parts": [
+        {"reference": "J1", "part": "1x2 header", "value": ""},
+        {"reference": "C1", "part": "capacitor", "value": "100uF", "polarized": true},
+        {"reference": "C2", "part": "capacitor", "value": "100nF", "polarized": false},
+        {"reference": "R1", "part": "resistor", "value": "1k"}
+      ],
+      "netlist": [
+        {"name": "VCC", "nodes": [["J1", "1"], ["C1", "1"], ["C2", "1"], ["R1", "1"]]},
+        {"name": "GND", "nodes": [["J1", "2"], ["C1", "2"], ["C2", "2"], ["R1", "2"]]}
+      ]
+    }
   }
 ]
