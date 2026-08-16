@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Board-scale model benchmark over the user's testprompt.md suite.
+"""Board-scale model benchmark over the user's tests/eval/board_prompts.md suite.
 
 Unlike per-scenario functional checkers, these 18 prompts are diverse
 boards, so scoring is generic per run: spec/plan health, component and
 conceptual counts, unknown-symbol count, KiCad ERC violations, draft
-visibility, wall time. Results append to out/bench_boards/<label>.jsonl —
+visibility, wall time. Results append to tests/artifacts/benchmarks/boards/<label>.jsonl —
 run once BEFORE a knowledge expansion and once after to measure its effect.
 
-    PYTHONPATH=src .venv/bin/python scripts/bench_boards.py --label coder-base
-    PYTHONPATH=src .venv/bin/python scripts/bench_boards.py --label x --only 3,7
+    PYTHONPATH=src .venv/bin/python tests/benchmarks/bench_boards.py --label coder-base
+    PYTHONPATH=src .venv/bin/python tests/benchmarks/bench_boards.py --label x --only 3,7
 """
 
 import argparse
@@ -23,12 +23,12 @@ from circuitgen.llm_client import LlamaClient
 from circuitgen.partindex import PartIndex
 from circuitgen.topology import analyze_topology
 
-ROOT = Path(__file__).resolve().parent.parent
-OUT = ROOT / "out" / "bench_boards"
+ROOT = Path(__file__).resolve().parents[2]
+OUT = ROOT / "tests" / "artifacts" / "benchmarks" / "boards"
 
 
 def load_prompts() -> list[tuple[int, str]]:
-    text = (ROOT / "testprompt.md").read_text(encoding="utf-8")
+    text = (ROOT / "tests/eval/board_prompts.md").read_text(encoding="utf-8")
     out = []
     for m in re.finditer(r"^# (\d+)\s*\n+```\n(.*?)```", text, re.M | re.S):
         out.append((int(m.group(1)), m.group(2).strip()))

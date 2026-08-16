@@ -23,7 +23,7 @@ pytestmark = pytest.mark.skipif(
     reason="kicad-cli.exe / bundled libraries not available",
 )
 
-OUT = Path(__file__).resolve().parent.parent / "out" / "tests" / "tree"
+OUT = Path(__file__).resolve().parent / "artifacts" / "generated" / "tree"
 
 
 def _board() -> CircuitIR:
@@ -55,9 +55,10 @@ def test_three_node_buses_route_as_junctioned_trees_and_roundtrip():
     tree_wires = [w for w in plan.wires if ".t" in w[2]]
     assert tree_wires, "3-node signal nets should route via the tree router"
     assert plan.junctions, "a 3-terminal tree must carry at least one junction"
-    # power nets keep the stub+label + power-symbol convention
-    assert not any(w[2].startswith("net.+3V3.t") or w[2].startswith("net.GND.t")
-                   for w in plan.wires)
+    # This fixture has no explicit input connector/source. Do not move flags
+    # into a dense IC field just to make a visual rail.
+    assert plan.net_routes["+3V3"] == "stubs"
+    assert plan.net_routes["GND"] == "stubs"
 
     OUT.mkdir(parents=True, exist_ok=True)
     text = emit_schematic(ir, symbols, placements)

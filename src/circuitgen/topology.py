@@ -274,7 +274,21 @@ def analyze_conduction(
         if ref in series:
             reach = {name: endpoints(name, ref) for name in nets}
             distinct = {frozenset(v) for v in reach.values() if v}
-            if len(distinct) < 2:
+            # A shared *single rail* is an equipotential fact. Identical sets
+            # of arbitrary device pins are not: a flyback diode is parallel
+            # with a relay coil and an indicator branch, so removing any one
+            # part leaves both ends able to reach the same surrounding loop.
+            # Treating graph reachability as zero impedance declared every
+            # valid parallel branch dead. Voltage equality is only proven
+            # here when both sides terminate solely at the same named rail.
+            sole_endpoints = next(iter(distinct), frozenset())
+            sole_endpoint = next(iter(sole_endpoints), "")
+            same_single_rail = (
+                len(distinct) == 1
+                and len(sole_endpoints) == 1
+                and sole_endpoint.startswith("rail:")
+            )
+            if not distinct or same_single_rail:
                 only = sorted(next(iter(distinct))) if distinct else []
                 report.dead[ref] = (
                     f"both ends reach the same potential ({', '.join(only)})"

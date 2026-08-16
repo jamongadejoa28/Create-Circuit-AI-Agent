@@ -11,9 +11,17 @@ context budget is ~8k tokens (plan §4).
 
 REQUIREMENT_SPEC = {
     "type": "object",
-    "required": ["summary", "power", "parts_needed", "connections_intent"],
+    "required": ["mode", "summary", "power", "parts_needed", "connections_intent"],
     "additionalProperties": False,
     "properties": {
+        "mode": {
+            "type": "string",
+            "enum": ["transcription", "design"],
+            "description": (
+                "transcription only when the request supplies explicit net members; "
+                "design when it asks the system to decide connections or values"
+            ),
+        },
         "summary": {"type": "string", "maxLength": 160, "description": "one-line normalized requirement"},
         "power": {
             "type": "object",
@@ -43,12 +51,32 @@ REQUIREMENT_SPEC = {
                 "additionalProperties": False,
                 "properties": {
                     "role": {"type": "string", "description": "short role id, e.g. mcu, led1, btn1"},
+                    "functional_kind": {
+                        "type": "string",
+                        "enum": [
+                            "voltage_regulator", "input_bypass_capacitor",
+                            "output_bypass_capacitor", "decoupling_capacitor",
+                            "resistor", "capacitor", "inductor", "diode", "led",
+                            "switch", "connector", "transistor", "relay",
+                            "operational_amplifier", "microcontroller", "sensor",
+                            "memory", "communication_interface", "motor_driver",
+                            "shunt_voltage_reference", "integrated_circuit", "other"
+                        ],
+                        "description": (
+                            "typed electrical function used for design-rule matching; "
+                            "classify what this physical part does in this circuit"
+                        ),
+                    },
                     "reference": {"type": "string", "maxLength": 8,
                                   "description": "the designator the REQUEST gives this part (U1, J2, C3); omit if the request does not name one"},
                     "search_query": {"type": "string", "maxLength": 48, "description": "part-index search terms, English"},
                     "value": {"type": "string", "maxLength": 24, "description": "component value if applicable, e.g. 330R"},
                     "quantity": {"type": "integer", "minimum": 1, "maximum": 16,
                                  "description": "physical copies requested; default 1"},
+                    "polarized": {
+                        "type": "boolean",
+                        "description": "true only when explicitly polarized or electrolytic",
+                    },
                 },
             },
         },
@@ -91,6 +119,8 @@ REQUIREMENT_SPEC = {
                                 "reference": {"type": "string", "maxLength": 8},
                                 "pin": {"type": "string", "maxLength": 12,
                                         "description": "pin NUMBER when the request gives one, else its name (VOUT, K, A)"},
+                                "pin_name": {"type": "string", "maxLength": 24,
+                                             "description": "the pin name written after the number, e.g. VCC in 8:VCC; empty when absent"},
                             },
                         },
                     },
@@ -333,15 +363,19 @@ NETLIST_ONLY = {
             "maxItems": 40,
             "items": {
                 "type": "object",
-                "required": ["reference", "part"],
+                "required": ["reference", "part", "value", "package", "polarized"],
                 "additionalProperties": False,
                 "properties": {
                     "reference": {"type": "string", "maxLength": 8,
                                   "description": "the designator: U1, R3, C2, J1"},
                     "part": {"type": "string", "maxLength": 48,
-                             "description": "what to search the catalog for: a part number when the request gives one (AMS1117-3.3, NE555D, ATmega328P-AU), else the generic type (resistor, capacitor, LED, pin header)"},
+                             "description": "PART ID OR CATALOG TYPE ONLY: AMS1117-3.3, NE555D, resistor, capacitor, LED, 1x2 pin header, 2x3 pin header. Connector dimensions belong here. Never put a passive electrical value such as 10uF, 4.7k or 330R here"},
                     "value": {"type": "string", "maxLength": 24,
-                              "description": "the value printed on it: 10uF, 1k, 22pF, green"},
+                              "description": "REQUIRED string: the electrical value or marking printed on this exact reference (10uF, 1k, 22pF, green); connector dimensions such as 1x2 and 2x3 are part types, not values; use an empty string when no printed value is given"},
+                    "package": {"type": "string", "maxLength": 48,
+                                "description": "REQUIRED: exact physical package or pitch the request assigns to this reference, such as SOT-23, SOD-123, SOIC-8, TQFP-32, SMD 0805, or 2.54mm pitch; empty when unspecified"},
+                    "polarized": {"type": "boolean",
+                                  "description": "true only for explicitly polarized/electrolytic capacitors"},
                 },
             },
         },

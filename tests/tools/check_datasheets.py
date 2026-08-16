@@ -7,7 +7,7 @@ a document not in the repository — with values that disagreed with the
 datasheet that was. An unverifiable citation is worse than none: it produces a
 judgement nobody checked.
 
-    PYTHONPATH=src .venv/bin/python scripts/check_datasheets.py
+    PYTHONPATH=src .venv/bin/python tests/tools/check_datasheets.py
 
 Exit 0 when every PDF opens and every DS-number cited in the source tree has a
 file behind it.
@@ -18,7 +18,7 @@ import re
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 SHEETS = ROOT / "data" / "datasheets"
 #: how a document identifies itself on its own first page
 _DOC_ID = re.compile(r"(DS\d{4,6}\s+Rev\s+\d+)|(RM\d{4,6}\s+Rev\s+\d+)|Version\s+([\d.]+)")

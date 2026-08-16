@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -42,6 +43,23 @@ def sha256_tree(root: str | Path, patterns: tuple[str, ...] = ("*.py",)) -> str:
         digest.update(path.read_bytes())
         digest.update(b"\0")
     return digest.hexdigest()
+
+
+def repository_revision(root: str | Path) -> str:
+    """Return the commit plus dirty marker used for a persisted run."""
+    try:
+        root = Path(root)
+        head = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"], cwd=root,
+            capture_output=True, text=True, timeout=5, check=True,
+        ).stdout.strip()
+        dirty = subprocess.run(
+            ["git", "status", "--porcelain"], cwd=root,
+            capture_output=True, text=True, timeout=5, check=True,
+        ).stdout.strip()
+        return f"{head}+dirty" if dirty else head
+    except Exception:
+        return "unknown"
 
 
 class RunRecord:

@@ -1,0 +1,14 @@
+{
+  "erc": {
+    "rule_severities": {
+      "lib_symbol_issues": "ignore",
+      "lib_symbol_mismatch": "ignore",
+      "footprint_link_issues": "ignore",
+      "footprint_filter": "ignore"
+    }
+  },
+  "meta": {
+    "filename": "golden_led_button.kicad_pro",
+    "version": 3
+  }
+}

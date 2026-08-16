@@ -20,7 +20,7 @@ pytestmark = pytest.mark.skipif(
     reason="kicad-cli.exe / bundled libraries not available",
 )
 
-OUT = Path(__file__).resolve().parent.parent / "out" / "tests"
+OUT = Path(__file__).resolve().parent / "artifacts" / "generated"
 
 
 def nand_led_ir() -> CircuitIR:

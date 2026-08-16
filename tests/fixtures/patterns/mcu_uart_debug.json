@@ -108,7 +108,7 @@
   },
   "source": {
     "book": "circuitgen golden fixtures (kicad-cli ERC-verified) + Practical Electronics for Inventors, 4th Ed.",
-    "section": "goldens.py golden5_mcu_uart_ir (USART1 PA9/PA10, 4-pin UART header) + knowledge id pattern_stm32_minimal_power_reset_boot_swd; reset button per PEFI 13.5.1 Switches",
+    "section": "tests/fixtures/goldens.py golden5_mcu_uart_ir (USART1 PA9/PA10, 4-pin UART header) + knowledge id pattern_stm32_minimal_power_reset_boot_swd; reset button per PEFI 13.5.1 Switches",
     "tier": "A",
     "provenance": "internal-fixture"
   },

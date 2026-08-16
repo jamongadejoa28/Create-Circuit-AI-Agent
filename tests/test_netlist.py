@@ -2,11 +2,11 @@
 
 from simp_sexp import Sexp
 
-from circuitgen.examples import golden_led_button_ir
 from circuitgen.ir import CircuitIR, Component
-from circuitgen.netlist import generate_netlist, ir_partition
+from circuitgen.netlist import compare_connectivity, generate_netlist, ir_partition
 from circuitgen.normalize import ensure_pwr_flags
 from circuitgen.symbols import KICAD_SYMBOL_DIR, load_symbols
+from tests.fixtures.examples import golden_led_button_ir
 
 import pytest
 
@@ -35,3 +35,23 @@ def test_generated_netlist_parses_and_lists_all_nodes():
     assert len(nets) == 4
     comps = sx.search("/export/components/comp")
     assert len(comps) == len(ir.components)
+
+
+def test_round_trip_decodes_sheet_prefix_and_escaped_slashes(tmp_path):
+    """KiCad qualifies local labels and escapes a slash that is label text."""
+    ir = CircuitIR("escaped_names")
+    ir.add(Component("R1", "Device:R", "1k"))
+    ir.add(Component("R2", "Device:R", "1k"))
+    ir.connect("/MCU/SIGNAL", ("R1", "1"), ("R2", "1"))
+    ir.connect("DATA[0]", ("R1", "2"), ("R2", "2"))
+    symbols = load_symbols(sorted({c.lib_id for c in ir.components.values()}))
+    exported = generate_netlist(ir, symbols)
+    exported = exported.replace(
+        '(name "/MCU/SIGNAL")', '(name "/{slash}MCU{slash}SIGNAL")'
+    ).replace('(name "DATA[0]")', '(name "/DATA[0]")')
+    path = tmp_path / "escaped.net"
+    path.write_text(exported, encoding="utf-8")
+
+    ok, message = compare_connectivity(ir, path)
+
+    assert ok, message

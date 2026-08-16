@@ -9,15 +9,18 @@ cannot say WHICH family fails or why, and optimising against it is how special
 cases accumulate.
 
 Usage:
-  PYTHONPATH=src .venv/bin/python scripts/bench_general.py --label baseline --seed 100
+  PYTHONPATH=src .venv/bin/python tests/benchmarks/bench_general.py --label baseline --seed 100
 """
 
 import argparse
+import hashlib
 import json
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from circuitgen.agent import Agent
+from circuitgen.audit import repository_revision, sha256_file, sha256_tree
 from circuitgen.knowledge import KnowledgeIndex
 from circuitgen.llm_client import LlamaClient
 from circuitgen.partindex import PartIndex
@@ -25,8 +28,8 @@ from circuitgen.compliance import part_present
 from circuitgen.evalmetrics import measure_run, summarize
 from circuitgen.topology import analyze_topology
 
-ROOT = Path(__file__).resolve().parent.parent
-SUITE = ROOT / "data" / "eval" / "general_circuit_suite.json"
+ROOT = Path(__file__).resolve().parents[2]
+SUITE = ROOT / "tests" / "eval" / "general_circuit_suite.json"
 
 
 def _contract_results(required: list[str], topology: dict) -> dict[str, bool]:
@@ -59,16 +62,39 @@ def main() -> int:
     if not base.health():
         print("llama-server unreachable")
         return 1
+    model = base._resolve_model()
 
-    root_out = ROOT / "out" / "bench_general" / args.label
-    root_out.mkdir(parents=True, exist_ok=True)
+    root_out = ROOT / "tests" / "artifacts" / "benchmarks" / "general" / args.label
     results = root_out.parent / f"{args.label}.jsonl"
+    if root_out.exists() or results.exists():
+        print(
+            f"label {args.label!r} already exists; use a new label so runs are not mixed"
+        )
+        return 1
+    root_out.mkdir(parents=True, exist_ok=False)
+    manifest = {
+        "label": args.label,
+        "started_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "repository_revision": repository_revision(ROOT),
+        "source_sha256": sha256_tree(ROOT / "src"),
+        "product_data_sha256": sha256_tree(ROOT / "data", patterns=("*.json",)),
+        "suite": str(SUITE.relative_to(ROOT)),
+        "suite_sha256": sha256_file(SUITE),
+        "benchmark_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        "model": model,
+        "seed_base": args.seed,
+        "repeats": args.repeats,
+        "case_ids": [case["id"] for case in cases],
+    }
+    (root_out / "manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
     parts, knowledge = PartIndex(), KnowledgeIndex()
     rows = []
     for case_index, case in enumerate(cases):
         for repeat in range(1, args.repeats + 1):
             seed = args.seed + case_index * 100 + repeat if args.seed is not None else None
-            llm = LlamaClient(model=base.model, extra_payload={"seed": seed} if seed is not None else {})
+            llm = LlamaClient(model=model, extra_payload={"seed": seed} if seed is not None else {})
             run_dir = root_out / f"{case['id']}-r{repeat}"
             agent = Agent(llm, parts, knowledge, run_dir)
             started = time.monotonic()
@@ -102,6 +128,12 @@ def main() -> int:
                 "domain": case["domain"],
                 "repeat": repeat,
                 "seed": seed,
+                "prompt_sha256": hashlib.sha256(case["prompt"].encode("utf-8")).hexdigest(),
+                "repository_revision": manifest["repository_revision"],
+                "source_sha256": manifest["source_sha256"],
+                "product_data_sha256": manifest["product_data_sha256"],
+                "suite_sha256": manifest["suite_sha256"],
+                "model": model,
                 "stage": res.stage,
                 "pipeline_ok": bool(pr and pr.ok),
                 "draft_visible": bool(pr and pr.sch_path),
@@ -149,21 +181,21 @@ def main() -> int:
                 f"parts={len(in_board)}/{len(selected)} compliance={row['compliance_ok']}"
             )
 
-    passed = sum(
-        r["pipeline_ok"] and r["contract_ok"] and r["compliance_ok"] for r in rows
-    )
     print(f"\n--- per family (direction doc §6) ---")
     for domain, stats in summarize(rows).items():
         print(f"{domain:20} {json.dumps(stats, ensure_ascii=False)}")
     vacuous = sum(1 for r in rows if not r["contract_required"])
     print(
-        f"\ngate-shaped score: {passed}/{len(rows)} — read the table above instead. "
-        f"{vacuous}/{len(rows)} runs have NO required topology, so contract_ok is "
-        f"vacuously true for them and the score is effectively "
-        f"pipeline_ok AND compliance_ok."
+        f"\ncontract coverage warning: {vacuous}/{len(rows)} runs have no required "
+        "topology. No aggregate pass score is computed; inspect each family and metric."
+    )
+    manifest["finished_utc"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    manifest["rows"] = len(rows)
+    (root_out / "manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
     print(f"results: {results}")
-    return 0 if passed == len(rows) else 2
+    return 0
 
 
 if __name__ == "__main__":

@@ -151,7 +151,7 @@
   },
   "source": {
     "book": "circuitgen golden fixtures (kicad-cli ERC-verified)",
-    "section": "goldens.py golden3_mcu_i2c_ir — knowledge id pattern_i2c_sensor_pullups",
+    "section": "tests/fixtures/goldens.py golden3_mcu_i2c_ir — knowledge id pattern_i2c_sensor_pullups",
     "tier": "A",
     "provenance": "internal-fixture"
   },

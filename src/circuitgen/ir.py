@@ -43,6 +43,13 @@ class SymbolDef:
         for p in self.pins:
             if p.number == str(number):
                 return p
+            # KiCad 10 represents coincident physical pins with a bundled
+            # number such as ``[1,15,38,39]``.  A request naturally names
+            # physical pin 38; it still addresses this graphical pin.
+            if p.number.startswith("[") and p.number.endswith("]") and str(number) in {
+                item.strip() for item in p.number[1:-1].split(",")
+            }:
+                return p
         raise KeyError(f"{self.lib_id} has no pin {number!r}")
 
     @property
@@ -77,6 +84,10 @@ class Component:
     # instantiate_blocks stamps it so placement and visual QA can keep a
     # board-scale schematic readable.
     group: str = ""
+    # Why an exact requested part could not be bound to the catalog symbol.
+    # This survives draft emission/JSON recording so a pin-map conflict is a
+    # structured product error, not a line that disappears in the run log.
+    binding_error: str = ""
 
 
 @dataclass

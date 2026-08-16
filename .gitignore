@@ -39,15 +39,18 @@ build/
 *.kicad_pro-bak
 *.kicad_prl
 *.erc.json
-golden/svg/
+/tests/artifacts/
+/tests/fixtures/golden/svg/
 fp-info-cache
 *.kicad-export.net
-golden/*.net
+/tests/fixtures/golden/*.net
 /kicad-symbols/
 /kicad-footprints/
 /kicad-packages3D/
 /kicad-packages3D-source/
 /kicad-templates/
 
-# --- docs ---
-docs/
+# --- docs: only the operating rules and living status are versioned ---
+docs/*
+!docs/working-rules.md
+!docs/STATUS.md

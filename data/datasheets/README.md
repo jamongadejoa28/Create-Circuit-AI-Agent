@@ -52,7 +52,7 @@ PyMuPDF로 읽어 확인할 수 있어야 합니다. 검증 불가능한 인용�
 | AN2867 크리스탈 발진기 설계 | 크리스탈 부하 커패시터 값의 근거 | [st.com](https://www.st.com/resource/en/application_note/an2867-oscillator-design-guide-for-stm8afals-stm32-mcus-and-mpus-stmicroelectronics.pdf) |
 
 파일을 넣으신 뒤 이 표에 파일명·개정판·쪽수를 추가해 주시면 됩니다.
-`scripts/check_datasheets.py`가 폴더 전체를 열어 확인하고, 같은 문서가 두 이름으로
+`tests/tools/check_datasheets.py`가 폴더 전체를 열어 확인하고, 같은 문서가 두 이름으로
 들어오면 잡아냅니다.
 
 ## 정정: 대체 기능(AF) 매핑표는 RM0440이 아니라 데이터시트에 있습니다

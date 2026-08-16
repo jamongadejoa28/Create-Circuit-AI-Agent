@@ -13,12 +13,26 @@
 
 ## 실행
 
-필요한 것:
+Windows에서 추론 서버와 KiCad CLI를 띄운 뒤, WSL2에서 에이전트를 실행합니다.
+에이전트는 llama-server를 기동하지 않습니다 (WSL에서 실행하면 exit 53).
 
-- Windows 쪽 `llama-server.exe` (Qwen2.5-Coder-7B, `--temp 0`) — WSL2에서
-  `http://localhost:PORT`로 접근됩니다 (`.wslconfig`의 `networkingMode=mirrored`)
-- Windows 쪽 KiCad 10 (`kicad-cli.exe`)
-- 부품/지식 인덱스: `scripts/build_part_index.py`, `scripts/build_knowledge_index.py`
+**Windows `llama-server.exe`** (슬롯 1, ctx 8192). 온도는 클라이언트가 0으로 고정합니다.
+
+```text
+llama-server.exe -m Qwen2.5-Coder-7B-Instruct-Q5_K_M.gguf --host 127.0.0.1 --port 8080 --ctx-size 8192 -ngl 99 --parallel 1
+```
+
+빌드 위치 예: `C:\Users\hajun\llama.cpp\build\bin\Release\llama-server.exe`.
+WSL2는 `.wslconfig`의 `networkingMode=mirrored`로 `http://127.0.0.1:8080`에 붙습니다.
+
+**Windows KiCad 10** `kicad-cli.exe`는 `C:\Program Files\KiCad\10.0\bin\`입니다. 에이전트가 `wslpath -w`로 경로를 변환합니다.
+
+부품/지식 인덱스:
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/build_part_index.py
+PYTHONPATH=src .venv/bin/python scripts/build_knowledge_index.py
+```
 
 ```bash
 .venv/bin/pip install -e ".[web]"     # 한 번만. 이걸 빼면 ModuleNotFoundError: circuitgen
@@ -41,13 +55,36 @@ curl -s localhost:8000/api/jobs/<id>                # 상태와 리포트
 curl -s localhost:8000/api/jobs/<id>/file/schematic  # .kicad_sch
 ```
 
-CLI만 쓰려면 `scripts/run_agent.py`, 측정은 `scripts/bench_general.py`입니다.
+CLI만 쓰려면 `scripts/run_agent.py`, 측정은 `tests/benchmarks/bench_general.py`입니다.
+
+## 서비스와 테스트 자산의 경계
+
+- `src/circuitgen/`: 웹·CLI 서비스가 실행하는 제품 코드
+- `data/knowledge/`, `data/patterns/`, `data/rules/`, `data/*.json`: 실제 생성에 사용하는 지식, typed 설계 규칙, 장치 데이터
+- `scripts/`: 서비스 실행 및 런타임 인덱스 구축 도구
+- `tests/fixtures/`: 테스트 전용 고정 회로와 golden 기준 파일
+- `tests/eval/`, `tests/benchmarks/`: 평가셋과 벤치 실행기
+- `tests/artifacts/`: 테스트·벤치가 만든 산출물. Git에는 포함하지 않음
+- `tests/tools/`: golden 재생성 및 데이터시트 검증 도구
+
+제품 코드와 서비스 스크립트는 `tests`를 import하지 않습니다.
+
+공개 회로 데이터셋은 곧바로 서비스 지식이 되지 않습니다. SchGen과 Open
+Schematics는 `tests/datasets/`의 출처 manifest와 DatasetExample 스키마를 통해
+소량 샘플링한 뒤, 라이선스·중복·저장소 단위 split·핀 바인딩·넷리스트 왕복·렌더링·
+사람 검토를 각각 통과한 예제만 평가/학습 후보가 됩니다. 자세한 절차는
+[`tests/datasets/README.md`](tests/datasets/README.md)에 있습니다.
 
 ## 리포트 읽는 법
 
+웹·CLI 리포트는 캠페인과 같은 순서로 읽습니다. **ERC는 마지막입니다.**
+
 | 항목 | 뜻 |
 |---|---|
-| **막는 문제(blocking)** | 요청한 부품이 없음 / 전원 핀이 레일에 닿지 않음 / 부품에 전류가 흐를 수 없음. **하나라도 있으면 발주 금지** |
+| 선택한 부품 | 사용자가 고른 부품이 보드에 있는지. 없으면 발주 금지 |
+| 역할 동작 (`role_working` / `role_total`) | 부품이 놓여 있어도 전류가 흐를 수 없으면 동작하지 않은 것 |
+| 커넥터 접점 | 요청 행·열·접점 수 vs 심볼 핀 수 vs footprint 패드 수 |
+| **막는 문제(blocking)** | 위 불일치와 전원 핀이 레일에 안 닿는 것. **하나라도 있으면 발주 금지** |
 | 확인 필요(warnings) | 요청서 해석 단계의 판단이라 사람이 확인해야 하는 항목 |
 | KiCad ERC 위반 | 배선이 규칙에 맞는지. **0이라고 회로가 맞는 것은 아닙니다** |
 | 넷리스트 왕복 일치 | 그린 도면이 의도한 연결과 같은지 |
@@ -83,7 +120,7 @@ CLI만 쓰려면 `scripts/run_agent.py`, 측정은 `scripts/bench_general.py`입
 셋 다 **막는 문제 0건**. 부품 선택은 쓰신 넷리스트가 쓰는 핀으로 제약됩니다 —
 "택트 스위치"는 2핀 부품, "1x6 헤더"는 6핀 커넥터가 됩니다.
 
-**설계 모드** — 8개 회로군 벤치(`data/eval/general_circuit_suite.json`).
+**설계 모드** — 8개 회로군 벤치(`tests/eval/general_circuit_suite.json`).
 **단일 점수를 만들지 않습니다**; 어느 회로군이 왜 안 되는지가 유일하게 쓸모 있는 정보입니다.
 
 | 회로군 | 결과 |
@@ -107,4 +144,5 @@ CLI만 쓰려면 `scripts/run_agent.py`, 측정은 `scripts/bench_general.py`입
 
 `docs/working-rules.md`를 먼저 읽으세요. 테스트를 통과시키려고 코드를 쓰지 않기,
 점수 상승을 증거로 삼지 않기, 발견한 문제는 이월하지 않기 — 전부 이 저장소에서
-실제로 일어난 실패에서 나온 규칙입니다.
+실제로 일어난 실패에서 나온 규칙입니다. 현재 상태와 다음 지표 공백은
+`docs/STATUS.md`에만 적습니다. 새 계획 파일을 만들지 않습니다.

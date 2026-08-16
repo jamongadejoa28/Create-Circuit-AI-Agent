@@ -1,0 +1,83 @@
+{
+  "_note": [
+    "Canonical pin roles and pinout definitions per device family.",
+    "Every entry must cite a verified datasheet or KiCad canonical symbol.",
+    "Used to cross-check pin compatibility, aliases, and intended pin roles."
+  ],
+  "devices": [
+    {
+      "match": "Interface_USB:CH340K",
+      "status": "verified",
+      "package": "SSOP-10",
+      "source": {
+        "document": "CH340DS1.PDF / WCH CH340 Datasheet",
+        "symbol": "Interface_USB:CH340K"
+      },
+      "pins": {
+        "1": {"name": "UD+", "role": "usb_dp", "type": "bidirectional"},
+        "2": {"name": "UD-", "role": "usb_dn", "type": "bidirectional"},
+        "3": {"name": "GND", "role": "ground", "type": "power_in"},
+        "4": {"name": "~{DTR}", "aliases": ["DTR", "DTR#"], "role": "modem_out", "type": "output"},
+        "5": {"name": "~{CTS}", "aliases": ["CTS", "CTS#"], "role": "modem_in", "type": "input"},
+        "6": {"name": "~{RTS}", "aliases": ["RTS", "RTS#"], "role": "modem_out", "type": "output"},
+        "7": {"name": "VCC", "aliases": ["VDD", "5V", "3V3"], "role": "power_in", "type": "power_in"},
+        "8": {"name": "TXD", "aliases": ["TX", "TXD0", "UTXD"], "role": "uart_tx", "type": "output"},
+        "9": {"name": "RXD", "aliases": ["RX", "RXD0", "URXD"], "role": "uart_rx", "type": "input"},
+        "10": {"name": "V3", "aliases": ["V3_CAP", "V33", "CAP_V3"], "role": "power_internal", "type": "passive"}
+      }
+    },
+    {
+      "match": "RF_Module:ESP32-WROOM-32E",
+      "status": "verified",
+      "package": "SMD Module",
+      "source": {
+        "document": "ESP32-WROOM-32E Datasheet, Espressif Systems",
+        "file": "data/datasheets/esp32-wroom-32e_esp32-wroom-32ue_datasheet_en.pdf",
+        "pdf_page_index": 10,
+        "symbol": "RF_Module:ESP32-WROOM-32E"
+      },
+      "pins": {
+        "1": {"name": "GND", "role": "ground", "type": "power_in"},
+        "2": {"name": "3V3", "aliases": ["VCC", "VDD", "3.3V"], "role": "power_in", "type": "power_in"},
+        "3": {"name": "EN", "aliases": ["CHIP_PU", "RESET", "RST"], "role": "reset", "type": "input"},
+        "25": {"name": "IO0", "aliases": ["GPIO0", "BOOT"], "role": "gpio_boot", "type": "bidirectional"},
+        "34": {"name": "RXD0", "aliases": ["RXD", "URXD0", "IO3"], "role": "uart_rx", "type": "bidirectional"},
+        "35": {"name": "TXD0", "aliases": ["TXD", "UTXD0", "IO1"], "role": "uart_tx", "type": "bidirectional"},
+        "38": {"name": "GND", "role": "ground", "type": "power_in"}
+      }
+    },
+    {
+      "match": "Regulator_Linear:AMS1117-3.3",
+      "status": "verified",
+      "package": "SOT-223",
+      "source": {
+        "document": "AMS1117 Datasheet, Advanced Monolithic Systems",
+        "symbol": "Regulator_Linear:AMS1117-3.3"
+      },
+      "pins": {
+        "1": {"name": "GND", "aliases": ["ADJ", "GROUND"], "role": "ground", "type": "power_in"},
+        "2": {"name": "VOUT", "aliases": ["3V3", "VO", "OUT"], "role": "power_out", "type": "power_out"},
+        "3": {"name": "VIN", "aliases": ["5V", "VBUS", "VI", "IN"], "role": "power_in", "type": "power_in"}
+      }
+    },
+    {
+      "match": "Amplifier_Audio:LM386",
+      "status": "verified",
+      "package": "DIP-8/SOIC-8/SSOP-8",
+      "source": {
+        "document": "KiCad 10 canonical Amplifier_Audio:LM386 symbol",
+        "symbol": "Amplifier_Audio:LM386"
+      },
+      "pins": {
+        "1": {"name": "GAIN", "aliases": ["GAIN1"], "role": "gain_set", "type": "input"},
+        "2": {"name": "-", "aliases": ["-IN", "IN-"], "role": "inverting_input", "type": "input"},
+        "3": {"name": "+", "aliases": ["+IN", "IN+"], "role": "non_inverting_input", "type": "input"},
+        "4": {"name": "GND", "role": "ground", "type": "power_in"},
+        "5": {"name": "", "aliases": ["VOUT", "OUT"], "role": "output", "type": "output"},
+        "6": {"name": "V+", "aliases": ["VS", "VCC"], "role": "power_in", "type": "power_in"},
+        "7": {"name": "BYPASS", "role": "bypass", "type": "input"},
+        "8": {"name": "GAIN", "aliases": ["GAIN2"], "role": "gain_set", "type": "input"}
+      }
+    }
+  ]
+}

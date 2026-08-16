@@ -132,6 +132,13 @@ def compare_connectivity(
     by_name: dict[str, set[tuple[str, str]]] = {}
     for name, nodes in exported.items():
         key = name.rsplit("/", 1)[-1] or name
+        # A local label beginning with '/' is escaped by KiCad inside the
+        # sheet-qualified export name: '/MCU/I2C_SDA' becomes
+        # '/{slash}MCU{slash}I2C_SDA'. Decode after removing the real sheet
+        # path so the oracle compares the label the user actually supplied.
+        # Ordinary bus notation is only sheet-prefixed ('/DATA[0]') and is
+        # handled by the basename operation above.
+        key = key.replace("{slash}", "/")
         by_name[name if key in by_name else key] = nodes
 
     msg: list[str] = []

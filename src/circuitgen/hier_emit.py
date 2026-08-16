@@ -86,7 +86,7 @@ def emit_hierarchical(
         sub = CircuitIR(name=f"{name}_{sheet.name.lower()}")
         for r in sorted(comps):
             c = ir.components[r]
-            sub.add(Component(r, c.lib_id, c.value, c.footprint, c.group))
+            sub.add(Component(r, c.lib_id, c.value, c.footprint, c.group, c.binding_error))
         touched_rails: dict[str, str] = {}
         for net in ir.nets:
             nodes = [(r, p) for r, p in net.nodes if r in sub.components]

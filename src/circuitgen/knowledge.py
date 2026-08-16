@@ -62,8 +62,16 @@ def _hit_tokens(entry: dict) -> set[str]:
     )
 
 
-def load_entries(knowledge_dir: Path = KNOWLEDGE_DIR) -> list[dict]:
-    """Load and validate all curated entries; raises on malformed data."""
+def load_entries(
+    knowledge_dir: Path = KNOWLEDGE_DIR, *, allow_internal_fixtures: bool = False
+) -> list[dict]:
+    """Load and validate curated production knowledge.
+
+    ERC-passing examples are useful regression fixtures, but they are not an
+    independent source of circuit-design truth.  Production indexing rejects
+    them so a fixture cannot become LLM grounding through a misplaced JSON
+    file.  Tests that inspect archived fixtures must opt in explicitly.
+    """
     entries: list[dict] = []
     seen: set[str] = set()
     for f in sorted(knowledge_dir.glob("*.json")):
@@ -80,6 +88,19 @@ def load_entries(knowledge_dir: Path = KNOWLEDGE_DIR) -> list[dict]:
                 raise ValueError(f"duplicate knowledge id {e['id']!r}")
             if "book" not in e["source"]:
                 raise ValueError(f"{f.name}: entry {e['id']} source lacks 'book'")
+            provenance = e["source"].get("provenance")
+            if provenance == "internal-fixture" and not allow_internal_fixtures:
+                raise ValueError(
+                    f"{f.name}: entry {e['id']} is an internal fixture; "
+                    "it cannot be indexed as production knowledge"
+                )
+            if provenance != "textbook" and not (
+                allow_internal_fixtures and provenance == "internal-fixture"
+            ):
+                raise ValueError(
+                    f"{f.name}: entry {e['id']} has unsupported provenance "
+                    f"{provenance!r}"
+                )
             seen.add(e["id"])
             e["_file"] = f.name
             entries.append(e)

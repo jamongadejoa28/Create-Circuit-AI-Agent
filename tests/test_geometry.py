@@ -94,3 +94,43 @@ def test_grid_alignment_of_stub_ends():
         start, end = pin_stub_end(Placement(63.5, 63.5, rot), p)
         for v in (*start, *end):
             assert abs(v / 1.27 - round(v / 1.27)) < 1e-9
+
+
+def test_dense_ic_support_is_gathered_by_topology_not_net_names():
+    from circuitgen.ir import CircuitIR, Component, SymbolDef
+    from circuitgen.place import _localize_dense_ic_support
+
+    pins = [
+        PinDef(str(i), f"IO{i}", PinType.BIDIR, -10.16, (i - 10) * 2.54, 0, 2.54)
+        for i in range(1, 21)
+    ]
+    mcu = SymbolDef("Test:MCU", "", pins, reference_prefix="U")
+
+    def two(lid, prefix):
+        return SymbolDef(lid, "", [
+            PinDef("1", "1", PinType.PASSIVE, -2.54, 0, 0, 2.54),
+            PinDef("2", "2", PinType.PASSIVE, 2.54, 0, 180, 2.54),
+        ], reference_prefix=prefix)
+
+    symbols = {
+        "Test:MCU": mcu,
+        "Device:Crystal": two("Device:Crystal", "Y"),
+        "Device:C": two("Device:C", "C"),
+    }
+    ir = CircuitIR("local")
+    ir.add(Component("U1", "Test:MCU", "MCU"))
+    ir.add(Component("Y1", "Device:Crystal", "16MHz"))
+    ir.add(Component("C1", "Device:C", "22pF"))
+    ir.connect("OSC_A", ("U1", "1"), ("Y1", "1"), ("C1", "1"))
+    ir.connect("OSC_B", ("U1", "2"), ("Y1", "2"))
+    placements = {
+        "U1": {1: Placement(150, 100)},
+        "Y1": {1: Placement(300, 200)},
+        "C1": {1: Placement(40, 200)},
+    }
+
+    clusters = _localize_dense_ic_support(ir, symbols, placements)
+
+    assert clusters == {"C1": "local:U1", "Y1": "local:U1", "U1": "local:U1"}
+    assert abs(placements["Y1"][1].x - placements["U1"][1].x) < 80
+    assert abs(placements["C1"][1].x - placements["U1"][1].x) < 80

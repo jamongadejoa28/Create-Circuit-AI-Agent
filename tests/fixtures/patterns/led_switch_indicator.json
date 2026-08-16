@@ -97,7 +97,7 @@
   },
   "source": {
     "book": "circuitgen golden fixtures (kicad-cli ERC-verified)",
-    "section": "examples.py (golden 1) — knowledge id golden1_led_button",
+    "section": "tests/fixtures/examples.py (golden 1) — knowledge id golden1_led_button",
     "tier": "A",
     "provenance": "internal-fixture"
   },

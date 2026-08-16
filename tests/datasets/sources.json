@@ -1,0 +1,14 @@
+[
+  {
+    "id": "microsoft-schgen",
+    "dataset": "microsoft/SchGen_dataset",
+    "revision": "main",
+    "declared_license": "MIT",
+    "upstream_license_policy": "verify each source project before acceptance",
+    "adapter": "schgen",
+    "config": "default",
+    "split": "train",
+    "sample_limit": 100,
+    "purpose": "semantic-code and prompt baseline; never execute code in the service process"
+  }
+]
