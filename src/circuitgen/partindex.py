@@ -287,10 +287,25 @@ class PartIndex:
         must surface Device:LED before every part whose description merely
         mentions LEDs), then bm25, then source priority, then simplicity
         (fewer pins first).
+
+        Exact names may include ``unit0_mix`` symbols (Timer:NE555D — power
+        pins on unit 0). Fuzzy FTS still excludes those so a loose query
+        cannot land on a structurally unusual part by accident.
         """
         q = _fts_query(query)
         if not q:
             return []
+        text = query.strip()
+        exact_ids: list[str] = []
+        # Full ``Library:Symbol`` IDs are not in FTS (lib_id is UNINDEXED). A
+        # named selection such as Switch:SW_Push must still resolve — measured:
+        # empty candidates + skipped Conceptual aborted the LED/button board.
+        if ":" in text:
+            full = self.exact_lib_id(text)
+            if full:
+                exact_ids.append(full)
+        exact_ids.extend(self.exact_symbol_ids(text))
+        exact_rows = self._symbol_rows(list(dict.fromkeys(exact_ids)))
         rows = self.con.execute(
             """
             SELECT s.lib_id, s.description, s.keywords, s.reference_prefix,
@@ -301,10 +316,20 @@ class PartIndex:
             ORDER BY (lower(s.name) = lower(?)) DESC, rank, s.priority, s.pin_count
             LIMIT ?
             """,
-            (q, query.strip(), limit),
+            (q, text, limit),
         ).fetchall()
         if not rows:
             rows = self._prefix_fallback(query, limit)
+        merged: list = []
+        seen: set[str] = set()
+        for row in [*exact_rows, *rows]:
+            lib_id = str(row["lib_id"])
+            if lib_id in seen:
+                continue
+            seen.add(lib_id)
+            merged.append(row)
+            if len(merged) >= limit:
+                break
         return [
             {
                 "lib_id": r["lib_id"],
@@ -317,7 +342,7 @@ class PartIndex:
                 "footprint_filters": r["fp_filters"][:80],
                 "default_footprint": r["footprint"],
             }
-            for r in rows
+            for r in merged
         ]
 
     def exact_symbol_ids(self, name: str) -> list[str]:
@@ -327,6 +352,11 @@ class PartIndex:
         so exact names such as ``NE555D`` and ``ATmega328P-AU`` can be absent
         from otherwise sensible searches. Transcription already has the part
         identity; it should not replace it with a fuzzy neighbor.
+
+        Exact identity includes single-unit symbols whose power pins live on
+        unit 0 (``Timer:NE555D``). Multi-unit ``unit0_mix`` symbols stay out:
+        the stub emitter cannot place them (``unit0_pins_unsupported``).
+        Fuzzy FTS still excludes every ``unit0_mix`` row.
         """
         text = (name or "").strip()
         if not text:
@@ -334,12 +364,30 @@ class PartIndex:
         rows = self.con.execute(
             """
             SELECT lib_id FROM symbols
-            WHERE lower(name) = lower(?) AND unit0_mix = 0
+            WHERE lower(name) = lower(?)
+              AND (unit0_mix = 0 OR unit_count = 1)
             ORDER BY priority, pin_count, lib_id
             """,
             (text,),
         ).fetchall()
         return [str(row["lib_id"]) for row in rows]
+
+    def _symbol_rows(self, lib_ids: list[str]) -> list:
+        """Full symbol rows for already-resolved catalog IDs."""
+        out = []
+        for lib_id in lib_ids:
+            row = self.con.execute(
+                """
+                SELECT lib_id, description, keywords, reference_prefix,
+                       is_power, unit_count, pin_count, fp_filters,
+                       footprint, priority, 0 AS rank
+                FROM symbols WHERE lib_id = ?
+                """,
+                (lib_id,),
+            ).fetchone()
+            if row is not None:
+                out.append(row)
+        return out
 
     def exact_lib_id(self, lib_id: str) -> str | None:
         """Return a catalog lib_id only when the full ``Library:Symbol`` exists."""

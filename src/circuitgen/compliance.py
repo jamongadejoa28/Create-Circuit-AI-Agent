@@ -173,7 +173,13 @@ def part_present(token: str, lib_id: str, value: str = "") -> bool:
     the part number typed into it — measured on driver_relay, where
     Relay:RM50-xx21 with value "G5V-1" was reported as satisfying a request for
     G5V-1 while Relay:G5V-1 sat unused in the bundled library.
+
+    A ``Conceptual:`` placeholder is never the requested part — measured on
+    the timer campaign board, ``Conceptual:NE555D`` made selected_parts look
+    present while the catalog symbol ``Timer:NE555D`` was never bound.
     """
+    if (lib_id or "").startswith("Conceptual:"):
+        return False
     if ":" in (token or ""):
         return token.strip().casefold() == lib_id.strip().casefold()
     want = _norm(token)

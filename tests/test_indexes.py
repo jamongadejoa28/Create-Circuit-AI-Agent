@@ -49,6 +49,26 @@ def test_exact_symbol_lookup_bypasses_fts_tokenization(small_part_index):
     assert small_part_index.exact_symbol_ids("not-a-real-symbol") == []
 
 
+def test_exact_symbol_includes_unit0_power_pin_timers():
+    """Timer:NE555D keeps VCC/GND on unit 0; exact identity must still resolve.
+
+    Fuzzy search keeps excluding unit0_mix so a loose query cannot land on it.
+    Measured: design-mode ``NE555D`` returned zero hits and became Conceptual.
+    """
+    from circuitgen.partindex import PartIndex
+
+    idx = PartIndex()
+    assert "Timer:NE555D" in idx.exact_symbol_ids("NE555D")
+    hits = idx.search_parts("NE555D", limit=5)
+    assert hits and hits[0]["lib_id"] == "Timer:NE555D"
+    # A loose keyword search must not suddenly prefer unit0_mix parts.
+    loose = {h["lib_id"] for h in idx.search_parts("single timer", limit=8)}
+    assert "Timer:NE555D" not in loose
+    # Full Library:Symbol IDs are UNINDEXED in FTS — still must resolve.
+    full = idx.search_parts("Switch:SW_Push", limit=3)
+    assert full and full[0]["lib_id"] == "Switch:SW_Push"
+
+
 def test_exact_library_id_is_verified_without_fuzzy_search(small_part_index):
     assert small_part_index.exact_lib_id("Device:LED") == "Device:LED"
     assert small_part_index.exact_lib_id("device:led") == "Device:LED"

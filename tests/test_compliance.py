@@ -136,6 +136,13 @@ def test_ordering_code_variants_satisfy_the_request():
     assert not part_present("BME280", "Sensor_Temperature:Si7050-A20")
 
 
+def test_conceptual_placeholder_does_not_satisfy_selected_part():
+    # measured: Conceptual:NE555D counted as selected_parts_in_board while
+    # Timer:NE555D was never bound
+    assert not part_present("NE555D", "Conceptual:NE555D")
+    assert part_present("NE555D", "Timer:NE555D")
+
+
 def test_substituted_part_is_reported_missing_not_silently_accepted():
     ir = CircuitIR("sub")
     ir.add(Component("U1", STM32, "STM32G474RETx"))

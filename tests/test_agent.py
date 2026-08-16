@@ -60,6 +60,33 @@ def test_physical_role_normalization_is_general_and_idempotent():
     assert spec["parts_needed"][2]["search_query"] == "2x3 connector"
 
 
+def test_passive_value_search_query_is_rehomed_to_catalog_class():
+    """Measured: 10kΩ / 8Ω as search_query became Conceptual:10k / Conceptual:8."""
+    spec = {"parts_needed": [
+        {"role": "potentiometer", "search_query": "10kΩ", "quantity": 1},
+        {"role": "speaker", "search_query": "8Ω", "quantity": 1},
+        {"role": "crystal", "search_query": "16M", "quantity": 1},
+        {"role": "timer", "search_query": "NE555D", "quantity": 1},
+    ]}
+    Agent._normalize_physical_roles(spec)
+    assert spec["parts_needed"][0]["search_query"] == "potentiometer"
+    assert spec["parts_needed"][0]["value"] == "10kΩ"
+    assert spec["parts_needed"][1]["search_query"] == "speaker"
+    assert spec["parts_needed"][1]["value"] == "8Ω"
+    # Role is the search — do not invent "resistor" from a value synonym table.
+    assert spec["parts_needed"][2]["search_query"] == "crystal"
+    assert spec["parts_needed"][2]["value"] == "16M"
+    assert spec["parts_needed"][3]["search_query"] == "NE555D"
+
+
+def test_search_parts_resolves_full_library_symbol_id():
+    from circuitgen.partindex import PartIndex
+
+    idx = PartIndex()
+    hits = idx.search_parts("Switch:SW_Push", limit=3)
+    assert hits and hits[0]["lib_id"] == "Switch:SW_Push"
+
+
 def enable_internal_pattern_fixtures(agent: Agent) -> None:
     """Opt a pattern-engine test into archived, non-production fixtures."""
     agent._patterns = load_patterns(
@@ -882,12 +909,37 @@ def test_dropped_power_capacitor_is_restored_not_fatal(agent_env):
         "series_resistor": [{"lib_id": "Device:R", "reference_prefix": "R"}],
     }
     exempt = agent._restore_passive_roles(spec, ir, cands, log)
-    # power cap restored across the rail; plain resistor exempted, not fatal
+    # power cap restored across the rail; plain resistor exempted, not placed floating
     assert "C1" in ir.components and ir.components["C1"].lib_id == "Device:C"
     nets = {n.name: n.nodes for n in ir.nets}
     assert ("C1", "1") in nets["+3V3"] and ("C1", "2") in nets["GND"]
     assert exempt == {"series_resistor"}
+    assert "R1" not in ir.components
     assert any("restored dropped passive role" in n for n in log)
+
+
+def test_dropped_potentiometer_and_speaker_are_exempted_not_floated(agent_env):
+    parts, knowledge, tmp = agent_env
+    agent = Agent(MockLLM(), parts, knowledge, tmp / "pot-speaker")
+    spec = {
+        "parts_needed": [
+            {"role": "potentiometer", "search_query": "potentiometer", "value": "10kΩ"},
+            {"role": "speaker", "search_query": "speaker", "value": "8Ω"},
+        ],
+    }
+    ir = CircuitIR("audio")
+    ir.add(Component("U1", "Amplifier_Audio:LM386", "LM386"))
+    log: list = []
+    cands = {
+        "potentiometer": [
+            {"lib_id": "Simulation_SPICE:Potentiometer", "reference_prefix": "R"},
+            {"lib_id": "Device:R_Potentiometer", "reference_prefix": "RV"},
+        ],
+        "speaker": [{"lib_id": "Device:Speaker", "reference_prefix": "LS"}],
+    }
+    exempt = agent._restore_passive_roles(spec, ir, cands, log)
+    assert exempt == {"potentiometer", "speaker"}
+    assert "RV1" not in ir.components and "LS1" not in ir.components
 
 
 def test_pattern_synthesis_builds_can_interface(agent_env):

@@ -704,6 +704,34 @@ class Agent:
             part["quantity"] = max(1, int(part.get("quantity", 1)))
 
     @staticmethod
+    def _passive_electrical_value(text: str) -> bool:
+        """True when ``text`` is only a printed passive marking, not a part id.
+
+        The extractor schema already forbids putting 10uF / 4.7k / 330R in
+        ``search_query``, but measured boards still arrived with ``10kΩ`` and
+        ``8Ω`` there — FTS found nothing (or junk), and the completeness path
+        injected ``Conceptual:10k`` / ``Conceptual:8``. Move the marking into
+        ``value`` and search with the role string the extractor already wrote
+        (potentiometer / speaker / …) — no synonym table.
+        """
+        raw = (text or "").strip()
+        if not raw or len(raw) > 24:
+            return False
+        normalized = (
+            raw.replace("Ω", "ohm").replace("ω", "ohm").replace("Ω", "ohm")
+            .replace("µ", "u").replace("μ", "u")
+        )
+        return bool(re.fullmatch(
+            r"(?i)\d+(?:\.\d+)?\s*"
+            r"(?:"
+            r"[pnumkKMGT]?\s*(?:ohm|ohms|R)"  # 10kohm, 330R, 8ohm
+            r"|[pnumkKMGT]\s*[fFhH]"  # 100nF, 4.7uF
+            r"|[kKmMGT]"  # 10k bare kilo-ohm convention
+            r")\s*",
+            normalized,
+        ))
+
+    @staticmethod
     def _normalize_physical_roles(spec: dict) -> None:
         """Keep package constraints out of BOM roles and connector shape in search.
 
@@ -726,6 +754,17 @@ class Agent:
             )
             if package_only:
                 continue
+
+            # Value-only search_query: keep the marking as value and search by
+            # the role the extractor already assigned. Do not invent class
+            # keywords from a synonym list (that turned crystals into resistors).
+            if Agent._passive_electrical_value(query):
+                role = str(part.get("role") or "").strip()
+                if role:
+                    if not value:
+                        part["value"] = query
+                    part["search_query"] = role
+                    query = role
 
             description = f"{query} {value}"
             geometry = re.search(r"(?<!\d)(\d+)\s*[xX×]\s*(\d+)(?!\d)", description)
@@ -2395,9 +2434,33 @@ class Agent:
                             bctx.get("candidates", {}),
                             res.log,
                         )
+                        exempt_roles = self._restore_passive_roles(
+                            bctx.get("sub_spec", spec),
+                            bir,
+                            bctx.get("candidates", {}),
+                            res.log,
+                        )
                         issues = validate_block_template(
                             block, bir, bctx.get("candidates", {}), _role_queries(spec)
                         )
+                        issues = [
+                            i for i in issues
+                            if not any(f"role '{r}'" in i for r in exempt_roles)
+                        ]
+                        block_roles = {str(r) for r in block.get("roles", [])}
+                        if (
+                            not bir.components
+                            and block_roles
+                            and block_roles <= exempt_roles
+                        ):
+                            # Pot/speaker-only blocks must not abort the run after
+                            # we deliberately refused to float unconnected devices.
+                            res.log.append(
+                                f"block {block['id']}: all roles exempted as missing "
+                                f"passives — block omitted"
+                            )
+                            block_error = ""
+                            break
                         if not issues and bctx.get("contracts"):
                             from .contracts import repair_contracts, validate_contracts
 
@@ -2491,12 +2554,19 @@ class Agent:
                         ctx.get("candidates", {}),
                         res.log,
                     )
+                    exempt_roles = self._restore_passive_roles(
+                        spec, ir, ctx.get("candidates", {}), res.log,
+                    )
                     symbols = self._resolve_symbols(ir)
                     issues = validate_block_template(
                         {"id": "CIRCUIT", "roles": [p["role"] for p in spec.get("parts_needed", [])]},
                         ir,
                         ctx.get("candidates", {}),
                     )
+                    issues = [
+                        i for i in issues
+                        if not any(f"role '{r}'" in i for r in exempt_roles)
+                    ]
                     if not issues:
                         issues = validate_contracts(
                             ir, symbols, ctx.get("contracts", [])
@@ -3157,6 +3227,38 @@ class Agent:
             need = by_role.get(role, {})
             sq = str(need.get("search_query", "") or role)
             base = sq[len("__conceptual__"):] if sq.startswith("__conceptual__") else sq
+            # Catalog already has this exact identity (full Library:Symbol or
+            # exact symbol name, including unit0_mix parts such as Timer:NE555D).
+            # Place that symbol — skipping Conceptual without placing anything
+            # aborted boards whose gather missed the same ID (Switch:SW_Push).
+            exact = self.parts.exact_lib_id(sq)
+            if not exact:
+                ids = self.parts.exact_symbol_ids(base)
+                exact = ids[0] if ids else None
+            if exact:
+                if self._catalog_identity_already_placed(exact, ir):
+                    continue
+                try:
+                    sym = self.parts.load_symbols([exact])[exact]
+                except Exception:
+                    sym = None
+                prefix = (
+                    (sym.reference_prefix if sym and sym.reference_prefix else "U")
+                    .upper()
+                    or "U"
+                )
+                n = 1
+                while f"{prefix}{n}" in ir.components:
+                    n += 1
+                ref = f"{prefix}{n}"
+                ir.add(Component(
+                    ref, exact, str(need.get("value") or base), "",
+                    (need.get("role") or role or "PART").upper()[:16],
+                ))
+                log.append(
+                    f"catalog device placed for role {role!r}: {ref} ({exact})"
+                )
+                continue
             token = re.sub(r"[^A-Za-z0-9_]", "_", base).strip("_") or "MODULE"
             lib = f"Conceptual:{token}"
             if any(c.lib_id == lib for c in ir.components.values()):
@@ -3169,39 +3271,118 @@ class Agent:
             ir.add(Component(ref, lib, token, "", (need.get("role") or "CONCEPTUAL").upper()[:16]))
             log.append(f"conceptual device injected for uncatalogued role {role!r}: {ref} ({lib})")
 
+    def _catalog_identity_already_placed(self, exact: str, ir: CircuitIR) -> bool:
+        """True when the board already carries this catalog identity.
+
+        Drawing variants that keep the same pin count (Switch:SW_Push_45deg for
+        Switch:SW_Push) count as present. Different pin-count members of the
+        family (SW_Push_Dual) do not.
+        """
+        if any(c.lib_id == exact for c in ir.components.values()):
+            return True
+        if ":" not in exact:
+            return False
+        lib, base = exact.split(":", 1)
+        try:
+            want_pins = len(self.parts.get_part_pins(exact))
+        except KeyError:
+            return False
+        for comp in ir.components.values():
+            if not comp.lib_id.startswith(f"{lib}:"):
+                continue
+            name = comp.lib_id.split(":", 1)[-1]
+            if name != base and not name.startswith(f"{base}_"):
+                continue
+            try:
+                if len(self.parts.get_part_pins(comp.lib_id)) == want_pins:
+                    return True
+            except KeyError:
+                continue
+        return False
+
+    @staticmethod
+    def _device_passive_equivalent(left: str, right: str) -> bool:
+        """Same Device:* passive ignoring KiCad drawing suffixes only."""
+        if left == right:
+            return True
+        if not (left.startswith("Device:") and right.startswith("Device:")):
+            return False
+
+        def stem(lib_id: str) -> str:
+            name = lib_id.split(":", 1)[-1]
+            for suf in ("_Small", "_US"):
+                if name.endswith(suf):
+                    name = name[: -len(suf)]
+            return name
+
+        return stem(left) == stem(right)
+
     def _restore_passive_roles(
         self, spec: dict, ir: CircuitIR, candidates: dict, log: list[str]
     ) -> set[str]:
-        """Deterministically restore dropped passive roles; returns roles the
-        strict completeness gate must exempt.
+        """Deterministically restore dropped power caps; exempt other passives.
 
         A dropped MCU is a dead board; a dropped bulk capacitor is not —
         aborting for it is disproportionate (measured: unknown_module died
-        because the model omitted 'power_capacitor'). Power-hinted caps are
-        re-added across the logic rail; other passives are logged and
-        exempted instead of fatal."""
+        because the model omitted 'power_capacitor'). Caps whose candidates are
+        only ``C`` are re-added across the logic rail.
+
+        Other dropped passives (R / pot / speaker) are exempted from the hard
+        gate instead of being placed with zero nets — measured: placing
+        Device:R_Potentiometer unconnected raised role_present while
+        role_working stayed flat and hid conceptual_part_unresolved.
+        """
         exempt: set[str] = set()
-        present = {c.lib_id for c in ir.components.values()}
+        present_ids = {c.lib_id for c in ir.components.values()}
         rails = [r.get("name") for r in spec.get("power", {}).get("rails", [])]
         supply = next(
             (r for r in rails if r and r.upper() not in ("GND", "0V", "VSS")), None
         )
+        passive_prefixes = {"R", "C", "L", "RV", "LS"}
+
+        def role_already_present(hits: list[dict]) -> bool:
+            for hit in hits:
+                want = str(hit.get("lib_id") or "")
+                if not want:
+                    continue
+                if any(self._device_passive_equivalent(want, have) for have in present_ids):
+                    return True
+            return False
+
+        def power_cap_across_rail() -> bool:
+            if not supply:
+                return False
+            supply_pins = {
+                (r, p) for net in ir.nets if net.name == supply for r, p in net.nodes
+            }
+            gnd_pins = {
+                (r, p) for net in ir.nets
+                if str(net.name).upper() in {"GND", "0V", "VSS"}
+                for r, p in net.nodes
+            }
+            for ref, comp in ir.components.items():
+                if not comp.lib_id.startswith("Device:C"):
+                    continue
+                ends = {(ref, "1"), (ref, "2")}
+                if ends & supply_pins and ends & gnd_pins:
+                    return True
+            return False
+
         for p in spec.get("parts_needed", []):
             role = str(p.get("role", ""))
             hits = candidates.get(role) or []
             if not hits:
                 continue
             prefixes = {str(h.get("reference_prefix") or "?") for h in hits}
-            if not prefixes <= {"R", "C", "L"}:
+            if not prefixes <= passive_prefixes:
                 continue
-            if {h.get("lib_id") for h in hits} & present:
+            if role_already_present(hits):
                 continue
-            text = f"{role} {p.get('search_query', '')}".lower()
-            powerish = any(
-                w in text
-                for w in ("power", "bypass", "decoupl", "bulk", "전원", "바이패스", "디커플링")
-            )
-            if powerish and "C" in prefixes and supply:
+            # Only C-only candidate sets are rail caps we can place with a
+            # known topology. Keyword lists on the role name are not used.
+            if prefixes <= {"C"} and supply:
+                if power_cap_across_rail():
+                    continue
                 n = 1
                 while f"C{n}" in ir.components:
                     n += 1
@@ -3209,12 +3390,13 @@ class Agent:
                 ir.add(Component(ref, "Device:C", str(p.get("value") or "100nF"), "", "POWER"))
                 ir.connect(supply, (ref, "1"))
                 ir.connect("GND", (ref, "2"))
+                present_ids.add("Device:C")
                 log.append(
                     f"restored dropped passive role {role!r}: {ref} across {supply}/GND"
                 )
-            else:
-                exempt.add(role)
-                log.append(f"passive role {role!r} missing from IR — exempted from hard gate")
+                continue
+            exempt.add(role)
+            log.append(f"passive role {role!r} missing from IR — exempted from hard gate")
         return exempt
 
     def _pattern_synthesis(
