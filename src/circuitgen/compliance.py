@@ -65,6 +65,7 @@ class ComplianceReport:
     role_working: int = 0
     role_not_working: list[str] = field(default_factory=list)
     dead_components: dict[str, str] = field(default_factory=dict)
+    connector_geometry: list[dict] = field(default_factory=list)
 
     @property
     def errors(self) -> list[ValidationIssue]:
@@ -89,6 +90,7 @@ class ComplianceReport:
             "role_working": self.role_working,
             "role_not_working": self.role_not_working,
             "dead_components": self.dead_components,
+            "connector_geometry": self.connector_geometry,
             "issues": [
                 {"rule": i.rule, "severity": i.severity, "path": i.path, "message": i.message}
                 for i in self.issues
@@ -124,11 +126,22 @@ def requested_part_numbers(prompt: str, parts=None) -> list[str]:
     for token in _PART_TOKEN.findall(prompt or ""):
         if len(token) < _MIN_PART_LEN:
             continue
+        from .fp_checks import requested_footprint_constraints
+
+        concrete_packages, _pitches, package_families = requested_footprint_constraints(token)
+        normalized_token = re.sub(r"[^A-Z0-9]", "", token.upper())
+        if concrete_packages and not package_families and any(
+            normalized_token == re.sub(r"[^A-Z0-9]", "", package.upper())
+            for package in concrete_packages
+        ):
+            continue  # a standardized physical package, not a BOM device
         if ":" in token:
-            # a library id the user pasted; the catalog indexes the symbol name
-            token = token.split(":")[-1]
-            if len(token) < _MIN_PART_LEN:
+            # A full Library:Symbol is already an exact catalog identity. Do
+            # not discard it merely because the symbol suffix is short.
+            if parts is not None and not parts.exact_lib_id(token):
                 continue
+            seen.setdefault(token, None)
+            continue
         elif not (any(c.isalpha() for c in token) and any(c.isdigit() for c in token)):
             # otherwise a part number needs both letters and digits, or it is
             # an ordinary word
@@ -153,6 +166,8 @@ def part_present(token: str, lib_id: str, value: str = "") -> bool:
     Relay:RM50-xx21 with value "G5V-1" was reported as satisfying a request for
     G5V-1 while Relay:G5V-1 sat unused in the bundled library.
     """
+    if ":" in (token or ""):
+        return token.strip().casefold() == lib_id.strip().casefold()
     want = _norm(token)
     if len(want) < 4:
         return False
@@ -547,6 +562,125 @@ def ensure_device_supply_rails(
     return notes
 
 
+def _connector_component(comp) -> bool:
+    return comp.lib_id.casefold().startswith("connector")
+
+
+def check_connector_geometry(
+    ir: CircuitIR,
+    symbols: dict[str, SymbolDef],
+    spec: dict | None = None,
+    parts=None,
+    prompt: str = "",
+) -> tuple[list[ValidationIssue], list[dict]]:
+    """Compare requested header layout to the symbol and footprint that landed.
+
+    This is a physical contact contract, not ERC. A 1x2 request drawn as a
+    4-pin symbol is a different part the user cannot mount.
+    """
+    from .fp_checks import parse_contact_geometry, requested_package_text, symbol_contact_count
+
+    requests: list[tuple[str, dict]] = []
+    for part in (spec or {}).get("parts_needed", []):
+        text = requested_package_text(part)
+        geometry = parse_contact_geometry(text)
+        if geometry is None:
+            continue
+        ref = str(part.get("reference", "")).strip().upper()
+        try:
+            quantity = max(1, int(part.get("quantity", 1) or 1))
+        except (TypeError, ValueError):
+            quantity = 1
+        for _ in range(quantity):
+            requests.append((ref, geometry))
+    if not requests:
+        for match in re.finditer(
+            r".{0,24}(?:header|connector|커넥터|헤더).{0,24}",
+            prompt or "",
+            re.I,
+        ):
+            geometry = parse_contact_geometry(match.group(0))
+            if geometry is not None:
+                requests.append(("", geometry))
+
+    used: set[str] = set()
+    records: list[dict] = []
+    issues: list[ValidationIssue] = []
+    leftover = [
+        (ref, comp) for ref, comp in ir.components.items()
+        if _connector_component(comp) and not ref.startswith("#")
+    ]
+
+    def take_component(preferred: str):
+        if preferred and preferred in ir.components and preferred not in used:
+            used.add(preferred)
+            return preferred, ir.components[preferred]
+        for ref, comp in leftover:
+            if ref in used:
+                continue
+            used.add(ref)
+            return ref, comp
+        return None, None
+
+    for preferred, geometry in requests:
+        ref, comp = take_component(preferred)
+        if comp is None:
+            record = {
+                "reference": preferred or None,
+                "requested_rows": geometry["rows"],
+                "requested_columns": geometry["columns"],
+                "requested_contacts": geometry["contacts"],
+                "symbol_pins": None,
+                "footprint_pads": None,
+                "match": False,
+            }
+            records.append(record)
+            issues.append(_issue(
+                "connector_contact_geometry", "error", preferred or "connector",
+                f"the request asks for a {geometry['rows']}x{geometry['columns']} "
+                f"connector ({geometry['contacts']} contacts) and no connector "
+                "is on the board",
+            ))
+            continue
+        sym = symbols.get(comp.lib_id)
+        symbol_pins = symbol_contact_count(sym) if sym is not None else None
+        pads = None
+        if parts is not None and getattr(parts, "has_footprints", lambda: False)() and comp.footprint:
+            pad_set = parts.footprint_pads(comp.footprint)
+            if pad_set is not None:
+                pads = len(pad_set)
+        match = (
+            symbol_pins == geometry["contacts"]
+            and (pads is None or pads == geometry["contacts"])
+        )
+        records.append({
+            "reference": ref,
+            "lib_id": comp.lib_id,
+            "footprint": comp.footprint,
+            "requested_rows": geometry["rows"],
+            "requested_columns": geometry["columns"],
+            "requested_contacts": geometry["contacts"],
+            "symbol_pins": symbol_pins,
+            "footprint_pads": pads,
+            "match": match,
+        })
+        if match:
+            continue
+        actual = []
+        if symbol_pins is not None:
+            actual.append(f"{symbol_pins} symbol pins")
+        if pads is not None:
+            actual.append(f"{pads} footprint pads")
+        issues.append(_issue(
+            "connector_contact_geometry", "error", ref,
+            f"{ref} was requested as {geometry['rows']}x{geometry['columns']} "
+            f"({geometry['contacts']} contacts) but the board has "
+            + (" and ".join(actual) or "an unbound connector")
+            + " — the contact count must match before ordering",
+        ))
+    return issues, records
+
+
 def check_compliance(
     ir: CircuitIR,
     symbols: dict[str, SymbolDef],
@@ -561,6 +695,37 @@ def check_compliance(
         ir, prompt, parts, transcribed=transcribed
     )
     pwr_issues, checked = check_power_integrity(ir, symbols)
+
+    # A number/name pair in a transcribed net list is a physical binding
+    # assertion.  Check it against device-local, provenance-backed data; a
+    # coincident pin number on a different function is not a valid match.
+    binding_issues: list[ValidationIssue] = []
+    if transcribed:
+        from .devicebindings import device_pin_names_compatible
+
+        for net in (spec or {}).get("netlist", []):
+            for node in net.get("nodes", []):
+                ref = str(node.get("reference", "")).strip().upper()
+                pin = str(node.get("pin", "")).strip()
+                requested_name = str(node.get("pin_name", "")).strip()
+                comp = ir.components.get(ref)
+                if not comp or not pin or not requested_name:
+                    continue
+                sym = symbols.get(comp.lib_id)
+                try:
+                    catalog_name = sym.pin(pin).name if sym else ""
+                except KeyError:
+                    catalog_name = ""
+                verdict = device_pin_names_compatible(
+                    comp.lib_id, pin, requested_name, catalog_name
+                )
+                if verdict is False:
+                    binding_issues.append(_issue(
+                        "canonical_pin_binding_conflict", "error", f"{ref}.{pin}",
+                        f"the request names {ref} pin {pin} as {requested_name!r}, "
+                        f"but provenance-backed {comp.lib_id} defines it as "
+                        f"{catalog_name or 'another function'!r}",
+                    ))
 
     # A role the requirement asked for and the board does not contain means the
     # board does not answer the request — whatever its ERC score. This replaces
@@ -600,20 +765,17 @@ def check_compliance(
     ]
 
     package_issues: list[ValidationIssue] = []
+    from .fp_checks import requested_footprint_constraints, requested_package_text
+
     for part in (spec or {}).get("parts_needed", []):
         ref = str(part.get("reference", "")).strip().upper()
-        requested_package = str(part.get("package", "")).strip()
+        requested_package = requested_package_text(part)
         comp = ir.components.get(ref)
         if not ref or not requested_package or comp is None:
             continue
-        package_upper = requested_package.upper()
-        concrete = re.findall(
-            r"SOT[- ]?\d+|SOD[- ]?\d+|SOIC[- ]?\d+|SSOP[- ]?\d+|"
-            r"TQFP[- ]?\d+|QFN[- ]?\d+|\b(?:0402|0603|0805|1206|1210)\b",
-            package_upper,
-        )
-        pitches = re.findall(r"(\d+(?:\.\d+)?)\s*MM", package_upper)
-        if not concrete and not pitches:
+        concrete, pitch_values, families = requested_footprint_constraints(requested_package)
+        pitches = [str(value) for value in pitch_values]
+        if not concrete and not pitches and not families:
             continue
         footprint_upper = comp.footprint.upper()
         normalized_fp = re.sub(r"[^A-Z0-9]", "", footprint_upper)
@@ -621,6 +783,7 @@ def check_compliance(
             token for token in concrete
             if re.sub(r"[^A-Z0-9]", "", token) not in normalized_fp
         ]
+        missing_families = [family for family in families if family not in normalized_fp]
         footprint_pitches = [
             float(value) for value in re.findall(r"P(\d+(?:\.\d+)?)MM", footprint_upper)
         ]
@@ -633,7 +796,7 @@ def check_compliance(
                 f"{ref} requests package {requested_package!r}, but no footprint "
                 "was assigned"
             )
-        elif missing_tokens or not pitch_ok:
+        elif missing_tokens or missing_families or not pitch_ok:
             message = (
                 f"{ref} requests package {requested_package!r}, but footprint "
                 f"{comp.footprint!r} does not match it"
@@ -677,9 +840,13 @@ def check_compliance(
         for ref, why in sorted(conduction.dead.items())
     ]
 
+    geometry_issues, geometry_records = check_connector_geometry(
+        ir, symbols, spec, parts, prompt
+    )
+
     return ComplianceReport(
-        issues=(req_issues + pwr_issues + role_issues + package_issues
-                + conceptual_issues + dead_issues),
+        issues=(req_issues + pwr_issues + binding_issues + role_issues + package_issues
+                + conceptual_issues + dead_issues + geometry_issues),
         requested_parts=requested,
         satisfied_parts=satisfied,
         missing_parts=missing,
@@ -692,4 +859,5 @@ def check_compliance(
         role_working=role_working,
         role_not_working=role_broken,
         dead_components=conduction.dead,
+        connector_geometry=geometry_records,
     )

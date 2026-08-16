@@ -1,0 +1,326 @@
+[
+  {
+    "sequence": 1,
+    "id": "전원_엘이디_버튼",
+    "oracle": "contract",
+    "domain": "수동소자",
+    "selected_parts": ["Device:LED", "Switch:SW_Push"],
+    "unknown_to_user": ["전류 제한 저항값", "저항 연결 위치"],
+    "prompt": "5V 전원에서 버튼을 누르는 동안 녹색 LED가 켜지는 회로를 설계해 주세요. LED는 Device:LED, 버튼은 Switch:SW_Push로 선정했습니다. LED의 순방향 전압은 2.0V이고 목표 전류는 10mA입니다. 필요한 전류 제한 저항값과 연결 위치를 결정하고 전원 입력용 1x2 핀 헤더를 포함해 주세요."
+  },
+  {
+    "sequence": 2,
+    "id": "선형전원_삼점삼볼트",
+    "oracle": "contract",
+    "domain": "전원",
+    "selected_parts": ["AMS1117-3.3"],
+    "unknown_to_user": ["입출력 커패시터 용량", "전원 표시 회로"],
+    "prompt": "5V 입력에서 3.3V를 만드는 선형 전원 회로를 설계해 주세요. 레귤레이터는 AMS1117-3.3의 SOT-223 패키지를 사용합니다. 데이터시트에 맞는 입력 및 출력 커패시터와 3.3V 전원 표시 LED를 포함하고, 입력과 출력에는 각각 1x2 핀 헤더를 배치해 주세요."
+  },
+  {
+    "sequence": 3,
+    "id": "비반전_연산증폭기",
+    "oracle": "contract",
+    "domain": "아날로그",
+    "selected_parts": ["MCP6001"],
+    "unknown_to_user": ["이득 저항비", "단일 전원 바이어스"],
+    "prompt": "MCP6001을 3.3V 단일 전원으로 사용하여 0~0.25V 센서 신호를 약 8배 증폭하는 비반전 증폭기를 설계해 주세요. 피드백 저항값, 입력 바이어스 처리, 전원 디커플링을 결정하고 센서 입력과 증폭 출력용 커넥터를 포함해 주세요."
+  },
+  {
+    "sequence": 4,
+    "id": "타이머_발진_엘이디",
+    "oracle": "contract",
+    "domain": "타이머",
+    "selected_parts": ["NE555D"],
+    "unknown_to_user": ["발진 저항값", "타이밍 커패시터값"],
+    "prompt": "NE555D의 SOIC-8 패키지를 사용하여 5V에서 약 2Hz로 빨간 LED를 점멸시키는 비안정 발진 회로를 설계해 주세요. 듀티비는 가능한 한 50%에 가깝게 하고, 타이밍 저항과 커패시터값을 계산하며 RESET과 CTRL 핀도 올바르게 처리해 주세요."
+  },
+  {
+    "sequence": 5,
+    "id": "오디오_소신호_증폭",
+    "oracle": "contract",
+    "domain": "오디오",
+    "selected_parts": ["LM386"],
+    "unknown_to_user": ["이득 설정", "출력 결합 및 안정화 회로"],
+    "prompt": "LM386의 SOIC-8 패키지로 9V 전원 오디오 증폭기를 설계해 주세요. 10kΩ 가변저항으로 입력 음량을 조절하고 8Ω 스피커를 구동해야 합니다. 입력 및 출력 결합 커패시터, 전원 바이패스, 발진 방지용 출력 안정화 회로와 커넥터를 포함해 주세요."
+  },
+  {
+    "sequence": 6,
+    "id": "온도센서_아이투시",
+    "oracle": "contract",
+    "domain": "센서통신",
+    "selected_parts": ["STM32G474RET6", "TMP100"],
+    "unknown_to_user": ["풀업 저항값", "센서 디커플링"],
+    "prompt": "STM32G474RET6과 TMP100을 3.3V I2C 버스로 연결하는 회로를 설계해 주세요. SDA와 SCL의 풀업 저항값을 정하고 TMP100 전원 디커플링, 주소 설정 핀 처리, 외부 I2C 확장용 1x4 커넥터를 포함해 주세요."
+  },
+  {
+    "sequence": 7,
+    "id": "메모리_에스피아이",
+    "oracle": "contract",
+    "domain": "메모리통신",
+    "selected_parts": ["W25Q32JVSS"],
+    "unknown_to_user": ["홀드 및 쓰기보호 처리", "칩 선택 기본 상태"],
+    "prompt": "3.3V MCU에 W25Q32JVSS SPI 플래시 메모리를 연결하는 회로를 설계해 주세요. SCLK, MOSI, MISO, CS 신호를 커넥터로 노출하고 WP와 HOLD 핀의 안전한 기본 상태, CS 풀업, 전원 디커플링을 포함해 주세요."
+  },
+  {
+    "sequence": 8,
+    "id": "유아트_삼점삼볼트",
+    "oracle": "contract",
+    "domain": "직렬통신",
+    "selected_parts": ["STM32G474RET6"],
+    "unknown_to_user": ["디버그 커넥터 핀 배열", "신호 보호"],
+    "prompt": "STM32G474RET6의 3.3V UART 디버그 포트를 외부 USB 직렬 변환기에 연결할 수 있도록 회로를 설계해 주세요. TX, RX, 3.3V, GND를 1x4 핀 헤더로 제공하고 직렬 저항이 필요한지 판단해 반영해 주세요."
+  },
+  {
+    "sequence": 9,
+    "id": "캔버스_노드",
+    "oracle": "contract",
+    "domain": "차량통신",
+    "selected_parts": ["STM32G474RET6", "TJA1051T"],
+    "unknown_to_user": ["종단 저항", "모드 핀 처리"],
+    "prompt": "STM32G474RET6과 TJA1051T로 CAN 통신 노드를 설계해 주세요. MCU는 3.3V, 트랜시버는 5V를 사용합니다. TXD와 RXD 연결, S 핀의 정상 동작 상태, 선택 가능한 120Ω 종단 저항, CANH와 CANL 및 GND 커넥터, 각 전원 디커플링을 포함해 주세요."
+  },
+  {
+    "sequence": 10,
+    "id": "알에스사팔오_노드",
+    "oracle": "contract",
+    "domain": "산업통신",
+    "selected_parts": ["MAX3485"],
+    "unknown_to_user": ["송수신 활성화", "버스 기본 바이어스"],
+    "prompt": "3.3V MAX3485를 사용한 반이중 RS-485 인터페이스를 설계해 주세요. MCU의 TX, RX, 방향 제어 신호를 연결하고 DE와 RE의 관계, 선택 가능한 종단 저항, 버스 기본 바이어스, A와 B 및 GND 커넥터를 포함해 주세요."
+  },
+  {
+    "sequence": 11,
+    "id": "유에스비시_전원입력",
+    "oracle": "contract",
+    "domain": "유에스비전원",
+    "selected_parts": ["USB_C_Receptacle_USB2.0_16P"],
+    "unknown_to_user": ["씨씨 저항", "전원 보호"],
+    "prompt": "USB Type-C 커넥터에서 5V 전원만 공급받는 싱크 회로를 설계해 주세요. 데이터 통신은 사용하지 않습니다. CC1과 CC2의 저항, VBUS 디커플링, 입력 퓨즈와 과도전압 보호, 5V와 GND 출력 커넥터를 포함해 주세요."
+  },
+  {
+    "sequence": 12,
+    "id": "마이크로컨트롤러_최소회로",
+    "oracle": "contract",
+    "domain": "마이크로컨트롤러",
+    "selected_parts": ["STM32G474RET6"],
+    "unknown_to_user": ["전원핀별 디커플링", "리셋 및 부트 설정"],
+    "prompt": "STM32G474RET6의 3.3V 최소 동작 회로를 설계해 주세요. 모든 전원핀과 접지핀, 전원핀별 디커플링, 아날로그 전원 필터, NRST와 BOOT0 기본 상태, SWD 프로그래밍 커넥터를 포함해 주세요. 외부 크리스탈은 꼭 필요한 경우에만 추가해 주세요."
+  },
+  {
+    "sequence": 13,
+    "id": "릴레이_로우사이드_구동",
+    "oracle": "contract",
+    "domain": "부하구동",
+    "selected_parts": ["G5V-1", "BC337", "1N4148"],
+    "unknown_to_user": ["베이스 저항", "플라이백 다이오드 방향"],
+    "prompt": "3.3V MCU GPIO로 12V G5V-1 릴레이를 구동하는 회로를 설계해 주세요. BC337과 1N4148을 사용하고 베이스 저항값, 베이스 풀다운 필요 여부, 플라이백 다이오드 방향을 결정해 주세요. MCU 측과 12V 부하 측 커넥터도 포함해 주세요."
+  },
+  {
+    "sequence": 14,
+    "id": "모스펫_엘이디스트립_구동",
+    "oracle": "contract",
+    "domain": "전력구동",
+    "selected_parts": ["AO3400A"],
+    "unknown_to_user": ["게이트 저항", "게이트 풀다운"],
+    "prompt": "3.3V PWM GPIO로 12V LED 스트립 최대 2A를 제어하는 로우사이드 MOSFET 회로를 설계해 주세요. AO3400A를 사용하고 게이트 직렬 저항, 게이트 풀다운, 전원 디커플링, LED 스트립과 12V 입력 커넥터를 포함해 주세요."
+  },
+  {
+    "sequence": 15,
+    "id": "직류모터_양방향제어",
+    "oracle": "contract",
+    "domain": "모터구동",
+    "selected_parts": ["DRV8833"],
+    "unknown_to_user": ["모드 핀 처리", "모터 전원 디커플링"],
+    "prompt": "DRV8833으로 6V 소형 DC 모터 한 개의 정회전, 역회전, 정지를 제어하는 회로를 설계해 주세요. 제어 입력은 3.3V MCU에서 오고 모터 전원은 6V입니다. 슬립 핀 처리, 로직 및 모터 전원 디커플링, 모터와 전원 커넥터를 포함해 주세요."
+  },
+  {
+    "sequence": 16,
+    "id": "스테퍼모터_구동",
+    "oracle": "contract",
+    "domain": "모터구동",
+    "selected_parts": ["A4988"],
+    "unknown_to_user": ["마이크로스텝 설정", "전원 커패시터"],
+    "prompt": "A4988 모듈로 12V 바이폴라 스테퍼 모터를 구동하는 인터페이스 회로를 설계해 주세요. 3.3V MCU의 STEP과 DIR을 사용하고 ENABLE, RESET, SLEEP, MS1~MS3의 기본 상태를 정해 주세요. 모터 전원 벌크 커패시터와 논리 전원 디커플링 및 커넥터를 포함해 주세요."
+  },
+  {
+    "sequence": 17,
+    "id": "아날로그센서_저역통과필터",
+    "oracle": "contract",
+    "domain": "센서입력",
+    "selected_parts": ["MCP6001"],
+    "unknown_to_user": ["차단 주파수", "입력 보호"],
+    "prompt": "0~3.3V 아날로그 센서 출력을 MCU ADC로 입력하기 위한 버퍼와 1kHz 저역통과 필터를 설계해 주세요. MCP6001을 전압 팔로어로 사용하고 저항과 커패시터값, 입력 과전압 보호, 전원 디커플링, 센서 및 ADC 커넥터를 포함해 주세요."
+  },
+  {
+    "sequence": 18,
+    "id": "비교기_임계값검출",
+    "oracle": "contract",
+    "domain": "아날로그",
+    "selected_parts": ["LMV331"],
+    "unknown_to_user": ["기준전압 분압", "히스테리시스"],
+    "prompt": "3.3V 전원에서 센서 전압이 2.0V를 넘으면 출력이 활성화되는 LMV331 비교기 회로를 설계해 주세요. 기준전압 분압 저항, 채터링 방지 히스테리시스, 오픈 컬렉터 출력 풀업, 디커플링을 포함해 주세요."
+  },
+  {
+    "sequence": 19,
+    "id": "전류센서_분류저항",
+    "oracle": "contract",
+    "domain": "계측",
+    "selected_parts": ["INA180A1"],
+    "unknown_to_user": ["분류 저항값과 정격", "출력 필터"],
+    "prompt": "12V 부하의 0~2A 전류를 3.3V ADC로 측정하는 INA180A1 고측 전류 감지 회로를 설계해 주세요. ADC 범위를 넘지 않도록 분류 저항값과 전력 정격을 정하고 입력 필터, 출력 필터, 디커플링과 커넥터를 포함해 주세요."
+  },
+  {
+    "sequence": 20,
+    "id": "정밀기준전압",
+    "oracle": "contract",
+    "domain": "기준전압",
+    "selected_parts": ["TL431"],
+    "unknown_to_user": ["바이어스 저항", "안정성 커패시터"],
+    "prompt": "5V 입력에서 TL431을 사용하여 2.5V 기준전압을 만드는 회로를 설계해 주세요. 부하 전류는 최대 2mA입니다. TL431의 동작 전류를 만족하는 바이어스 저항과 안정성에 필요한 커패시터를 결정하고 입력 및 출력 테스트 포인트를 포함해 주세요."
+  },
+  {
+    "sequence": 21,
+    "id": "서미스터_온도입력",
+    "oracle": "contract",
+    "domain": "센서입력",
+    "selected_parts": ["NTC_10k"],
+    "unknown_to_user": ["분압 저항", "ADC 필터"],
+    "prompt": "3.3V ADC로 10kΩ NTC 서미스터의 온도를 측정하는 입력 회로를 설계해 주세요. 25도에서 10kΩ인 서미스터에 적합한 분압 저항, ADC 잡음 필터, 외부 서미스터용 1x2 커넥터와 테스트 포인트를 포함해 주세요."
+  },
+  {
+    "sequence": 22,
+    "id": "포토다이오드_증폭기",
+    "oracle": "contract",
+    "domain": "광센서",
+    "selected_parts": ["MCP6001", "BPW34"],
+    "unknown_to_user": ["피드백 저항", "안정화 커패시터"],
+    "prompt": "BPW34 포토다이오드의 광전류를 0~3.3V 전압으로 변환하는 트랜스임피던스 증폭기를 설계해 주세요. MCP6001을 사용하고 목표 최대 광전류 10uA에 맞는 피드백 저항, 안정화 커패시터, 단일 전원 기준점과 디커플링을 포함해 주세요."
+  },
+  {
+    "sequence": 23,
+    "id": "로터리엔코더_입력",
+    "oracle": "contract",
+    "domain": "사용자입력",
+    "selected_parts": ["RotaryEncoder_Switch"],
+    "unknown_to_user": ["풀업", "디바운스"],
+    "prompt": "기계식 로터리 엔코더의 A, B, 푸시 스위치를 3.3V MCU에 연결하는 입력 회로를 설계해 주세요. 각 신호의 풀업과 하드웨어 디바운스가 필요한지 판단하고 외부 커넥터 및 정전기 보호를 포함해 주세요."
+  },
+  {
+    "sequence": 24,
+    "id": "피더블유엠_사선팬",
+    "oracle": "contract",
+    "domain": "팬제어",
+    "selected_parts": ["Fan_4pin"],
+    "unknown_to_user": ["오픈 컬렉터 PWM", "회전속도 신호 풀업"],
+    "prompt": "12V 4선 PWM 팬을 3.3V MCU로 제어하고 회전속도 신호를 읽는 인터페이스를 설계해 주세요. PWM 제어용 오픈 컬렉터 단계, TACH 신호 풀업과 전압 호환성, 팬 전원 디커플링 및 1x4 커넥터를 포함해 주세요."
+  },
+  {
+    "sequence": 25,
+    "id": "마이크로에스디_에스피아이",
+    "oracle": "contract",
+    "domain": "저장장치",
+    "selected_parts": ["Micro_SD_Card"],
+    "unknown_to_user": ["신호 기본 상태", "전원 디커플링"],
+    "prompt": "3.3V MCU에서 Micro SD 카드를 SPI 모드로 사용하는 회로를 설계해 주세요. CLK, MOSI, MISO, CS 연결과 카드 감지 신호를 포함하고 필요한 풀업 또는 풀다운, 전원 디커플링, 정전기 보호를 결정해 주세요."
+  },
+  {
+    "sequence": 26,
+    "id": "레벨시프터_아이투시",
+    "oracle": "contract",
+    "domain": "레벨변환",
+    "selected_parts": ["BSS138"],
+    "unknown_to_user": ["양방향 변환 토폴로지", "양측 풀업"],
+    "prompt": "3.3V MCU와 5V I2C 장치를 연결하는 양방향 레벨 변환 회로를 설계해 주세요. SDA와 SCL 각각에 BSS138을 사용하고 게이트 연결, 양측 풀업 저항값, 전원 디커플링과 커넥터를 포함해 주세요."
+  },
+  {
+    "sequence": 27,
+    "id": "리튬전지_충전",
+    "oracle": "contract",
+    "domain": "배터리",
+    "selected_parts": ["MCP73831"],
+    "unknown_to_user": ["충전 전류 설정", "상태 표시"],
+    "prompt": "5V 입력으로 단일 셀 리튬 이온 배터리를 500mA로 충전하는 MCP73831 회로를 설계해 주세요. 충전 전류 설정 저항, 입력 및 배터리 커패시터, 충전 상태 LED, 배터리와 5V 입력 커넥터를 포함해 주세요."
+  },
+  {
+    "sequence": 28,
+    "id": "역극성_과전압보호",
+    "oracle": "contract",
+    "domain": "전원보호",
+    "selected_parts": ["SS34", "SMBJ15A"],
+    "unknown_to_user": ["퓨즈 정격", "보호 소자 배치"],
+    "prompt": "12V 입력에서 최대 1A를 사용하는 보드의 전원 보호 회로를 설계해 주세요. SS34를 이용한 역극성 보호, SMBJ15A 과도전압 억제 다이오드, 퓨즈, 입력 벌크 및 고주파 디커플링을 포함하고 각 보호 소자의 연결 순서를 정해 주세요."
+  },
+  {
+    "sequence": 29,
+    "id": "전원_다이오드오링",
+    "oracle": "contract",
+    "domain": "전원선택",
+    "selected_parts": ["SS14"],
+    "unknown_to_user": ["전원 역류 방지", "출력 커패시터"],
+    "prompt": "두 개의 독립된 5V 입력 중 하나라도 살아 있으면 보드에 전원을 공급하는 다이오드 OR 회로를 설계해 주세요. 각 입력에 SS14를 사용하여 상호 역류를 방지하고 입력 커넥터 두 개, 출력 커넥터, 출력 벌크 커패시터와 전원 표시 LED를 포함해 주세요."
+  },
+  {
+    "sequence": 30,
+    "id": "솔레노이드_구동",
+    "oracle": "contract",
+    "domain": "부하구동",
+    "selected_parts": ["AO3400A", "SS34"],
+    "unknown_to_user": ["플라이백 경로", "게이트 구동"],
+    "prompt": "3.3V MCU GPIO로 12V 1A 솔레노이드를 켜고 끄는 로우사이드 구동 회로를 설계해 주세요. AO3400A와 SS34를 사용하고 게이트 저항, 게이트 풀다운, 플라이백 다이오드 방향, 전원 디커플링과 솔레노이드 커넥터를 포함해 주세요."
+  },
+  {
+    "sequence": 31,
+    "id": "디에이시_출력필터",
+    "oracle": "contract",
+    "domain": "아날로그출력",
+    "selected_parts": ["MCP4921", "MCP6001"],
+    "unknown_to_user": ["출력 필터", "버퍼 구성"],
+    "prompt": "3.3V MCU의 SPI로 MCP4921 DAC를 제어하고 0~3.3V 아날로그 출력을 얻는 회로를 설계해 주세요. 기준전압과 전원 디커플링, CS와 LDAC 기본 상태, 출력 저역통과 필터, MCP6001 버퍼와 출력 커넥터를 포함해 주세요."
+  },
+  {
+    "sequence": 32,
+    "id": "브리지센서_계측증폭",
+    "oracle": "contract",
+    "domain": "계측",
+    "selected_parts": ["INA333"],
+    "unknown_to_user": ["이득 설정", "기준점 생성"],
+    "prompt": "3.3V 전원에서 휘트스톤 브리지 센서의 최대 10mV 차동 출력을 ADC 범위에 맞게 증폭하는 INA333 회로를 설계해 주세요. 약 200배 이득 설정 저항, 중간 기준전압, 입력 필터, 디커플링과 센서 커넥터를 포함해 주세요."
+  },
+  {
+    "sequence": 33,
+    "id": "외부이이피롬_아이투시",
+    "oracle": "contract",
+    "domain": "메모리통신",
+    "selected_parts": ["24LC256"],
+    "unknown_to_user": ["주소 핀", "쓰기보호 핀"],
+    "prompt": "3.3V MCU에 24LC256 I2C EEPROM을 연결하는 회로를 설계해 주세요. SDA와 SCL 풀업, A0~A2 주소 핀으로 기본 주소 설정, WP 핀의 기본 상태, 전원 디커플링과 I2C 테스트 포인트를 포함해 주세요."
+  },
+  {
+    "sequence": 34,
+    "id": "외부크리스탈_발진",
+    "oracle": "contract",
+    "domain": "클록",
+    "selected_parts": ["Crystal_8MHz"],
+    "unknown_to_user": ["부하 커패시터", "바이어스 저항"],
+    "prompt": "8MHz 병렬 공진 크리스탈을 MCU의 OSC_IN과 OSC_OUT에 연결하는 발진 회로를 설계해 주세요. 크리스탈의 부하 용량은 12pF이고 핀 및 기생 용량의 합은 각 측 약 2pF로 가정합니다. 필요한 부하 커패시터값과 피드백 저항 필요 여부를 결정해 주세요."
+  },
+  {
+    "sequence": 35,
+    "id": "부저_트랜지스터구동",
+    "oracle": "contract",
+    "domain": "음향출력",
+    "selected_parts": ["BC817", "Buzzer"],
+    "unknown_to_user": ["베이스 저항", "유도성 보호"],
+    "prompt": "3.3V MCU GPIO로 5V 능동 부저를 구동하는 NPN 트랜지스터 회로를 설계해 주세요. BC817을 사용하고 부저 전류 30mA에 맞는 베이스 저항, 베이스 풀다운, 부저가 유도성 부하일 때의 보호 다이오드, 전원 커넥터를 포함해 주세요."
+  },
+  {
+    "sequence": 36,
+    "id": "전원감시_리셋",
+    "oracle": "contract",
+    "domain": "시스템감시",
+    "selected_parts": ["MCP100-315"],
+    "unknown_to_user": ["리셋 출력 연결", "수동 리셋 결합"],
+    "prompt": "3.3V MCU의 전원 강하를 감시하는 MCP100-315 리셋 회로를 설계해 주세요. 감시 IC의 전원 디커플링, MCU NRST 연결, 수동 리셋 버튼을 함께 사용할 수 있는 결합 방법, 리셋 테스트 포인트를 포함해 주세요."
+  }
+]

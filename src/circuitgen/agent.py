@@ -53,6 +53,55 @@ _MAX_TRIM_LEVEL = 2  # block-prompt trim: 0 full, 1 no KNOWLEDGE, 2 first candid
 CANDIDATES_PER_QUERY = 3
 KNOWLEDGE_PER_TOPIC = 2
 BLOCK_THRESHOLD = 5  # parts_needed roles at/above which block decomposition kicks in
+
+
+def request_mode(prompt: str) -> str:
+    """Separate exact transcription from design using connection structure.
+
+    A design request may contain words such as "connect" or "pin" while asking
+    the system to decide the circuit.  That is not an exact answer contract.
+    Transcription requires repeated reference+pin members (``U1(8)``,
+    ``J1 Pin 1``), independent of circuit family, part number or net name.
+    """
+    members = re.findall(
+        r"(?i)(?<![A-Za-z0-9_])[A-Za-z]{1,6}\d+\s*(?:"
+        r"\(\s*[^)\s,;]+(?:\s*:[^)]+)?\s*\)|"
+        r"(?:pin|핀)\s*[A-Za-z0-9_+./-]+)",
+        prompt or "",
+    )
+    return "transcription" if len(members) >= 2 else "design"
+
+
+def _explicit_polarized_references(prompt: str) -> set[str]:
+    """Return capacitor designators explicitly marked as polarized.
+
+    This is transcription, not an electrical inference: capacitance, package,
+    circuit family and reference number never imply polarity.  We only retain
+    an attribute when the request places a standard polarity term in the same
+    list item/sentence as the designator.  Splitting on item boundaries avoids
+    leaking C3's attribute into a neighbouring C4 entry.
+    """
+    marked: set[str] = set()
+    polarity = re.compile(
+        r"(?i)(?:\belectrolytic\b|(?<!non-)(?<!non )\bpolarized\b|전해(?:질)?|(?<!비)극성)"
+    )
+    reference = re.compile(r"(?i)(?<![A-Za-z0-9_])(C\d+)(?![A-Za-z0-9_])")
+    for clause in re.split(r"[\n;]+|(?<=[.!?])\s+", prompt or ""):
+        if polarity.search(clause):
+            marked.update(m.group(1).upper() for m in reference.finditer(clause))
+    return marked
+
+
+def _preserve_explicit_part_attributes(prompt: str, spec: dict) -> None:
+    """Restore source-explicit attributes lost by structured extraction."""
+    polarized = _explicit_polarized_references(prompt)
+    for part in spec.get("parts_needed", []):
+        ref = str(part.get("reference", "")).strip().upper()
+        if ref in polarized:
+            part["polarized"] = True
+            query = str(part.get("search_query") or "").strip()
+            if "capacitor" in query.lower() and "polarized" not in query.lower():
+                part["search_query"] = "polarized capacitor"
 REPAIR_SLICE_LIMIT = 25  # components above which the repair prompt gets a partial view
 
 
@@ -248,6 +297,7 @@ class Agent:
     # ---- stage 1: requirements ----
 
     def extract_requirements(self, prompt: str) -> dict:
+        mode = request_mode(prompt)
         spec = _with_retry(lambda: self.llm.complete_json(
             [
                 {"role": "system", "content": _SYSTEM},
@@ -255,6 +305,8 @@ class Agent:
                     "role": "user",
                     "content": (
                         "Normalize this circuit request into a RequirementSpec. "
+                        f"The structurally determined task mode is {mode!r}; copy it "
+                        "to `mode`. Do not turn a design request into a net list. "
                         "Scope limits: max 24VDC / 3A, no AC mains, no isolation or "
                         "safety-critical circuits — set out_of_scope if exceeded.\n"
                         "Rail names use KiCad power conventions: +5V, +3V3, +12V, GND. "
@@ -306,7 +358,10 @@ class Agent:
         # net list on one request dropped every `reference` on the next.
         # Both halves of a transcription — which part each designator is, and
         # what connects to what — are asked here, together, and nowhere else.
-        if "Net" in prompt or "netlist" in prompt.lower() or "연결" in prompt:
+        # The focused exact extractor is only valid when the request contains
+        # repeated reference+pin members.  Triggering on words such as
+        # "connect" made ordinary design requests skip design synthesis.
+        if mode == "transcription":
             try:
                 reply = _with_retry(lambda: self.llm.complete_json(
                     [
@@ -332,6 +387,8 @@ class Agent:
                                 "Copy each reference's physical package or connector "
                                 "pitch into `package` (SOT-23, SOD-123, SMD 0805, "
                                 "2.54mm pitch); use an empty string only when absent. "
+                                "Set `polarized` true only when the request explicitly "
+                                "calls that capacitor polarized or electrolytic. "
                                 "When a node is written "
                                 "U1(8:VCC), pin is `8`, not `8:VCC`, and pin_name is "
                                 "`VCC`; use an empty pin_name when no name is written. "
@@ -379,19 +436,37 @@ class Agent:
                         {
                             "reference": ref,
                             "role": ref.lower(),
-                            "search_query": str(part.get("part") or "").strip(),
+                            "search_query": (
+                                "polarized capacitor"
+                                if part.get("polarized")
+                                and "capacitor" in str(part.get("part") or "").lower()
+                                else str(part.get("part") or "").strip()
+                            ),
                             "value": str(part.get("value") or "").strip(),
                             "package": str(part.get("package") or "").strip(),
+                            "polarized": bool(part.get("polarized")),
                             "quantity": 1,
                         }
                         for ref, part in sorted(by_ref.items())
                     ]
 
+        # A schema-conforming LLM reply can still contradict an attribute
+        # explicitly attached to a designator in the source.  Preserve that
+        # source fact before selection; never infer it from value or package.
+        _preserve_explicit_part_attributes(prompt, spec)
+
+        # Mode is a deterministic input contract, not a model prediction.  In
+        # design mode an invented netlist is discarded rather than promoted to
+        # user-authored truth.
+        spec["mode"] = mode
+        if mode == "design":
+            spec["netlist"] = []
+
         spec = _normalize_rails(spec)
         self._ensure_explicit_voltage_rails(prompt, spec)
         self._normalize_part_roles(spec)
         self._remove_connection_pseudo_parts(spec)
-        if spec.get("netlist"):
+        if spec.get("mode") == "transcription" and spec.get("netlist"):
             self._preserve_transcribed_part_numbers(prompt, spec)
         else:
             # On an explicit net list, the focused transcription reply is the
@@ -401,6 +476,7 @@ class Agent:
             # role_unverifiable warnings.
             self._preserve_explicit_conceptual_parts(prompt, spec)
             self._ensure_named_parts(prompt, spec)
+            self._normalize_physical_roles(spec)
             self._ensure_logic_rail(spec)
         return spec
 
@@ -435,7 +511,9 @@ class Agent:
                     break
 
     @staticmethod
-    def _pin_names_compatible(requested: str, catalog: str) -> bool:
+    def _pin_names_compatible(
+        requested: str, catalog: str, lib_id: str = "", pin_number: str = ""
+    ) -> bool:
         """Compare a requested pin annotation with a catalog pin name.
 
         Decorations such as active-low braces and parenthetical explanations
@@ -455,15 +533,32 @@ class Agent:
         want, have = tokens(requested), tokens(catalog)
         if want & have:
             return True
+        if not have or have == {str(pin_number).upper()}:
+            # Generic passives often expose only numbered/blank pin names.
+            # An exact requested number remains authoritative when its
+            # descriptive annotation has no catalog semantic to contradict.
+            return True
+        from .devicebindings import device_pin_names_compatible
+
+        device_verdict = device_pin_names_compatible(
+            lib_id, pin_number, requested, catalog
+        )
+        if device_verdict is not None:
+            return device_verdict
+
         aliases = (
             {"E", "EMITTER"}, {"B", "BASE"}, {"C", "COLLECTOR"},
             {"A", "ANODE"}, {"K", "CATHODE"},
             {"VI", "VIN"}, {"VO", "VOUT"},
+            {"+", "+IN", "IN+", "NONINVERTING"},
+            {"-", "-IN", "IN-", "INVERTING"},
+            {"DP", "D+", "UD+", "USB_DP", "USB_D+"},
+            {"DN", "D-", "UD-", "USB_DN", "USB_D-"},
         )
         if any(want & group and have & group for group in aliases):
             return True
         ground = {"GND", "VSS", "AGND", "DGND", "PGND"}
-        supply = {"VCC", "VDD", "AVCC", "AVDD", "DVCC", "DVDD", "VS"}
+        supply = {"VCC", "VDD", "AVCC", "AVDD", "DVCC", "DVDD", "VS", "V+"}
         voltage_name = re.compile(r"^(?:\+?\d+(?:V\d+)?|\d+V\d*)$")
         if want & ground and have & ground:
             return True
@@ -607,6 +702,48 @@ class Agent:
                 part["role"] = base[:32]
             seen_roles.add(part["role"])
             part["quantity"] = max(1, int(part.get("quantity", 1)))
+
+    @staticmethod
+    def _normalize_physical_roles(spec: dict) -> None:
+        """Keep package constraints out of BOM roles and connector shape in search.
+
+        Both decisions use standardized physical syntax, not circuit or part
+        names. This pass intentionally runs after named-part preservation,
+        because catalog lookup can otherwise re-introduce a package token as
+        though it were an orderable device.
+        """
+        from .fp_checks import requested_footprint_constraints
+
+        kept = []
+        for part in spec.get("parts_needed", []):
+            query = str(part.get("search_query") or "").strip()
+            value = str(part.get("value") or "").strip()
+            concrete, _pitches, families = requested_footprint_constraints(query)
+            norm = re.sub(r"[^A-Z0-9]", "", query.upper())
+            package_only = bool(concrete) and not families and any(
+                norm == re.sub(r"[^A-Z0-9]", "", token.upper())
+                for token in concrete
+            )
+            if package_only:
+                continue
+
+            description = f"{query} {value}"
+            geometry = re.search(r"(?<!\d)(\d+)\s*[xX×]\s*(\d+)(?!\d)", description)
+            if geometry:
+                rows, columns = geometry.groups()
+            elif pin_count := re.search(r"(?<!\d)(\d+)\s*[- ]?pin\b", description, re.I):
+                rows, columns = "1", pin_count.group(1)
+            else:
+                rows = columns = ""
+            connector_words = re.search(r"\b(?:header|connector)\b", description, re.I)
+            generic_query = re.fullmatch(
+                r"(?i)\s*(?:pin\s*)?(?:header|connector)\s*", query
+            )
+            if rows and connector_words and generic_query:
+                kind = "pin header" if "header" in description.lower() else "connector"
+                part["search_query"] = f"{rows}x{columns} {kind}"
+            kept.append(part)
+        spec["parts_needed"] = kept
 
     def _designators(self, lib_ids) -> set[str]:
         """Reference designators of these symbols, per the library itself."""
@@ -784,19 +921,40 @@ class Agent:
                     self.parts.search_parts(query, 12),
                 )
                 hits = self._rank_simple_regulators(hits)[:CANDIDATES_PER_QUERY]
-            # Debug/interface headers are plain pin headers; domain-worded
-            # queries ("UART header") find nothing and the empty role then
-            # hard-aborts the run at the completeness gate (measured:
-            # debug_uart case). Fall back to generic connectors.
-            if not hits and any(w in intent for w in ("header", "connector", "커넥터", "헤더")):
-                hits = [
-                    h for h in self.parts.search_parts("pin header connector", 20)
-                    if h.get("lib_id", "").startswith("Connector_Generic:")
-                ][:CANDIDATES_PER_QUERY] or [{
-                    "lib_id": "Connector_Generic:Conn_01x04",
-                    "description": "generic 4-pin header (deterministic fallback)",
-                    "reference_prefix": "J",
-                }]
+            from .fp_checks import generic_header_lib_id, parse_contact_geometry, requested_package_text
+
+            geometry = parse_contact_geometry(requested_package_text(need))
+            if geometry:
+                wanted = generic_header_lib_id(geometry)
+                matching = [hit for hit in hits if hit.get("lib_id") == wanted]
+                if not matching:
+                    try:
+                        self.parts.load_symbols([wanted])
+                        matching = [{
+                            "lib_id": wanted,
+                            "description": (
+                                f"{geometry['rows']}x{geometry['columns']} pin header"
+                            ),
+                            "reference_prefix": "J",
+                        }]
+                    except KeyError:
+                        matching = []
+                if matching:
+                    hits = matching[:CANDIDATES_PER_QUERY]
+            elif any(w in intent for w in ("header", "connector", "커넥터", "헤더")):
+                # No requested geometry: do not invent a pin count. Offer the
+                # generic single-row family from the catalog. "pin header
+                # connector" FTS is dominated by vendor headers, not
+                # Connector_Generic, so search the catalog id prefix instead.
+                generic = [
+                    h for h in self.parts.search_parts("Conn_01x", 20)
+                    if str(h.get("lib_id", "")).startswith("Connector_Generic:")
+                ][:CANDIDATES_PER_QUERY]
+                if not hits or not any(
+                    str(h.get("lib_id", "")).startswith("Connector_Generic:")
+                    for h in hits
+                ):
+                    hits = generic or hits
             candidates[need["role"]] = hits
 
         topics = [n["search_query"] for n in spec.get("parts_needed", [])]
@@ -1609,12 +1767,12 @@ class Agent:
         return generate(ir, self.out_dir, symbols=symbols, parts_index=self.parts)
 
     def _fix_footprints(self, ir: CircuitIR, spec: dict | None = None) -> list[str]:
-        from .fp_checks import assign_footprints
+        from .fp_checks import assign_footprints, requested_package_text
 
         requested = {
-            str(part.get("reference", "")).strip().upper(): str(part.get("package", ""))
+            str(part.get("reference", "")).strip().upper(): requested_package_text(part)
             for part in (spec or {}).get("parts_needed", [])
-            if part.get("reference") and part.get("package")
+            if part.get("reference")
         }
         return assign_footprints(
             ir, self._resolve_symbols(ir), self.parts,
@@ -2040,6 +2198,7 @@ class Agent:
             RevisionLockedError,
             RunRecord,
             is_finally_approved,
+            repository_revision,
             sha256_file,
             sha256_tree,
         )
@@ -2061,12 +2220,16 @@ class Agent:
             "environment",
             {
                 "model": model,
+                "commit": repository_revision(project),
                 "llm_extra_payload": getattr(self.llm, "extra_payload", {}),
                 "knowledge_count": knowledge_count,
                 "knowledge_db": str(self.knowledge.db_path),
                 "knowledge_sha256": sha256_file(self.knowledge.db_path),
                 "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
                 "source_sha256": sha256_tree(project / "src"),
+                "product_data_sha256": sha256_tree(
+                    project / "data", patterns=("*.json",)
+                ),
                 "generation_defaults": {"temperature": 0.0, "seed": getattr(self.llm, "extra_payload", {}).get("seed")},
             },
         )
@@ -2108,7 +2271,7 @@ class Agent:
         # ended with no schematic at all. Transcribe it and check it against
         # what was written — a question with an exact answer, unlike "is this
         # a good design?".
-        transcribed = bool(spec.get("netlist"))
+        transcribed = spec.get("mode") == "transcription" and bool(spec.get("netlist"))
         if transcribed:
             res.stage = "transcription"
             ir, tnotes = self.transcribe(spec, name)
@@ -2132,6 +2295,23 @@ class Agent:
             # rewrites D1.K into D1.1 faithfully, and re-checking afterwards
             # looks for a pin name that has correctly stopped existing.
             res.log.extend(self._normalize(ir, spec, prompt, transcribed=True))
+            final_transcription_problems = self.verify_transcription(
+                spec, ir, symbols=self._resolve_symbols(ir),
+                allow_infrastructure=True,
+            )
+            for problem in final_transcription_problems:
+                if problem not in transcription_problems:
+                    transcription_problems.append(problem)
+            if final_transcription_problems:
+                res.log.append(
+                    "final transcription invariant: "
+                    f"{len(final_transcription_problems)} problem(s): "
+                    + ", ".join(final_transcription_problems[:8])
+                )
+            rec.event(
+                "transcription_final_verified",
+                problems=len(final_transcription_problems),
+            )
             pr = self._generate(ir, name)
             res.pipeline = pr
             res.auto_connections = diff_connections(
@@ -2157,6 +2337,11 @@ class Agent:
                 "kicad_erc_violations": len(pr.kicad_erc.violations) if pr.kicad_erc else None,
                 "connectivity_ok": pr.connectivity_ok,
                 "visual_issues": len(pr.visual_issues),
+                "visual_issue_details": [
+                    {"rule": issue.rule, "message": issue.message}
+                    for issue in pr.visual_issues
+                ],
+                "wiring": pr.route_metrics,
                 "interfaces": pr.interface_metrics,
                 "schematic": str(pr.sch_path) if pr.sch_path else None,
             })
@@ -2591,7 +2776,7 @@ class Agent:
             }
             lib_id = None
             binding_error = ""
-            fits: list[tuple[int, int, str]] = []
+            fits: list[tuple[int, int, int, str]] = []
             # R/C/L values are markings, never part identities. Searching
             # "100k" selected a SparkFun 100k symbol for an R1 whose actual
             # value was 1k. Generic passives preserve the user's value and
@@ -2624,10 +2809,24 @@ class Agent:
                     r"\b\d+\s*(?:[- ]?pin|x\d+)\b", "", query,
                     flags=_re.I,
                 ).replace("-", " ").strip() + " connector"
-            fuzzy_hits = (
-                [] if exact_ids else
-                (self.parts.search_parts(catalog_query, 40) if catalog_query else [])
-            )
+            fuzzy_queries = [catalog_query] if catalog_query else []
+            if not exact_ids and prefix in {"U", "Q", "D", "K", "Y"}:
+                # Manufacturer orderable numbers commonly append a package or
+                # grade suffix to the base device represented by KiCad
+                # (e.g. BASE<package>-<grade>).  Try progressively stripped
+                # suffix forms, then let exact pin contracts below decide;
+                # never accept a textual prefix alone.
+                base = _re.sub(r"[-_/][A-Za-z0-9]+$", "", query)
+                fuzzy_queries.append(base)
+                if _re.search(r"\d[A-Za-z]+$", base):
+                    fuzzy_queries.append(_re.sub(r"[A-Za-z]+$", "", base))
+            fuzzy_hits = []
+            seen_hit_ids = set(exact_ids)
+            for fuzzy_query in dict.fromkeys(q for q in fuzzy_queries if q):
+                for hit in self.parts.search_parts(fuzzy_query, 40):
+                    if hit.get("lib_id") not in seen_hit_ids:
+                        fuzzy_hits.append(hit)
+                        seen_hit_ids.add(hit.get("lib_id"))
             search_hits = [] if lib_id or (prefix == "J" and not connector_named_pins) else [
                 *({"lib_id": lid, "is_power": False} for lid in exact_ids),
                 *fuzzy_hits,
@@ -2664,7 +2863,9 @@ class Agent:
                             and number in {x.strip() for x in p.number[1:-1].split(",")}
                         ]
                     if candidates and not any(
-                        self._pin_names_compatible(requested_name, p.name)
+                        self._pin_names_compatible(
+                            requested_name, p.name, candidate, number
+                        )
                         for p in candidates
                     ):
                         incompatible = True
@@ -2687,12 +2888,17 @@ class Agent:
                     abs(len(sym.pins) - (desired_pin_count + 1))
                     if desired_pin_count else 0
                 )
-                fits.append((geometry_delta, len([p for p in sym.pins if not p.hidden]), candidate))
+                fits.append((
+                    geometry_delta,
+                    0 if candidate in exact_ids else 1,
+                    len([p for p in sym.pins if not p.hidden]),
+                    candidate,
+                ))
             if lib_id is None and fits:
                 # the smallest part that carries every pin the request uses:
                 # extra pins are pins the reader has to account for
                 fits.sort()
-                lib_id = fits[0][2]
+                lib_id = fits[0][3]
             if lib_id is None and prefix == "J":
                 # a connector's size is not a guess: the request's own net list
                 # says which pins of it are used, and the highest is how many
@@ -2758,7 +2964,14 @@ class Agent:
         )
         return ir, notes
 
-    def verify_transcription(self, spec: dict, ir: CircuitIR) -> list[str]:
+    def verify_transcription(
+        self,
+        spec: dict,
+        ir: CircuitIR,
+        *,
+        symbols: dict | None = None,
+        allow_infrastructure: bool = False,
+    ) -> list[str]:
         """Compare the requested and transcribed circuit exactly.
 
         Merely finding a pin somewhere in the board is insufficient: moving
@@ -2782,12 +2995,28 @@ class Agent:
                 ref = str(node.get("reference", "")).strip().upper()
                 pin = str(node.get("pin", "")).strip()
                 if name and ref and pin:
-                    expected[(name, ref, pin)] += 1
+                    canonical_pin = pin
+                    if symbols and ref in ir.components:
+                        sym = symbols.get(ir.components[ref].lib_id)
+                        if sym is not None:
+                            try:
+                                canonical_pin = sym.pin(pin).number
+                            except KeyError:
+                                matches = [
+                                    p.number for p in sym.pins
+                                    if self._pin_names_compatible(
+                                        pin, p.name, ir.components[ref].lib_id, p.number
+                                    )
+                                ]
+                                if len(set(matches)) == 1:
+                                    canonical_pin = matches[0]
+                    expected[(name, ref, canonical_pin)] += 1
                     expected_refs.add(ref)
 
         actual = Counter(
             (str(net.name), str(ref).upper(), str(pin))
             for net in ir.nets for ref, pin in net.nodes
+            if not (allow_infrastructure and str(ref).startswith("#"))
         )
         problems: list[str] = []
         for (name, ref, pin), count in sorted((expected - actual).items()):
@@ -2795,9 +3024,30 @@ class Agent:
         for (name, ref, pin), count in sorted((actual - expected).items()):
             problems.extend([f"unexpected connection {name}: {ref}.{pin}"] * count)
 
-        actual_refs = {str(ref).upper() for ref in ir.components}
+        actual_refs = {
+            str(ref).upper() for ref in ir.components
+            if not (allow_infrastructure and str(ref).startswith("#"))
+        }
         problems.extend(f"missing component {ref}" for ref in sorted(expected_refs - actual_refs))
         problems.extend(f"unexpected component {ref}" for ref in sorted(actual_refs - expected_refs))
+        if symbols:
+            for ref, comp in sorted(ir.components.items()):
+                if ref.startswith("#"):
+                    continue
+                sym = symbols.get(comp.lib_id)
+                pin_numbers = {pin.number for pin in sym.pins} if sym else set()
+                if len(pin_numbers) != 2:
+                    continue
+                pin_nets = {
+                    pin: {net.name for net in ir.nets if (ref, pin) in net.nodes}
+                    for pin in pin_numbers
+                }
+                shared = set.intersection(*pin_nets.values()) if pin_nets else set()
+                if shared and all(pin_nets.values()):
+                    problems.append(
+                        f"invalid two-terminal connection {ref}: both pins share "
+                        f"net {sorted(shared)[0]}"
+                    )
         return problems
 
 
@@ -2880,6 +3130,9 @@ class Agent:
             logic = logic_rail(rails)
             if logic:
                 notes += ensure_i2c_pullups(ir, syms(), logic)
+        else:
+            # In transcription mode, symbol-declared NOCONNECT pins must still be marked
+            notes += mark_documented_no_connects(ir, syms())
         notes += self.resolve_pin_names(ir)
         notes += unify_stacked_pins(ir, syms())
         notes += self._fix_footprints(ir, spec)
