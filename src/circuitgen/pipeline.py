@@ -32,6 +32,9 @@ class PipelineResult:
     connectivity_ok: bool = False
     connectivity_msg: str = ""
     svg_ok: bool = False
+    # PNG siblings of the SVG sheets (editor/chat preview). Empty when
+    # cairosvg is unavailable — SVG export itself is unaffected.
+    preview_pngs: list[Path] = field(default_factory=list)
     draft: bool = False  # emitted despite self-ERC errors (partial view)
     visual_issues: list = field(default_factory=list)
     # net-level wiring quality: how much of the circuit is drawn as real wire
@@ -152,11 +155,16 @@ def generate(
             + "; ".join(f"{v.get('type')}: {v.get('description')}" for v in res.kicad_erc.violations)
         )
 
-    # 4. SVG render
-    svg = export_svg(sch_path, out_dir / "svg")
+    # 4. SVG render (+ PNG sibling for editor/chat preview)
+    svg_dir = out_dir / "svg"
+    svg = export_svg(sch_path, svg_dir)
     res.svg_ok = svg.returncode == 0
     if not res.svg_ok:
         res.errors.append(f"SVG export failed: {svg.stderr.strip()}")
+    else:
+        from .schematic_preview import rasterize_svg_dir
+
+        res.preview_pngs = rasterize_svg_dir(svg_dir)
 
     # 5. connectivity round-trip via kicad-cli-exported netlist
     exported = out_dir / f"{ir.name}.kicad-export.net"
@@ -243,10 +251,15 @@ def generate_hierarchical(
     if not res.kicad_erc.ok:
         res.errors.append(f"KiCad ERC: exit {res.kicad_erc.exit_code}, {len(res.kicad_erc.violations)} violations")
 
-    svg = export_svg(res.sch_path, out_dir / "svg")
+    svg_dir = out_dir / "svg"
+    svg = export_svg(res.sch_path, svg_dir)
     res.svg_ok = svg.returncode == 0
     if not res.svg_ok:
         res.errors.append(f"SVG export failed: {svg.stderr.strip()}")
+    else:
+        from .schematic_preview import rasterize_svg_dir
+
+        res.preview_pngs = rasterize_svg_dir(svg_dir)
 
     exported = out_dir / f"{name}.kicad-export.net"
     netl = export_netlist(res.sch_path, exported)

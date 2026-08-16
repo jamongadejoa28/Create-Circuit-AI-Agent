@@ -167,7 +167,8 @@ def test_a_rendered_sheet_is_served_as_an_image(client, monkeypatch, tmp_path):
 def test_page_lists_product_metrics_before_erc():
     page = webapp._PAGE
     assert page.index("선택한 부품") < page.index("커넥터 접점")
-    assert page.index("커넥터 접점") < page.index("막는 문제 '+blocking")
+    assert page.index("커넥터 접점") < page.index("전원 레일 전도")
+    assert page.index("전원 레일 전도") < page.index("막는 문제 '+blocking")
     assert page.index("막는 문제 '+blocking") < page.index("배선 합법성 (마지막 지표)")
     assert "역할 미확인" in page
     assert "pipeline_errors" in page or "kicad_messages" in page

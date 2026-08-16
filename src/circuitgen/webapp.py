@@ -143,7 +143,15 @@ def _pages(run_dir: Path) -> list[dict]:
     root = min(svgs, key=lambda p: (len(p.stem), p.stem))
     ordered = [root] + [p for p in svgs if p != root]
     return [
-        {"name": p.stem, "file": f"svg/{p.name}", "root": p == root}
+        {
+            "name": p.stem,
+            "file": f"svg/{p.name}",
+            "preview": (
+                f"svg/{p.stem}.png"
+                if p.with_suffix(".png").is_file() else None
+            ),
+            "root": p == root,
+        }
         for p in ordered
     ]
 
@@ -165,6 +173,7 @@ def _report(res, run_dir: Path, prompt: str = "", parts=None, symbols=None) -> d
         "role_unverifiable": (compliance or {}).get("role_unverifiable") or [],
         "role_not_working": (compliance or {}).get("role_not_working") or [],
         "connector_geometry": (compliance or {}).get("connector_geometry") or [],
+        "supply_rail_reach": (compliance or {}).get("supply_rail_reach") or [],
         "blocking": [i for i in issues if i.get("severity") == "error"],
         "warnings": [i for i in issues if i.get("severity") != "error"],
         "compliance": compliance,
@@ -325,10 +334,14 @@ def get_file(job_id: str, kind: str):
         raise HTTPException(404, "no such job, or it has not finished")
     rel = job.result.get("files", {}).get(kind)
     if rel is None:
-        rel = next(
-            (p["file"] for p in job.result.get("pages", []) if p["name"] == kind),
+        page = next(
+            (p for p in job.result.get("pages", []) if p["name"] == kind),
             None,
         )
+        if page is not None:
+            # Prefer the PNG sibling when present — Cursor's editor and the
+            # agent image reader show PNG, while browsers already handle SVG.
+            rel = page.get("preview") or page.get("file")
     if not rel:
         raise HTTPException(404, f"this run produced no {kind}")
     path = (OUT_ROOT / job_id / rel).resolve()
@@ -342,6 +355,8 @@ def get_file(job_id: str, kind: str):
     # with the right type, so it is set for downloads only.
     if path.suffix == ".svg":
         return FileResponse(path, media_type="image/svg+xml")
+    if path.suffix == ".png":
+        return FileResponse(path, media_type="image/png")
     return FileResponse(
         path, media_type="application/octet-stream", filename=path.name
     )
@@ -413,6 +428,9 @@ function render(id,j){
   const geom=r.connector_geometry||[];
   if(geom.length){h+='<div class="card'+(geom.some(g=>g.match===false)?' bad':'')+'"><b>커넥터 접점</b><ul>'+
      geom.map(g=>`<li><span class="mono">${esc(g.reference||'?')}</span> 요청 ${g.requested_rows}x${g.requested_columns} (${g.requested_contacts}접점) → 심볼 ${g.symbol_pins??'—'}핀 / 패드 ${g.footprint_pads??'—'} ${g.match?'일치':'불일치'}</li>`).join('')+'</ul></div>'}
+  const rails=r.supply_rail_reach||[];
+  if(rails.length){h+='<div class="card'+(rails.some(g=>g.match===false)?' bad':'')+'"><b>전원 레일 전도</b><ul>'+
+     rails.map(g=>`<li><span class="mono">${esc(g.reference)}.${esc(g.pin)}</span>${g.pin_name?' ('+esc(g.pin_name)+')':''} → ${esc(g.net||'—')} ${g.match?'일치':'불일치'}</li>`).join('')+'</ul></div>'}
   if(blocking.length){h+='<div class="card bad"><b>막는 문제 '+blocking.length+'건</b><ul>'+
      blocking.map(i=>`<li><span class="mono">${esc(i.rule)}</span> — ${esc(i.message)}</li>`).join('')+'</ul></div>'}
   if(warns.length){h+='<div class="card warn"><b>확인이 필요한 항목 '+warns.length+'건</b><ul>'+

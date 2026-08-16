@@ -21,6 +21,14 @@ from tests.benchmarks.transcription_metrics import compare_expected_spec
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def count_supply_rail_reach_mismatches(records: list) -> int:
+    """Wrong-rail joins only — not unconnected or signal_or_other."""
+    return sum(
+        1 for item in records
+        if item.get("match") is False and item.get("reason") == "not_requested_rail"
+    )
+
+
 def _snapshot(case: dict, result, seconds: float) -> dict:
     pipeline = result.pipeline
     compliance = result.compliance.as_dict() if result.compliance else {}
@@ -65,6 +73,18 @@ def _snapshot(case: dict, result, seconds: float) -> dict:
             1 for item in (compliance.get("connector_geometry") or [])
             if item.get("match") is False
         ) if result.compliance else None,
+        "supply_rail_reach": compliance.get("supply_rail_reach") or [],
+        # Count only wrong-rail joins. unconnected is already
+        # power_pin_unpowered; signal_or_other is check_power_integrity.
+        "supply_rail_reach_mismatches": (
+            count_supply_rail_reach_mismatches(compliance.get("supply_rail_reach") or [])
+            if result.compliance else None
+        ),
+        "preview_pngs": [
+            str(path) for path in (
+                (result.pipeline.preview_pngs if result.pipeline else None) or []
+            )
+        ],
         "ir_sha256": hashlib.sha256(json.dumps(ir_json, sort_keys=True).encode()).hexdigest() if ir_json else None,
         "seconds": round(seconds, 1),
     }
@@ -108,6 +128,15 @@ def regressions(old: dict, new: dict) -> list[str]:
         problems.append(
             f"connector_geometry_mismatches: {old['connector_geometry_mismatches']} "
             f"-> {new['connector_geometry_mismatches']}"
+        )
+    if (
+        old.get("supply_rail_reach_mismatches") is not None
+        and new.get("supply_rail_reach_mismatches") is not None
+        and new["supply_rail_reach_mismatches"] > old["supply_rail_reach_mismatches"]
+    ):
+        problems.append(
+            f"supply_rail_reach_mismatches: {old['supply_rail_reach_mismatches']} "
+            f"-> {new['supply_rail_reach_mismatches']}"
         )
     old_missing = set(old.get("selected_parts_missing", []))
     new_missing = set(new.get("selected_parts_missing", []))
@@ -160,6 +189,8 @@ def main() -> int:
             if found:
                 all_regressions[case["id"]] = found
         print(f'{case["sequence"]:03d} {case["id"]} stage={row["stage"]} regressions={len(all_regressions.get(case["id"], []))}')
+        for png in row.get("preview_pngs") or []:
+            print(f'     preview {png}')
     report = {
         "label": args.label, "step": args.step, "seed": args.seed,
         "repository_revision": repository_revision(ROOT),
@@ -170,6 +201,20 @@ def main() -> int:
     }
     (out_dir / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
     print(f"report: {out_dir / 'report.json'}")
+    preview_root = out_dir / "previews"
+    # Re-rasterize every case sheet so older runs and missing cairosvg
+    # mid-pipeline still leave editor-visible PNGs under one folder.
+    from circuitgen.schematic_preview import rasterize_svg_dir
+
+    all_pngs: list[Path] = []
+    for case_dir in sorted(p for p in out_dir.iterdir() if p.is_dir()):
+        all_pngs.extend(rasterize_svg_dir(case_dir / "svg"))
+    if all_pngs:
+        preview_root.mkdir(exist_ok=True)
+        for png in all_pngs:
+            target = preview_root / f"{png.parent.parent.name}__{png.name}"
+            target.write_bytes(png.read_bytes())
+            print(f"preview: {target}")
     return 3 if all_regressions else 0
 
 

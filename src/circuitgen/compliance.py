@@ -28,7 +28,13 @@ from pathlib import Path
 
 from .erc import net_kind
 from .ir import CircuitIR, SymbolDef, ValidationIssue
-from .netnames import STANDARD_RAILS, supply_voltage
+from .netnames import (
+    STANDARD_RAILS,
+    is_ground,
+    is_ground_pin,
+    is_supply,
+    supply_voltage,
+)
 from .pins import PinType
 from .topology import analyze_conduction
 
@@ -66,6 +72,7 @@ class ComplianceReport:
     role_not_working: list[str] = field(default_factory=list)
     dead_components: dict[str, str] = field(default_factory=dict)
     connector_geometry: list[dict] = field(default_factory=list)
+    supply_rail_reach: list[dict] = field(default_factory=list)
 
     @property
     def errors(self) -> list[ValidationIssue]:
@@ -91,6 +98,7 @@ class ComplianceReport:
             "role_not_working": self.role_not_working,
             "dead_components": self.dead_components,
             "connector_geometry": self.connector_geometry,
+            "supply_rail_reach": self.supply_rail_reach,
             "issues": [
                 {"rule": i.rule, "severity": i.severity, "path": i.path, "message": i.message}
                 for i in self.issues
@@ -689,6 +697,223 @@ def check_connector_geometry(
     return issues, records
 
 
+def _power_symbol_rail_names(comp) -> set[str]:
+    """Names a power:* component asserts (value and/or lib_id suffix)."""
+    if not (comp.lib_id or "").startswith("power:"):
+        return set()
+    names: set[str] = set()
+    suffix = comp.lib_id.split(":", 1)[-1].strip()
+    if suffix:
+        names.add(suffix)
+    value = (comp.value or "").strip()
+    if value:
+        names.add(value)
+    return names
+
+
+def _requested_supply_present(ir: CircuitIR, rail_name: str) -> bool:
+    """True if a net or power symbol on the board matches the rail name."""
+    target = rail_name.casefold()
+    if any(net.name.casefold() == target for net in ir.nets):
+        return True
+    for comp in ir.components.values():
+        if any(name.casefold() == target for name in _power_symbol_rail_names(comp)):
+            return True
+    return False
+
+
+def _power_names_on_net(ir: CircuitIR, symbols: dict[str, SymbolDef], net) -> set[str]:
+    names: set[str] = set()
+    for ref, _pin_no in net.nodes:
+        comp = ir.components.get(ref)
+        if comp is None:
+            continue
+        sym = symbols.get(comp.lib_id)
+        if sym is None or not sym.is_power:
+            continue
+        names.update(_power_symbol_rail_names(comp))
+    return names
+
+
+def _looks_like_board_supply(name: str) -> bool:
+    """True when an absent rail is a board defect, not extractor paraphrase.
+
+    Error if the name is in ``STANDARD_RAILS``, or ``is_supply(name)`` and
+    ``supply_voltage(name)`` is not None and >= 5.0 (covers +9V/+12V/…).
+    ``STANDARD_RAILS`` already covers 1.8/3.3/5. Sub-1 V names and odd
+    mid-values like ``+2V`` (LED Vf) stay warnings.
+    """
+    n = (name or "").strip()
+    if not n:
+        return False
+    standard = {rail.casefold() for _, rail, _ in STANDARD_RAILS}
+    standard |= {label.casefold() for _, _, label in STANDARD_RAILS}
+    if n.casefold() in standard:
+        return True
+    if not is_supply(n):
+        return False
+    volts = supply_voltage(n)
+    return volts is not None and volts >= 5.0
+
+
+def check_requested_rail_reach(
+    ir: CircuitIR,
+    symbols: dict[str, SymbolDef],
+    spec: dict | None = None,
+) -> tuple[list[ValidationIssue], list[dict]]:
+    """Whether each device PWRIN reaches a rail named in RequirementSpec.
+
+    Distinct from ``check_power_integrity``: that asks "is the pin powered at
+    all / at a voltage the part survives?". This asks "does the pin reach a
+    *requested* supply from ``spec['power']['rails']``, and is each requested
+    non-ground rail present on the board?". Empty rails means nothing to
+    measure.
+
+    Ground reach uses ``is_ground_pin`` only — ``V-``/``VEE`` are supply pins
+    per ``netnames.is_supply_pin`` and need a device rule, not a name list.
+    """
+    raw = (spec or {}).get("power", {}).get("rails") or []
+    if not raw:
+        return [], []
+
+    requested: list[dict] = []
+    for rail in raw:
+        name = str(rail.get("name", "")).strip()
+        if not name:
+            continue
+        requested.append({"name": name, "voltage": rail.get("voltage")})
+    if not requested:
+        return [], []
+
+    supply_rails = [r["name"] for r in requested if not is_ground(r["name"])]
+    ground_rails = [r["name"] for r in requested if is_ground(r["name"])]
+    supply_cf = {n.casefold() for n in supply_rails}
+    ground_cf = {n.casefold() for n in ground_rails}
+
+    pin_net: dict[tuple[str, str], str] = {}
+    nets_by_name = {net.name: net for net in ir.nets}
+    for net in ir.nets:
+        for ref, pin_no in net.nodes:
+            pin_net[(ref, str(pin_no))] = net.name
+    nc = {(ref, str(pin_no)) for ref, pin_no in ir.nc_pins}
+    kinds = {net.name: net_kind(ir, symbols, net) for net in ir.nets}
+
+    issues: list[ValidationIssue] = []
+    for rail_name in supply_rails:
+        if _requested_supply_present(ir, rail_name):
+            continue
+        if _looks_like_board_supply(rail_name):
+            issues.append(_issue(
+                "requested_rail_absent",
+                "error",
+                f"rail:{rail_name}",
+                f"the requirement asks for supply rail {rail_name!r} but no net or "
+                f"power symbol of that name is on the board",
+            ))
+        else:
+            issues.append(_issue(
+                "requested_rail_absent",
+                "warning",
+                f"rail:{rail_name}",
+                f"extracted rail {rail_name!r} may not be a board supply "
+                f"(extractor paraphrase); no net or power symbol of that name "
+                f"is on the board",
+            ))
+
+    records: list[dict] = []
+    for ref, comp in sorted(ir.components.items()):
+        sym = symbols.get(comp.lib_id)
+        if sym is None or sym.is_power or ref.startswith("#"):
+            continue
+        for pin in sym.pins:
+            if pin.etype != PinType.PWRIN:
+                continue
+            key = (ref, pin.number)
+            net_name = pin_net.get(key)
+            pin_label = pin.name or ""
+            record = {
+                "reference": ref,
+                "pin": pin.number,
+                "pin_name": pin_label,
+                "lib_id": comp.lib_id,
+                "net": net_name,
+                "requested_rails": list(supply_rails),
+                "match": False,
+                "reason": "unconnected",
+            }
+            if key in nc or net_name is None:
+                records.append(record)
+                continue
+
+            net = nets_by_name.get(net_name)
+            power_on_net = (
+                {n.casefold() for n in _power_names_on_net(ir, symbols, net)}
+                if net is not None else set()
+            )
+            net_cf = net_name.casefold()
+            reaches_supply = net_cf in supply_cf or bool(power_on_net & supply_cf)
+            reaches_ground = (
+                net_cf in ground_cf or bool(power_on_net & ground_cf)
+                or kinds.get(net_name) == "gnd"
+            )
+            if is_ground_pin(pin_label):
+                on_requested = reaches_ground
+            else:
+                on_requested = reaches_supply
+            if on_requested:
+                record["match"] = True
+                record["reason"] = "reaches_requested_rail"
+                records.append(record)
+                continue
+
+            if kinds.get(net_name) == "signal":
+                record["reason"] = "signal_or_other"
+                records.append(record)
+                # Existing check_power_integrity already flags signal PWRIN;
+                # do not double-fire a second error rule for the same pin.
+                continue
+
+            record["reason"] = "not_requested_rail"
+            records.append(record)
+            if is_ground_pin(pin_label):
+                expected = ground_rails + supply_rails
+                if not expected:
+                    continue
+                rail_list = ", ".join(expected)
+                hint = (
+                    f"requested ground rails ({rail_list})"
+                    if ground_rails
+                    else f"requested rails ({rail_list})"
+                )
+            else:
+                if not supply_rails:
+                    continue
+                hint = f"requested rail ({', '.join(supply_rails)})"
+            issues.append(_issue(
+                "power_pin_misses_requested_rail",
+                "error",
+                f"{ref}.{pin.number}",
+                f"supply pin {ref}.{pin.number} ({pin_label or 'power input'}) of "
+                f"{comp.lib_id} is on {net_name}, which is not any {hint}",
+            ))
+
+    has_conceptual = any(
+        not ref.startswith("#")
+        and (symbols.get(comp.lib_id) is None or not symbols[comp.lib_id].is_power)
+        and comp.lib_id.startswith("Conceptual:")
+        for ref, comp in ir.components.items()
+    )
+    if has_conceptual and not records and supply_rails:
+        issues.append(_issue(
+            "supply_rail_reach_unverifiable",
+            "warning",
+            "supply_rail_reach",
+            "conceptual placeholders have no catalog PWRIN pins, so requested "
+            "rail reach cannot be measured",
+        ))
+    return issues, records
+
+
 def check_compliance(
     ir: CircuitIR,
     symbols: dict[str, SymbolDef],
@@ -703,6 +928,7 @@ def check_compliance(
         ir, prompt, parts, transcribed=transcribed
     )
     pwr_issues, checked = check_power_integrity(ir, symbols)
+    rail_issues, rail_records = check_requested_rail_reach(ir, symbols, spec)
 
     # A number/name pair in a transcribed net list is a physical binding
     # assertion.  Check it against device-local, provenance-backed data; a
@@ -853,8 +1079,8 @@ def check_compliance(
     )
 
     return ComplianceReport(
-        issues=(req_issues + pwr_issues + binding_issues + role_issues + package_issues
-                + conceptual_issues + dead_issues + geometry_issues),
+        issues=(req_issues + pwr_issues + rail_issues + binding_issues + role_issues
+                + package_issues + conceptual_issues + dead_issues + geometry_issues),
         requested_parts=requested,
         satisfied_parts=satisfied,
         missing_parts=missing,
@@ -868,4 +1094,5 @@ def check_compliance(
         role_not_working=role_broken,
         dead_components=conduction.dead,
         connector_geometry=geometry_records,
+        supply_rail_reach=rail_records,
     )

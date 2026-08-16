@@ -1,4 +1,7 @@
-from tests.benchmarks.run_sequential_campaign import regressions
+from tests.benchmarks.run_sequential_campaign import (
+    count_supply_rail_reach_mismatches,
+    regressions,
+)
 
 
 def test_regression_comparison_keeps_metrics_separate():
@@ -26,6 +29,24 @@ def test_regression_detects_new_connector_geometry_mismatch():
         {"connector_geometry_mismatches": 1},
     )
     assert found == ["connector_geometry_mismatches: 0 -> 1"]
+
+
+def test_regression_detects_new_supply_rail_reach_mismatch():
+    found = regressions(
+        {"supply_rail_reach_mismatches": 0},
+        {"supply_rail_reach_mismatches": 2},
+    )
+    assert found == ["supply_rail_reach_mismatches: 0 -> 2"]
+
+
+def test_supply_rail_reach_mismatch_count_ignores_unconnected_and_signal():
+    records = [
+        {"match": False, "reason": "unconnected"},
+        {"match": False, "reason": "signal_or_other"},
+        {"match": False, "reason": "not_requested_rail"},
+        {"match": True, "reason": "reaches_requested_rail"},
+    ]
+    assert count_supply_rail_reach_mismatches(records) == 1
 
 
 def test_unbuilt_baseline_does_not_claim_zero_compliance_errors():
