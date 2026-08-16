@@ -941,20 +941,15 @@ class Agent:
                         matching = []
                 if matching:
                     hits = matching[:CANDIDATES_PER_QUERY]
-            elif any(w in intent for w in ("header", "connector", "커넥터", "헤더")):
-                # No requested geometry: do not invent a pin count. Offer the
-                # generic single-row family from the catalog. "pin header
-                # connector" FTS is dominated by vendor headers, not
-                # Connector_Generic, so search the catalog id prefix instead.
-                generic = [
+            elif not hits and any(w in intent for w in ("header", "connector", "커넥터", "헤더")):
+                # No hits and no requested geometry: do not invent a pin count
+                # and do not throw away a catalog part the search already
+                # found (USB-C, micro-SD, SWD). The generic family is only a
+                # last resort when the query matched nothing.
+                hits = [
                     h for h in self.parts.search_parts("Conn_01x", 20)
                     if str(h.get("lib_id", "")).startswith("Connector_Generic:")
                 ][:CANDIDATES_PER_QUERY]
-                if not hits or not any(
-                    str(h.get("lib_id", "")).startswith("Connector_Generic:")
-                    for h in hits
-                ):
-                    hits = generic or hits
             candidates[need["role"]] = hits
 
         topics = [n["search_query"] for n in spec.get("parts_needed", [])]

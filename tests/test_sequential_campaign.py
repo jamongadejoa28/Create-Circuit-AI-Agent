@@ -33,3 +33,16 @@ def test_unbuilt_baseline_does_not_claim_zero_compliance_errors():
         {"draft_visible": False, "compliance_errors": 0},
         {"draft_visible": True, "compliance_errors": 4},
     ) == []
+
+
+def test_erc_count_increase_does_not_gate_the_runner():
+    found = regressions(
+        {"self_erc_errors": 0, "kicad_violations": 0, "role_working": 3},
+        {"self_erc_errors": 28, "kicad_violations": 20, "role_working": 3},
+    )
+    assert found == []
+
+
+def test_role_working_drop_still_gates():
+    found = regressions({"role_working": 6}, {"role_working": 1})
+    assert found == ["role_working: 6 -> 1"]

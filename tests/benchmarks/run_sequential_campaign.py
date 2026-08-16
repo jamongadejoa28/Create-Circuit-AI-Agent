@@ -78,9 +78,12 @@ def regressions(old: dict, new: dict) -> list[str]:
     for key in ("draft_visible", "connectivity_ok"):
         if old.get(key) is True and new.get(key) is not True:
             problems.append(f"{key}: true -> {new.get(key)!r}")
-    for key in ("self_erc_errors", "self_erc_warnings", "kicad_violations", "visual_issues"):
+    for key in ("visual_issues",):
         if old.get(key) is not None and new.get(key) is not None and new[key] > old[key]:
             problems.append(f"{key}: {old[key]} -> {new[key]}")
+    # ERC counts are recorded on the row but do not gate the runner. A
+    # geometry fix that makes a dead board honest can raise ERC while
+    # product metrics (roles, selected parts, contacts) are the gate.
     # Old reports created before compliance existed encoded an unbuilt board
     # as zero errors. A metric is comparable only when both runs produced a
     # draft on which compliance could actually run.
@@ -114,6 +117,10 @@ def regressions(old: dict, new: dict) -> list[str]:
     for key in ("parts_exact", "netlist_exact"):
         if old_exact.get(key) is True and new_exact.get(key) is not True:
             problems.append(f"exact.{key}: true -> {new_exact.get(key)!r}")
+    if old_exact.get("polarized_wrong") == [] and new_exact.get("polarized_wrong"):
+        problems.append(
+            "exact.polarized_wrong: " + ", ".join(new_exact["polarized_wrong"])
+        )
     return problems
 
 

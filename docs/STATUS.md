@@ -3,7 +3,7 @@
 > 다른 `docs/*.md`는 역사 기록이다. 새 계획 파일을 만들지 않는다.
 > 판정 기준: [`working-rules.md`](working-rules.md).
 
-갱신: 2026-08-16 · HEAD `225cf7e` (커넥터 형상 `8874959` · 웹 리포트 `fcb3af3` · 전사 `87d3a87` · SchGen 홀드아웃 `225cf7e`)
+갱신: 2026-08-16 · HEAD `946a619` dirty (F2/F3/F5 후속 작업 중)
 
 ## 제품
 
@@ -16,28 +16,31 @@ PCB 배치·동박·DRC와 QLoRA는 하지 않는다.
 고정 입력: `tests/eval/sequential_campaign_v1.json` (36개 / 30 도메인).
 실행기: `tests/benchmarks/run_sequential_campaign.py`.
 
-- 생성·이미지 검토가 끝난 범위: **1~3번**
-  (`tests/artifacts/benchmarks/sequential/ko-step-003-header-geometry/`)
-- 1번 `전원_엘이디_버튼`: 요청 1x2 → 심볼 `Conn_01x02` 핀 1·2. 접점 계약 일치.
-  선택 부품(LED, 택트)은 보드에 있음. D1이 단락되어 역할 3/4. ERC 0.
-- 2번 `선형전원_삼점삼볼트`: J1·J2 모두 `Conn_01x02`. AMS1117-3.3는 보드에 있음.
-  U2 핀 3(VI)이 레일에 안 붙고 커패시터·LED·저항 다수가 부유. 역할 1/5.
-  **AMS1117 특례로 고치지 않음.** ERC 28은 마지막 지표.
-- 3번 `비반전_연산증폭기`: MCP6001 보존, J1/J2가 1x2, 단계 `done`. 역할 3/7
-  (피드백·바이패스 역할은 이름만으로 검증 불가). 육안상 비반전 되먹임은 그려져 있음.
+측정 비교: `ko-step-002-connector-geometry-measure` → `ko-step-003-header-geometry`.
+점수 변화로 개선을 주장하지 않는다. 원인 미확인.
+
+- 1번 `전원_엘이디_버튼`: 역할 동작 4/4 → 3/4, 단계 `repair-3` → `requirement-mismatch`.
+  형상은 이제 `Conn_01x02`로 일치. D1이 단락되어 있다.
+- 2번 `선형전원_삼점삼볼트`: 역할 6/6 → 1/5, selfERC 0→28, kicad 0→20, compliance 2→11.
+  +3V3 레일 심볼이 사라졌다. AMS1117은 보드에 있으나 VI가 전원에 안 붙고 부품 다수가 부유.
+  원인(헤더 형상 vs requirement extract)은 확인되지 않았다. **AMS1117 특례로 고치지 않음.**
+- 3번 `비반전_연산증폭기`: ko-step-003에서만 생성. MCP6001 보존, 단계 `done`, 역할 3/7
+  (피드백·바이패스 역할은 이름만으로 검증 불가). 이 쌍의 비교 대상은 없다.
 
 커넥터 접점 계약은 `compliance.check_connector_geometry` (수량 포함).
-합격 게이트로 ERC를 쓰지 않는다.
+합격 게이트로 ERC를 쓰지 않는다. ERC 숫자는 행에 기록만 한다.
 
 ## 제품 규칙
 
 - verified: `data/rules/ldo_linear_regulator.json` 하나
-- draft (합성에 안 넣음): I2C 풀업, USB-C sink CC
+- draft (git에 올리지 않음, 합성에 안 넣음): I2C 풀업, USB-C sink CC.
+  교과서 쪽수 인용이 검증되지 않는다 (USB-C 780쪽은 TVS). 승격하지 않는다.
 
 ## 다음 지표 공백
 
 1. ~~커넥터 요청 행·열·접점 수 vs 심볼 핀 수 vs footprint pad 수~~ — 측정·보고 있음.
    `_gather`는 요청 기하가 있으면 그 카탈로그 심볼만 후보로 둔다. 없으면 4핀을 발명하지 않는다.
+   `_gather`가 카탈로그 USB-C·SD·SWD 히트를 generic 1–3핀으로 바꾸던 것은 되돌렸다. 빈 히트일 때만 generic 후보를 쓴다.
 2. **전원 핀이 요청 레일에 전도되는가** (여러 전원 회로군에서 같은 지표로. 부품명 규칙 금지)
 3. 자동 visual 0 ≠ 육안 합격
 4. 설계 모드 1..N을 4번 이후로 넓힐 때, 생성기 변경은 **두 도메인 이상에서 같은 지표가 깨질 때만**

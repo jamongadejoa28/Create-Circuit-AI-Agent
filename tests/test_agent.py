@@ -7,14 +7,16 @@ repair-loop mechanics deterministically. The real-model end-to-end run
 lives in scripts/run_agent.py (needs llama-server with a loaded model).
 """
 
+import json
 from pathlib import Path
 
 import pytest
 
-from circuitgen.agent import Agent
+from circuitgen.agent import Agent, request_mode
 from circuitgen.kicad_cli import KICAD_CLI
 from circuitgen.knowledge import KNOWLEDGE_DIR, KnowledgeIndex, build_index as build_kn
-from circuitgen.ir import CircuitIR, Component
+from circuitgen.ir import CircuitIR, Component, PinDef, SymbolDef
+from circuitgen.pins import PinType
 from circuitgen.partindex import LibrarySource, PartIndex, build_index as build_parts
 from circuitgen.patterns import load_patterns
 from circuitgen.symbols import KICAD_SYMBOL_DIR
@@ -25,6 +27,37 @@ pytestmark = pytest.mark.skipif(
 )
 
 FIXTURE_PATTERN_DIR = Path(__file__).resolve().parent / "fixtures" / "patterns"
+
+
+def test_request_mode_requires_explicit_reference_pin_members():
+    assert request_mode(
+        "Netlist: VCC: U1(8:VCC), J1(1); GND: U1(1:GND), J1(2)."
+    ) == "transcription"
+    assert request_mode(
+        "STM32와 센서를 I2C로 연결하려고 합니다. S 핀 처리와 풀업 값을 설계해주세요."
+    ) == "design"
+
+
+def test_request_mode_accepts_pin_word_notation_without_net_name_vocabulary():
+    assert request_mode("alpha = J1 Pin 1, U1 Pin 3; beta = J1 핀 2, U1 핀 1") == "transcription"
+
+
+def test_physical_role_normalization_is_general_and_idempotent():
+    spec = {"parts_needed": [
+        {"role": "regulator", "search_query": "AMS1117-3"},
+        {"role": "package", "search_query": "SOT-223"},
+        {"role": "input", "search_query": "header", "value": "2-pin header"},
+        {"role": "programmer", "search_query": "connector", "value": "2x3"},
+    ]}
+    Agent._normalize_physical_roles(spec)
+    once = json.loads(json.dumps(spec))
+    Agent._normalize_physical_roles(spec)
+    assert spec == once
+    assert [part["role"] for part in spec["parts_needed"]] == [
+        "regulator", "input", "programmer",
+    ]
+    assert spec["parts_needed"][1]["search_query"] == "1x2 pin header"
+    assert spec["parts_needed"][2]["search_query"] == "2x3 connector"
 
 
 def enable_internal_pattern_fixtures(agent: Agent) -> None:
@@ -126,7 +159,7 @@ def agent_env(tmp_path_factory):
     subset.mkdir()
     for name in (
         "Device", "Switch", "power", "Amplifier_Operational",
-        "Connector_Generic", "Regulator_Linear", "MCU_ST_STM32G4",
+        "Connector", "Connector_Generic", "Regulator_Linear", "MCU_ST_STM32G4",
         "Sensor_Temperature", "Interface_CAN_LIN",
     ):
         src = library_path(KICAD_SYMBOL_DIR, name)
@@ -787,6 +820,24 @@ def test_header_roles_fall_back_to_generic_connectors(agent_env):
     assert all(h["lib_id"].startswith("Connector_Generic:") for h in hits)
 
 
+def test_catalog_connector_hits_are_not_replaced_with_generic_headers(agent_env):
+    parts, knowledge, tmp = agent_env
+    agent = Agent(MockLLM(), parts, knowledge, tmp / "usb")
+    spec = {
+        "summary": "usb device",
+        "power": {"rails": [{"name": "+5V", "voltage": "5V"}, {"name": "GND", "voltage": "0V"}]},
+        "parts_needed": [{"role": "port", "search_query": "USB-C connector", "quantity": 1}],
+        "connections_intent": [],
+    }
+    candidates, _snippets, _pins = agent._gather(spec)
+    hits = candidates["port"]
+    assert hits, "a catalog USB-C query must return the parts the index found"
+    assert any("USB_C" in h["lib_id"] for h in hits), [h["lib_id"] for h in hits]
+    assert not any(
+        h["lib_id"].startswith("Connector_Generic:Conn_01x") for h in hits
+    ), [h["lib_id"] for h in hits]
+
+
 def test_conceptual_device_injected_for_uncatalogued_role(agent_env):
     parts, knowledge, tmp = agent_env
     agent = Agent(MockLLM(), parts, knowledge, tmp / "concept")
@@ -1234,6 +1285,88 @@ def test_transcription_verification_rejects_wrong_net_extra_node_and_part():
     assert "unexpected component R2" in problems
 
 
+def test_transcription_rejects_two_terminal_part_shorted_on_one_net():
+    agent = object.__new__(Agent)
+    spec = {
+        "parts_needed": [{"reference": "C1", "role": "gain_cap"}],
+        "netlist": [{"name": "GAIN", "nodes": [
+            {"reference": "C1", "pin": "1"},
+            {"reference": "C1", "pin": "2"},
+        ]}],
+    }
+    ir = CircuitIR("shorted_input")
+    ir.add(Component("C1", "Device:C", "10uF"))
+    ir.connect("GAIN", ("C1", "1"), ("C1", "2"))
+    symbols = {"Device:C": SymbolDef("Device:C", "", [
+        PinDef("1", "~", PinType.PASSIVE, 0, 0, 0, 2.54),
+        PinDef("2", "~", PinType.PASSIVE, 0, 0, 180, 2.54),
+    ])}
+
+    problems = agent.verify_transcription(spec, ir, symbols=symbols)
+
+    assert "invalid two-terminal connection C1: both pins share net GAIN" in problems
+
+
+def test_numbered_generic_pin_accepts_descriptive_annotation():
+    assert Agent._pin_names_compatible("Wiper", "2", "Device:R_Potentiometer", "2")
+
+
+def test_transcription_binds_orderable_device_suffix_and_generic_potentiometer():
+    agent = object.__new__(Agent)
+    agent.parts = PartIndex()
+    spec = {
+        "parts_needed": [
+            {"reference": "U1", "role": "amp", "search_query": "LM386M-1"},
+            {"reference": "RV1", "role": "volume", "search_query": "potentiometer"},
+        ],
+        "netlist": [
+            {"name": "IN", "nodes": [
+                {"reference": "U1", "pin": "3", "pin_name": "+IN"},
+                {"reference": "RV1", "pin": "2", "pin_name": "Wiper"},
+            ]},
+            {"name": "GND", "nodes": [
+                {"reference": "U1", "pin": "2", "pin_name": "-IN"},
+                {"reference": "U1", "pin": "4", "pin_name": "GND"},
+                {"reference": "RV1", "pin": "1", "pin_name": "GND"},
+            ]},
+            {"name": "RAW", "nodes": [
+                {"reference": "RV1", "pin": "3", "pin_name": "Input"},
+            ]},
+        ],
+    }
+
+    ir, _notes = agent.transcribe(spec, "audio")
+
+    assert ir.components["U1"].lib_id == "Amplifier_Audio:LM386"
+    assert ir.components["RV1"].lib_id == "Device:R_Potentiometer"
+
+
+def test_final_transcription_verification_allows_only_erc_infrastructure():
+    agent = object.__new__(Agent)
+    spec = {
+        "parts_needed": [{"reference": "R1", "role": "r"}],
+        "netlist": [{"name": "+5V", "nodes": [
+            {"reference": "R1", "pin": "1"},
+        ]}],
+    }
+    ir = CircuitIR("final")
+    ir.add(Component("R1", "Device:R", "1k"))
+    ir.add(Component("#PWR01", "power:+5V", "+5V"))
+    ir.connect("+5V", ("R1", "1"), ("#PWR01", "1"))
+
+    assert agent.verify_transcription(
+        spec, ir, allow_infrastructure=True
+    ) == []
+
+    ir.add(Component("C2", "Device:C", "100nF"))
+    ir.connect("+5V", ("C2", "1"))
+    problems = agent.verify_transcription(
+        spec, ir, allow_infrastructure=True
+    )
+    assert "unexpected connection +5V: C2.1" in problems
+    assert "unexpected component C2" in problems
+
+
 def test_transcription_includes_a_listed_part_even_when_it_has_no_net_node():
     from circuitgen.partindex import PartIndex
 
@@ -1307,6 +1440,77 @@ def test_transcription_rejects_exact_ic_when_numbered_pin_name_conflicts():
     assert ir.components["U3"].lib_id.startswith("Conceptual:")
     assert "pin 1:GND" in ir.components["U3"].binding_error
     assert any("pin 1:GND conflicts" in note and "pin 1:UD+" in note for note in notes)
+
+
+def test_explicit_polarity_survives_focused_extractor_false_negative(agent_env):
+    parts, knowledge, tmp_path = agent_env
+
+    class FocusedLLM(MockLLM):
+        def complete_json(self, messages, schema, **kw):
+            if set(schema.get("required", [])) == {"parts", "netlist"}:
+                return {
+                    "parts": [
+                        {"reference": "C3", "part": "capacitor", "value": "100uF",
+                         "package": "SMD", "polarized": False},
+                        {"reference": "C4", "part": "capacitor", "value": "100nF",
+                         "package": "0805", "polarized": False},
+                    ],
+                    "netlist": [{"name": "VCC", "nodes": [
+                        {"reference": "C3", "pin": "1"},
+                        {"reference": "C4", "pin": "1"},
+                    ]}],
+                }
+            return super().complete_json(messages, schema, **kw)
+
+    llm = FocusedLLM(spec={
+        "summary": "listed capacitors", "power": {"rails": []},
+        "parts_needed": [], "connections_intent": [], "netlist": [],
+    })
+    agent = Agent(llm, parts, knowledge, tmp_path / "explicit-polarity")
+    spec = agent.extract_requirements(
+        "C3: 100uF 전해 (SMD)\nC4: 100nF 세라믹 (0805)\n"
+        "Net VCC: C3(1), C4(1)"
+    )
+
+    by_ref = {part["reference"]: part for part in spec["parts_needed"]}
+    assert by_ref["C3"]["polarized"] is True
+    assert by_ref["C3"]["search_query"] == "polarized capacitor"
+    assert by_ref["C4"]["polarized"] is False
+
+
+def test_polarity_is_not_inferred_from_large_value_or_smd_package(agent_env):
+    parts, knowledge, tmp_path = agent_env
+
+    class FocusedLLM(MockLLM):
+        def complete_json(self, messages, schema, **kw):
+            if set(schema.get("required", [])) == {"parts", "netlist"}:
+                return {
+                    "parts": [{"reference": "C9", "part": "capacitor", "value": "470uF",
+                               "package": "SMD", "polarized": False}],
+                    "netlist": [{"name": "VCC", "nodes": [
+                        {"reference": "C9", "pin": "1"},
+                        {"reference": "J1", "pin": "1"},
+                    ]}],
+                }
+            return super().complete_json(messages, schema, **kw)
+
+    llm = FocusedLLM(spec={
+        "summary": "listed capacitor", "power": {"rails": []},
+        "parts_needed": [], "connections_intent": [], "netlist": [],
+    })
+    spec = Agent(llm, parts, knowledge, tmp_path / "no-inference").extract_requirements(
+        "C9: 470uF SMD capacitor; J1 connector. Net VCC: C9(1), J1(1)"
+    )
+
+    assert next(p for p in spec["parts_needed"] if p["reference"] == "C9")["polarized"] is False
+
+
+def test_explicit_nonpolarized_text_is_not_promoted():
+    from circuitgen.agent import _explicit_polarized_references
+
+    assert _explicit_polarized_references(
+        "C1 is non-polarized; C2는 비극성 세라믹이다"
+    ) == set()
 
 
 def test_transcription_accepts_kicad_bundled_pin_number():

@@ -162,6 +162,8 @@ def _report(res, run_dir: Path, prompt: str = "", parts=None, symbols=None) -> d
         "selected_parts_missing": (compliance or {}).get("missing_parts") or [],
         "role_working": (compliance or {}).get("role_working"),
         "role_total": (compliance or {}).get("role_total"),
+        "role_unverifiable": (compliance or {}).get("role_unverifiable") or [],
+        "role_not_working": (compliance or {}).get("role_not_working") or [],
         "connector_geometry": (compliance or {}).get("connector_geometry") or [],
         "blocking": [i for i in issues if i.get("severity") == "error"],
         "warnings": [i for i in issues if i.get("severity") != "error"],
@@ -180,6 +182,14 @@ def _report(res, run_dir: Path, prompt: str = "", parts=None, symbols=None) -> d
                 sum(1 for i in pr.self_erc if i.severity == "warning") if pr else None
             ),
             "netlist_round_trip_ok": bool(pr and pr.connectivity_ok),
+            "kicad_messages": [
+                v.get("description") or v.get("type")
+                for v in (pr.kicad_erc.violations if pr and pr.kicad_erc else [])
+            ][:12],
+            "self_messages": [
+                i.message for i in (pr.self_erc if pr else []) if i.severity == "error"
+            ][:12],
+            "pipeline_errors": list(pr.errors)[:8] if pr else [],
         },
         "rationale": _rationale(res, prompt, parts, symbols),
         "refusal": res.refusal,
@@ -391,12 +401,15 @@ function render(id,j){
   const blocking=r.blocking||[], warns=r.warnings||[];
   if(r.ok){h+='<div class="card good"><b>요청한 회로가 그려졌고 막는 문제가 없습니다.</b></div>'}
   else{h+=`<div class="card bad"><b>이 회로도는 아직 발주하면 안 됩니다.</b><br>단계: <span class="mono">${esc(r.stage)}</span>
-       ${r.schematic_written?'<br>도면은 그려져 있으니 아래에서 확인하세요.':'<br>도면이 만들어지지 않았습니다.'}</div>`}
+       ${r.schematic_written?'<br>도면은 그려져 있으니 아래에서 확인하세요.':'<br>도면이 만들어지지 않았습니다.'}
+       ${blocking.length===0?'<br>막는 문제는 0건이며 발주 금지는 배선 합법성(ERC) 또는 기타 pipeline 오류 때문입니다.':''}</div>`}
   const missing=r.selected_parts_missing||[];
   h+=`<div class="card"><b>선택한 부품</b><ul>
       <li>요청: ${(r.selected_parts||[]).map(esc).join(', ')||'—'}</li>
       <li>없음: ${missing.length?missing.map(esc).join(', '):'없음'}</li>
-      <li>역할 동작: ${r.role_working??'—'} / ${r.role_total??'—'}</li></ul></div>`;
+      <li>역할 동작: ${r.role_working??'—'} / ${r.role_total??'—'}</li>
+      ${(r.role_unverifiable||[]).length?`<li>역할 미확인: ${r.role_unverifiable.map(esc).join(', ')}</li>`:''}
+      ${(r.role_not_working||[]).length?`<li>역할 비동작: ${r.role_not_working.map(esc).join(', ')}</li>`:''}</ul></div>`;
   const geom=r.connector_geometry||[];
   if(geom.length){h+='<div class="card'+(geom.some(g=>g.match===false)?' bad':'')+'"><b>커넥터 접점</b><ul>'+
      geom.map(g=>`<li><span class="mono">${esc(g.reference||'?')}</span> 요청 ${g.requested_rows}x${g.requested_columns} (${g.requested_contacts}접점) → 심볼 ${g.symbol_pins??'—'}핀 / 패드 ${g.footprint_pads??'—'} ${g.match?'일치':'불일치'}</li>`).join('')+'</ul></div>'}
@@ -416,7 +429,11 @@ function render(id,j){
       <li>자체 ERC 오류/경고: ${e.self_errors??'—'} / ${e.self_warnings??'—'}</li>
       <li>넷리스트 왕복 일치: ${e.netlist_round_trip_ok?'예':'아니오'}</li>
       <li>배선 대 라벨 비율: ${(r.wiring&&r.wiring.wired_ratio)??'—'}</li>
-      <li>시각 문제: ${r.visual_issues??'—'}</li></ul></div>`;
+      <li>시각 문제: ${r.visual_issues??'—'}</li></ul>
+      ${(e.kicad_messages&&e.kicad_messages.length)||(e.self_messages&&e.self_messages.length)||(e.pipeline_errors&&e.pipeline_errors.length)?'<ul>'+
+        (e.kicad_messages||[]).map(m=>`<li>${esc(m)}</li>`).join('')+
+        (e.self_messages||[]).map(m=>`<li>${esc(m)}</li>`).join('')+
+        (e.pipeline_errors||[]).map(m=>`<li>${esc(m)}</li>`).join('')+'</ul>':''}</div>`;
   const pages=r.pages||[];
   if(pages.length){h+='<div class="card"><b>도면 '+pages.length+'장</b>'+
      pages.map(p=>`<div style="margin:.8rem 0"><div class="mono">${esc(p.name)}${p.root?' (루트)':''}</div>`+

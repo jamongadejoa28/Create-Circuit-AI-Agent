@@ -562,8 +562,22 @@ def ensure_device_supply_rails(
     return notes
 
 
-def _connector_component(comp) -> bool:
-    return comp.lib_id.casefold().startswith("connector")
+def _header_like_component(comp, symbols: dict[str, SymbolDef] | None = None) -> bool:
+    """Whether a placed part can satisfy a contact-geometry request.
+
+    Library nicknames are not the electrical fact: ``Jumper:Conn_01x02`` and
+    ``Connector_Generic:Conn_01x02`` have the same contacts. KiCad connector
+    symbols use reference prefix J; pin-header footprints are the family the
+    user can mount. A 2-terminal ``Device:R`` has neither.
+    """
+    fp = (comp.footprint or "").casefold().replace("-", "").replace("_", "")
+    if "pinheader" in fp:
+        return True
+    sym = (symbols or {}).get(comp.lib_id)
+    if sym is not None and (sym.reference_prefix or "").upper() == "J":
+        return True
+    body = comp.lib_id.split(":", 1)[-1].casefold()
+    return body.startswith("conn_")
 
 
 def check_connector_geometry(
@@ -593,22 +607,16 @@ def check_connector_geometry(
             quantity = 1
         for _ in range(quantity):
             requests.append((ref, geometry))
-    if not requests:
-        for match in re.finditer(
-            r".{0,24}(?:header|connector|커넥터|헤더).{0,24}",
-            prompt or "",
-            re.I,
-        ):
-            geometry = parse_contact_geometry(match.group(0))
-            if geometry is not None:
-                requests.append(("", geometry))
+    # Geometry comes from the structured spec (including quantity). Scanning
+    # the raw prompt for "header"/"connector" windows is the same shape as
+    # apply_when substring matching and is not used.
 
     used: set[str] = set()
     records: list[dict] = []
     issues: list[ValidationIssue] = []
     leftover = [
         (ref, comp) for ref, comp in ir.components.items()
-        if _connector_component(comp) and not ref.startswith("#")
+        if _header_like_component(comp, symbols) and not ref.startswith("#")
     ]
 
     def take_component(preferred: str):

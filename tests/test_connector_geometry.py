@@ -167,3 +167,32 @@ def test_compliance_report_includes_connector_geometry():
     assert report.connector_geometry
     assert report.connector_geometry[0]["match"] is False
     assert any(i.rule == "connector_contact_geometry" for i in report.issues)
+
+
+def test_jumper_library_two_pin_symbol_counts_as_header():
+    ir, symbols = _board("Jumper:Conn_01x02", 2, "Connector_PinHeader_2.54mm:PinHeader_1x02")
+    spec = {"parts_needed": [{
+        "role": "header", "search_query": "1x2 pin header",
+        "functional_kind": "connector",
+    }]}
+    issues, records = check_connector_geometry(ir, symbols, spec)
+    assert records[0]["match"] is True
+    assert issues == []
+
+
+def test_two_terminal_resistor_is_not_a_header():
+    ir = CircuitIR("geom")
+    ir.add(Component("R1", "Device:R", "1k", "R_0805"))
+    symbols = {"Device:R": SymbolDef(
+        "Device:R", '(symbol "R")',
+        [PinDef("1", "1", PinType.PASSIVE, 0, 0, 0, 2.54),
+         PinDef("2", "2", PinType.PASSIVE, 0, 0, 0, 2.54)],
+        reference_prefix="R",
+    )}
+    spec = {"parts_needed": [{
+        "role": "header", "search_query": "1x2 pin header",
+        "functional_kind": "connector",
+    }]}
+    issues, records = check_connector_geometry(ir, symbols, spec)
+    assert records[0]["match"] is False
+    assert records[0]["symbol_pins"] is None
