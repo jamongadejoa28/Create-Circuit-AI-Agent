@@ -7,6 +7,7 @@ repair-loop mechanics deterministically. The real-model end-to-end run
 lives in scripts/run_agent.py (needs llama-server with a loaded model).
 """
 
+import copy
 import json
 from pathlib import Path
 
@@ -237,8 +238,15 @@ def test_agent_repair_loop_fixes_unconnected_pin(agent_env):
 
 def test_agent_refuses_out_of_scope(agent_env):
     parts, knowledge, tmp = agent_env
+    # Deep copy: extraction writes rails parsed from the prompt into the spec it
+    # is handed, and a shallow {**SPEC} shares the nested power dict — this run
+    # used to leave "+220V" in the module-level SPEC for every later test.
     llm = MockLLM(
-        spec={**SPEC, "out_of_scope": True, "out_of_scope_reason": "AC mains requested"}
+        spec={
+            **copy.deepcopy(SPEC),
+            "out_of_scope": True,
+            "out_of_scope_reason": "AC mains requested",
+        }
     )
     agent = Agent(llm, parts, knowledge, tmp / "out3")
     res = agent.run("220V AC 전원 회로 만들어줘")
@@ -263,6 +271,103 @@ def test_agent_stops_on_repeated_problems(agent_env):
     # a useless patch leaves problems identical -> loop must stop early
     assert any("same problems twice" in line for line in res.log)
     assert llm.calls.count("patch") == 1
+
+
+class RecordingLLM(MockLLM):
+    """MockLLM that also keeps the user prompt of every call."""
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.prompts: list[str] = []
+
+    def complete_json(self, messages, schema, **kw):
+        self.prompts.append(messages[-1]["content"])
+        return super().complete_json(messages, schema, **kw)
+
+
+def test_repair_prompt_names_the_op_that_answers_the_problem(agent_env):
+    """The replacement recipe belongs to unknown_symbol problems only.
+
+    Offered on every round it was this prompt's one worked example, and the
+    model copied it everywhere else: measured across four campaign domains,
+    89 of 115 repair ops re-added a part under the ref and lib_id it already
+    had, each rejected by the gate, so the loop connected nothing.
+    """
+    parts, knowledge, tmp = agent_env
+    llm = RecordingLLM(patches=[{"ops": []}, {"ops": []}, {"ops": []}])
+    agent = Agent(llm, parts, knowledge, tmp / "repair-prompt")
+    ir = CircuitIR("prompt-shape")
+    ir.add(Component("R1", "Device:R", "330R"))
+
+    agent._repair(ir, ["component_does_no_work: R1 pin 2 is on no net at all"], {})
+    unconnected = llm.prompts[-1]
+    assert "add_component with the same ref" not in unconnected
+    assert "connect op" in unconnected and "set_nc" in unconnected
+
+    agent._repair(ir, ["unknown_symbol: R1 lib_id 'Device:Rx' not in library set"], {})
+    assert "add_component with the same ref" in llm.prompts[-1]
+
+    # ...and a board with no unconnected pin is not told how to connect one.
+    ir.connect("SIG", ("R1", "1"))
+    ir.connect("GND", ("R1", "2"))
+    agent._repair(ir, ["power_pin_unpowered: nothing drives SIG"], {})
+    assert "connect op" not in llm.prompts[-1]
+
+
+def test_rejected_repair_round_retries_with_the_gate_reason(agent_env):
+    """A wholly rejected round is not the same question asked twice."""
+    parts, knowledge, tmp = agent_env
+    bad_ir = {
+        **GOOD_IR,
+        "name": "agent_led_button_rejected",
+        "nets": [n for n in GOOD_IR["nets"] if n["name"] != "R_LED"],
+    }
+    self_replacement = {
+        "analysis": "R1 looks wrong",
+        "ops": [{"op": "add_component", "ref": "R1", "lib_id": "Device:R", "value": "330R"}],
+    }
+    real_fix = {
+        "analysis": "the series link is missing",
+        "ops": [
+            {"op": "connect", "ref": "R1", "pin": "2", "net": "R_LED"},
+            {"op": "connect", "ref": "D1", "pin": "2", "net": "R_LED"},
+        ],
+    }
+    # SPEC's nested dicts are shared across this module and earlier runs write
+    # prompt-derived rails into them; take a private copy.
+    llm = RecordingLLM(
+        spec=copy.deepcopy(SPEC), irs=[bad_ir], patches=[self_replacement, real_fix]
+    )
+    agent = Agent(llm, parts, knowledge, tmp / "repair-retry")
+    res = agent.run("prompt", name="agent_led_button_rejected")
+    assert llm.calls.count("patch") == 2
+    assert "previous patch was rejected" in llm.prompts[-1]
+    assert "replacement of valid R1" in llm.prompts[-1]
+    assert res.ok, (res.stage, res.log)
+
+
+def test_repair_stops_when_the_rejection_reason_repeats(agent_env):
+    """Feedback buys one informed retry, not an unbounded loop."""
+    parts, knowledge, tmp = agent_env
+    bad_ir = {
+        **GOOD_IR,
+        "name": "agent_led_button_stubborn",
+        "nets": [n for n in GOOD_IR["nets"] if n["name"] != "R_LED"],
+    }
+    self_replacement = {
+        "analysis": "R1 looks wrong",
+        "ops": [{"op": "add_component", "ref": "R1", "lib_id": "Device:R", "value": "330R"}],
+    }
+    llm = RecordingLLM(
+        spec=copy.deepcopy(SPEC),
+        irs=[bad_ir],
+        patches=[self_replacement, self_replacement, self_replacement],
+    )
+    agent = Agent(llm, parts, knowledge, tmp / "repair-stubborn")
+    res = agent.run("prompt", name="agent_led_button_stubborn")
+    assert not res.ok
+    assert llm.calls.count("patch") == 2
+    assert any("same problems twice" in line for line in res.log)
 
 
 def test_duplicate_requirement_roles_are_made_unique():

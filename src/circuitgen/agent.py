@@ -2199,18 +2199,75 @@ class Agent:
             kept = [op for op in kept if op.get("ref", "") not in stranded]
         return kept, notes
 
-    def _repair(self, ir: CircuitIR, problems: list[str], candidates: dict) -> list[str]:
+    def _pins_on_no_net(self, ir: CircuitIR) -> bool:
+        """Does any component carry a pin that is on no net and not marked NC?
+
+        A fact about the board, so the sentence that names the op for it is
+        not printed to a round that has nothing to use it on.
+        """
+        symbols = self._resolve_symbols(ir)
+        wired = {(r, str(p)) for net in ir.nets for r, p in net.nodes}
+        nc = {(r, str(p)) for r, p in ir.nc_pins}
+        return any(
+            (ref, pin.number) not in wired and (ref, pin.number) not in nc
+            for ref, comp in ir.components.items()
+            for pin in getattr(symbols.get(comp.lib_id), "pins", [])
+            if not pin.hidden
+        )
+
+    def _repair(
+        self,
+        ir: CircuitIR,
+        problems: list[str],
+        candidates: dict,
+        feedback: list[str] | None = None,
+    ) -> list[str]:
         shown = problems[:12]
         view, partial = self._repair_view(ir, shown)
         # candidates trimmed to the top hit per role — repair only needs
         # replacements, not the full search context
         slim = {role: hits[:1] for role, hits in candidates.items()}
+        # Each recipe answers ONE problem class, and a recipe offered to a
+        # round that cannot use it is the defect this prompt already had: the
+        # replacement sentence (which `_filter_ops` honours only when the
+        # problems mention `unknown_symbol`) was printed every round, was the
+        # prompt's sole worked example, and the model copied it everywhere
+        # else — measured across four domains, 89 of 115 repair ops were an
+        # add_component re-stating the ref and lib_id the part already had,
+        # every one rejected, after which the loop stopped on "same problems
+        # twice" having connected nothing. So each sentence is conditioned on
+        # a fact, and the op names are `schemas.REPAIR_PATCH`'s own vocabulary
+        # rather than circuit knowledge.
+        instructions = ["The circuit failed validation. Propose the smallest set of repair ops."]
+        if "unknown_symbol" in " ".join(shown):
+            instructions.append(
+                "If a component's lib_id is 'not in library set', replace it "
+                "(add_component with the same ref) using an EXACT lib_id from CANDIDATES."
+            )
+        else:
+            instructions.append(
+                "Every component already carries a valid lib_id: an add_component "
+                "repeating the ref and lib_id a part already has changes nothing "
+                "and is rejected."
+            )
+        if self._pins_on_no_net(ir):
+            instructions.append(
+                "A pin on no net is answered by a connect op naming that ref, that "
+                "pin and the net it belongs to; a pin meant to stay open is "
+                "answered by set_nc."
+            )
+        if partial:
+            instructions.append(
+                "NOTE: CURRENT_IR is a PARTIAL VIEW around the problems; the "
+                "circuit is larger and your ops apply to the full circuit."
+            )
+        if feedback:
+            instructions.append(
+                "Your previous patch was rejected — do not repeat it: "
+                + json.dumps(feedback[:6], ensure_ascii=False)
+            )
         content = (
-            "The circuit failed validation. Propose the smallest set of repair ops.\n"
-            "If a component's lib_id is 'not in library set', replace it (add_component "
-            "with the same ref) using an EXACT lib_id from CANDIDATES.\n"
-            + ("NOTE: CURRENT_IR is a PARTIAL VIEW around the problems; the "
-               "circuit is larger and your ops apply to the full circuit.\n" if partial else "")
+            "\n".join(instructions) + "\n"
             + f"PROBLEMS: {json.dumps(shown, ensure_ascii=False)}\n\n"
             f"CURRENT_IR: {json.dumps(view, ensure_ascii=False)}\n\n"
             f"CANDIDATES: {json.dumps(slim, ensure_ascii=False)}"
@@ -2632,6 +2689,13 @@ class Agent:
         res.pipeline = pr
         rounds = 0
         last_problems: list[str] | None = None
+        # A round whose ops the gate rejected wholesale leaves the IR — and so
+        # the problem list — untouched, and the loop then stopped as though the
+        # model had been asked twice. It had not: the rejection reasons are
+        # information it never saw. Carry them into the next round, and stop
+        # only once the same problems come back with nothing new to say.
+        pending_feedback: list[str] = []
+        sent_feedback: list[str] = []
         while not pr.ok and rounds < MAX_REPAIRS:
             # Individual issues, each truncated — pipeline.errors joins ALL
             # self-ERC errors into one string, and a board once produced a
@@ -2646,17 +2710,25 @@ class Agent:
                 # KiCad-only violations with no self-ERC error: give the
                 # model our warnings as the best available localization.
                 problems += [f"{i.rule}: {i.message}"[:180] for i in pr.self_erc if i.severity == "warning"]
-            if problems == last_problems:
+            if problems == last_problems and pending_feedback == sent_feedback:
                 res.log.append("same problems twice — stopping auto-repair")
                 break
             last_problems = problems
+            sent_feedback = pending_feedback
             rounds += 1
             res.stage = f"repair-{rounds}"
             try:
-                notes = self._repair(ir, problems, ctx.get("candidates", {}))
+                notes = self._repair(
+                    ir, problems, ctx.get("candidates", {}), feedback=pending_feedback
+                )
             except Exception as e:
                 res.log.append(f"repair round {rounds} failed: {e}")
                 break
+            # Every rejection is carried, not only those of a round that
+            # applied nothing: the most actionable reason of the campaign
+            # ("Device:LED has no such pin (1, 2)") sat in a round that also
+            # applied six ops, so it was dropped and the model never heard it.
+            pending_feedback = [n for n in notes if n.startswith("rejected op:")][:6]
             res.repairs.extend(notes)
             res.log.extend(self._limit_main_device_copies(ir, ctx.get("candidates", {}), spec))
             from .blocks import validate_block_template
