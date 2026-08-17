@@ -1131,6 +1131,8 @@ def test_gather_injects_datasheet_knowledge_for_named_parts(agent_env):
     topics = agent._knowledge_trace[-1]["topics"]
     assert "MCU" not in topics and "TEMP_SENSOR" not in topics, topics
     assert "resistor" not in topics, topics
+    assert "SDA SCL pullup" not in topics, topics
+    assert "address pins" not in topics, topics
     assert "select-inamp-vs-single-opamp-difference-amp" not in ids
 
 

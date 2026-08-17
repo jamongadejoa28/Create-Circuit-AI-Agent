@@ -84,8 +84,9 @@ def test_a_substitute_that_cannot_carry_the_used_pins_is_refused():
 def test_a_two_pin_unknown_is_not_rescued_into_a_large_ic():
     """search_parts('SW') ranks Si4734 first on token overlap; that radio
     has pins 1 and 2, so the old first-hit pin test accepted it. A two-pin
-    unknown that only uses 1 and 2 'fits' any IC. Rank the whole set: prefix
-    of the existing ref, then fewest pins."""
+    unknown that only uses 1 and 2 'fits' any IC. Rank fewest pins first,
+    then prefix.
+    """
     from circuitgen.normalize import resolve_unknown_symbols
     from circuitgen.partindex import PartIndex
 
@@ -140,6 +141,22 @@ def test_unknown_capacitor_becomes_device_c_not_an_eight_pin_ic():
     notes = resolve_unknown_symbols(ir, parts)
     assert ir.components["C1"].lib_id == "Device:C", notes
     assert resolve_unknown_symbols(ir, parts) == []
+
+
+def test_unknown_capacitor_is_device_c_even_when_the_ref_is_not_c():
+    """The same 2-pin Capacitor:Cap_0603. Gating the IEEE generic on the
+    reference prefix made C1 → Device:C and U1 → CAP006DG."""
+    from circuitgen.normalize import resolve_unknown_symbols
+    from circuitgen.partindex import PartIndex
+
+    parts = PartIndex()
+    ir = CircuitIR("cap")
+    ir.add(Component("U1", "Capacitor:Cap_0603", "100nF"))
+    ir.connect("+3V3", ("U1", "1"))
+    ir.connect("GND", ("U1", "2"))
+    notes = resolve_unknown_symbols(ir, parts)
+    assert ir.components["U1"].lib_id == "Device:C", notes
+    assert "CAP006DG" not in ir.components["U1"].lib_id
 
 
 def test_ieee_passive_generic_is_refused_when_the_used_pins_do_not_fit():

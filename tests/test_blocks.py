@@ -619,4 +619,79 @@ def test_hub_joins_an_i2c_bus_that_already_has_sensor_header_and_pullup():
     scl = next(n for n in ir.nets if n.name == "SCL")
     assert "U1" in {r for r, _ in sda.nodes}, notes
     assert "U1" in {r for r, _ in scl.nodes}, notes
+    from circuitgen.pinfunctions import resolve_function_pin
+    from circuitgen.partindex import PartIndex as PI
+
+    sym = PI().load_symbols([mcu])[mcu]
+    sda_pin = resolve_function_pin(mcu, sym, "I2C1_SDA")[0]
+    scl_pin = resolve_function_pin(mcu, sym, "I2C1_SCL")[0]
+    assert ("U1", sda_pin) in sda.nodes, notes
+    assert ("U1", scl_pin) in scl.nodes, notes
+    # the previous pass round-robined free I/O: pin 2 is PC13, not I2C
+    assert ("U1", "2") not in sda.nodes and ("U1", "2") not in scl.nodes
+    assert any("DS12288" in n for n in notes), notes
     assert agent._join_hub_to_i2c_buses(ir) == []
+
+
+def test_hub_gpio_already_on_i2c_is_moved_to_a_recorded_af_pin():
+    """The model (or the old round-robin) can put PC13 on SDA. That pin has
+    no I2C AF; leaving it because the hub is 'already on the net' is the
+    same dead-board class as EN=NC."""
+    from circuitgen.agent import Agent
+    from circuitgen.ir import CircuitIR, Component
+    from circuitgen.partindex import PartIndex
+    from circuitgen.pinfunctions import resolve_function_pin
+
+    agent = object.__new__(Agent)
+    agent.parts = PartIndex()
+
+    mcu = "MCU_ST_STM32G4:STM32G474RETx"
+    sensor = "Sensor_Temperature:TMP100"
+    ir = CircuitIR("i2c")
+    ir.add(Component("U1", mcu, "STM32G474RET6"))
+    ir.add(Component("U2", sensor, "TMP100"))
+    ir.connect("SDA", ("U1", "2"), ("U2", "6"))  # PC13
+    ir.connect("SCL", ("U2", "1"))
+
+    notes = agent._join_hub_to_i2c_buses(ir)
+    sda = next(n for n in ir.nets if n.name == "SDA")
+    sym = agent.parts.load_symbols([mcu])[mcu]
+    sda_pin = resolve_function_pin(mcu, sym, "I2C1_SDA")[0]
+    assert ("U1", sda_pin) in sda.nodes, notes
+    assert ("U1", "2") not in sda.nodes, notes
+    assert ("U1", "2") in ir.nc_pins, notes
+    assert any("moved U1.2" in n for n in notes), notes
+
+
+def test_hub_without_recorded_i2c_af_is_not_wired_to_a_gpio():
+    """No datasheet row means the bus stays without a hub pin. Guessing a
+    free GPIO is how PC13 landed on SDA."""
+    from circuitgen.agent import Agent
+    from circuitgen.ir import CircuitIR, Component
+    from circuitgen.partindex import PartIndex
+
+    class Refuses:
+        def complete_json(self, *a, **k):
+            raise RuntimeError("no model in this test")
+
+    agent = object.__new__(Agent)
+    agent.parts = PartIndex()
+    agent.llm = Refuses()
+
+    mcu = "RF_Module:ESP32-WROOM-32"
+    sensor = "Sensor_Temperature:TMP100"
+    ir = CircuitIR("i2c")
+    ir.add(Component("U1", mcu, "ESP32"))
+    ir.add(Component("U2", sensor, "TMP100"))
+    ir.add(Component("R3", "Device:R", "10k"))
+    ir.connect("+3V3", ("U1", "3"), ("U2", "4"), ("R3", "2"))
+    ir.connect("GND", ("U1", "1"), ("U2", "2"))
+    ir.connect("SDA", ("U2", "6"), ("R3", "1"))
+    ir.connect("SCL", ("U2", "1"))
+
+    notes = agent._join_hub_to_i2c_buses(ir)
+    sda = next(n for n in ir.nets if n.name == "SDA")
+    scl = next(n for n in ir.nets if n.name == "SCL")
+    assert "U1" not in {r for r, _ in sda.nodes}, notes
+    assert "U1" not in {r for r, _ in scl.nodes}, notes
+    assert any("no recorded I2C" in n for n in notes), notes

@@ -87,3 +87,39 @@ def resolve_function_pin(
         f"({source.get('document', 'datasheet')}, {source.get('table', 'pin table')})"
         + ("" if free else "; every pin for it was already wired")
     )
+
+
+def recorded_functions(lib_id: str, path: str = "") -> list[str]:
+    device = device_for(lib_id, path)
+    if device is None:
+        return []
+    names: list[str] = []
+    for entry in device.get("pins", {}).values():
+        names.extend(entry.get("functions") or [])
+        names.extend(entry.get("additional") or [])
+    return sorted(set(names))
+
+
+def resolve_function_ending(
+    lib_id: str, symbol: SymbolDef, suffix: str,
+    taken: set[str] | None = None, path: str = "",
+) -> tuple[str, str] | None:
+    """A recorded function that is `suffix` or ends `_suffix`.
+
+    One I2C bus needs an SDA pin, not a specific instance. The table lists
+    I2C1_SDA, I2C2_SDA, …; the first whose port pin is still free is used.
+    A miss stays a miss — this does not fall back to an arbitrary GPIO.
+    """
+    want = suffix.strip().upper()
+    if not want:
+        return None
+    names = [
+        fn for fn in recorded_functions(lib_id, path)
+        if fn.upper() == want or fn.upper().endswith("_" + want)
+    ]
+    taken = set(taken or [])
+    for fn in names:
+        found = resolve_function_pin(lib_id, symbol, fn, taken, path)
+        if found:
+            return found
+    return None

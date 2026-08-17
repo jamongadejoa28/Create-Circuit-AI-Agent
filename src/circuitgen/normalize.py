@@ -982,6 +982,103 @@ def _wire_supply_group(
 
 HUB_PIN_THRESHOLD = 16  # same "this is a hub device" line wire_mcu_interfaces uses
 
+
+def hub_ref(ir: CircuitIR, symbols: dict[str, SymbolDef]) -> str | None:
+    chosen, n_pins = None, 0
+    for ref, comp in ir.components.items():
+        sym = symbols.get(comp.lib_id)
+        if sym and not sym.is_power and len(sym.pins) > n_pins:
+            chosen, n_pins = ref, len(sym.pins)
+    if chosen is None or n_pins < HUB_PIN_THRESHOLD:
+        return None
+    return chosen
+
+
+def _pin_carries_function_ending(
+    lib_id: str, symbol: SymbolDef, pin: str, suffix: str
+) -> bool:
+    from .pinfunctions import device_for
+
+    device = device_for(lib_id)
+    if device is None:
+        return False
+    try:
+        port = symbol.pin(str(pin)).name
+    except KeyError:
+        return False
+    entry = (device.get("pins") or {}).get(port) or (device.get("pins") or {}).get(
+        (port or "").upper()
+    )
+    if not entry:
+        return False
+    want = suffix.upper()
+    names = [*(entry.get("functions") or []), *(entry.get("additional") or [])]
+    return any(fn.upper() == want or fn.upper().endswith("_" + want) for fn in names)
+
+
+def join_hub_to_i2c_buses(
+    ir: CircuitIR, symbols: dict[str, SymbolDef]
+) -> list[str]:
+    """Put the hub on every I2C net the pull-up checker already knows.
+
+    The pin is a recorded alternate function (I2C1_SDA, …), not the next
+    free GPIO. Round-robin I/O put STM32 PC13/PC14 on SDA/SCL — those
+    ports have no I2C AF in DS12288 Table 12. A hub pin already on the net
+    that is not a recorded function is moved when the table exists. No
+    recorded function means the net is left as-is (unwired, or the model's
+    own GPIO) and that is said out loud when we declined to invent a pin.
+    """
+    from .erc import i2c_line_role, is_i2c_net
+    from .pinfunctions import resolve_function_ending
+
+    hub = hub_ref(ir, symbols)
+    if hub is None:
+        return []
+    lib_id = ir.components[hub].lib_id
+    sym = symbols.get(lib_id)
+    if sym is None:
+        return []
+    used = {p for net in ir.nets for r, p in net.nodes if r == hub}
+    notes: list[str] = []
+    for net in ir.nets:
+        if not is_i2c_net(ir, symbols, net):
+            continue
+        role = i2c_line_role(ir, symbols, net)
+        if role is None:
+            continue
+        on_hub = [p for r, p in net.nodes if r == hub]
+        if on_hub and any(
+            _pin_carries_function_ending(lib_id, sym, p, role) for p in on_hub
+        ):
+            continue
+        found = resolve_function_ending(lib_id, sym, role, used - set(on_hub))
+        if found is None:
+            if not on_hub:
+                notes.append(
+                    f"{hub} ({lib_id}) has no recorded I2C {role} pin; "
+                    f"left net {net.name} unwired"
+                )
+            continue
+        pin, why = found
+        for old in on_hub:
+            if old == pin:
+                continue
+            for n in ir.nets:
+                n.nodes = [node for node in n.nodes if node != (hub, old)]
+            used.discard(old)
+            if (hub, old) not in ir.nc_pins:
+                ir.nc_pins.append((hub, old))
+            notes.append(
+                f"moved {hub}.{old} off I2C net {net.name}; "
+                f"it is not a recorded {role} pin"
+            )
+        ir.nc_pins = [x for x in ir.nc_pins if x != (hub, pin)]
+        if pin not in on_hub:
+            ir.connect(net.name, (hub, pin))
+        used.add(pin)
+        notes.append(f"wired {hub}.{pin} to I2C net {net.name}: {why}")
+    return notes
+
 def ensure_relay_flyback(
     ir: CircuitIR, symbols: dict[str, SymbolDef]
 ) -> list[str]:
@@ -1258,35 +1355,34 @@ def resolve_unknown_symbols(
         ref_prefix = (re.match(r"^[A-Za-z]+", ref) or [""])[0].upper()
         scored: list[tuple] = []
         seen: set[str] = set()
-        for rank, lib_id in enumerate(preferred or []):
-            if lib_id in seen or not _symbol_name_related(name, lib_id):
-                continue
+
+        def consider(lib_id: str, source: int, rank: int) -> None:
+            if lib_id in seen:
+                return
             meta = carries(lib_id, want)
             if meta is None:
-                continue
+                return
             seen.add(lib_id)
             prefix, n_pins = meta
             mismatch = 0 if ref_prefix and prefix == ref_prefix else 1
-            scored.append((mismatch, n_pins, 0, rank, lib_id))
-        generic = ieee_passive.get(ref_prefix)
-        if generic and generic not in seen:
-            meta = carries(generic, want)
-            if meta is not None:
-                seen.add(generic)
-                prefix, n_pins = meta
-                mismatch = 0 if ref_prefix and prefix == ref_prefix else 1
-                scored.append((mismatch, n_pins, 0, -1, generic))
+            # Fewest pins first: a 2-pin unknown 'fits' any IC that happens
+            # to have pins 1 and 2 (CAP006DG). Prefix-first ranking then
+            # preferred U1 → that 8-pin IC over Device:C.
+            scored.append((n_pins, mismatch, source, rank, lib_id))
+
+        for rank, lib_id in enumerate(preferred or []):
+            if not _symbol_name_related(name, lib_id):
+                continue
+            consider(lib_id, 0, rank)
+        # Same two-pin generics transcription already binds, admitted
+        # whenever they carry the used pins — not gated on the ref prefix
+        # and not a library-name list grown from U1 Capacitor:Cap_0603.
+        for generic in ieee_passive.values():
+            consider(generic, 0, -1)
         for rank, hit in enumerate(parts.search_parts(name, 8)):
             lib_id = hit.get("lib_id")
-            if not lib_id or lib_id in seen:
-                continue
-            meta = carries(lib_id, want)
-            if meta is None:
-                continue
-            seen.add(lib_id)
-            prefix, n_pins = meta
-            mismatch = 0 if ref_prefix and prefix == ref_prefix else 1
-            scored.append((mismatch, n_pins, 1, rank, lib_id))
+            if lib_id:
+                consider(lib_id, 1, rank)
 
         if scored:
             chosen = min(scored)[-1]

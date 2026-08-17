@@ -16,6 +16,7 @@ from circuitgen.pinfunctions import (
     DATA,
     device_for,
     pins_for_function,
+    resolve_function_ending,
     resolve_function_pin,
 )
 
@@ -62,6 +63,20 @@ def test_an_unrecorded_device_or_function_resolves_to_nothing():
     other = "Interface_CAN_LIN:TJA1051T"
     assert device_for(other) is None
     assert resolve_function_pin(other, parts.load_symbols([other])[other], "TXD") is None
+
+
+def test_an_i2c_line_resolves_to_a_recorded_instance_not_a_gpio():
+    parts = PartIndex()
+    lib = "MCU_ST_STM32G4:STM32G474RETx"
+    sym = parts.load_symbols([lib])[lib]
+    sda = resolve_function_ending(lib, sym, "SDA")
+    scl = resolve_function_ending(lib, sym, "SCL")
+    assert sda is not None and scl is not None
+    assert sda[0] == resolve_function_pin(lib, sym, "I2C1_SDA")[0]
+    assert scl[0] == resolve_function_pin(lib, sym, "I2C1_SCL")[0]
+    assert "DS12288" in sda[1] and "I2C1_SDA" in sda[1]
+    assert resolve_function_ending(lib, sym, "SDA", {sda[0]})[0] != sda[0]
+    assert resolve_function_ending(lib, sym, "NOT_A_BUS") is None
 
 
 def test_the_agent_rewrites_a_function_token_into_a_pin_number():

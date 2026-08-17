@@ -90,22 +90,12 @@ def two_pin_bridges(
     return bridged
 
 
-def is_i2c_net(ir: CircuitIR, symbols: dict[str, SymbolDef], net) -> bool:
-    """One definition of "this net is an I2C bus line".
+def i2c_line_role(ir: CircuitIR, symbols: dict[str, SymbolDef], net) -> str | None:
+    """SDA or SCL, from the same two facts `is_i2c_net` already uses.
 
-    Used by the checker that reports a missing pull-up and by the pass that
-    adds one, so the two can never disagree about which nets are a bus.
-
-    Dedicated I2C pins carry SDA/SCL names (sensors, EEPROMs); MCU GPIO pins
-    usually do not (ESP32: IO21/IO22), so a net NAMED SDA/SCL counts as
-    equally strong intent.
+    Member pin names first (a sensor SDA pin is electrical); the net label
+    second, because MCU GPIO pins usually are not named SDA (ESP32: IO21).
     """
-    name = net.name.upper()
-    if name in ("SDA", "SCL") or name.endswith(("_SDA", "_SCL", "-SDA", "-SCL")):
-        # I2C1_SDA is ST's own HAL naming and MCU_SDA is what block
-        # namespacing produces; exact match alone left those buses with no
-        # pull-up at all, which is the failure this detection exists to catch.
-        return True
     for ref, pin_no in net.nodes:
         comp = ir.components.get(ref)
         sym = symbols.get(comp.lib_id) if comp else None
@@ -115,9 +105,30 @@ def is_i2c_net(ir: CircuitIR, symbols: dict[str, SymbolDef], net) -> bool:
             name = (sym.pin(str(pin_no)).name or "").upper()
         except KeyError:
             continue
-        if name in ("SDA", "SCL") or name.endswith(("/SDA", "/SCL")):
-            return True
-    return False
+        if name in ("SDA", "SCL"):
+            return name
+        for role in ("SDA", "SCL"):
+            if name.endswith(("/" + role, "_" + role)):
+                return role
+    name = net.name.upper()
+    if name in ("SDA", "SCL"):
+        return name
+    # I2C1_SDA is ST's own HAL naming and MCU_SDA is what block
+    # namespacing produces; exact match alone left those buses with no
+    # pull-up at all, which is the failure this detection exists to catch.
+    for role in ("SDA", "SCL"):
+        if name.endswith(("_" + role, "-" + role)):
+            return role
+    return None
+
+
+def is_i2c_net(ir: CircuitIR, symbols: dict[str, SymbolDef], net) -> bool:
+    """One definition of "this net is an I2C bus line".
+
+    Used by the checker that reports a missing pull-up and by the pass that
+    adds one, so the two can never disagree about which nets are a bus.
+    """
+    return i2c_line_role(ir, symbols, net) is not None
 
 
 def _check_extended(

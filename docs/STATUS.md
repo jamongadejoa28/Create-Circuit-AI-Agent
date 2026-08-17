@@ -3,7 +3,7 @@
 > 다른 `docs/*.md`는 역사 기록이다. 새 계획 파일을 만들지 않는다.
 > 판정 기준: [`working-rules.md`](working-rules.md).
 
-갱신: 2026-08-17 · MCU를 I2C 버스에 올리고 Capacitor:Cap_0603이 8핀 IC가 되지 않게. 1–5번 연마는 멈춤.
+갱신: 2026-08-17 · I2C 허브는 기록된 AF 핀만, Capacitor:Cap_0603은 ref가 C가 아니어도 Device:C. 1–5번 연마는 멈춤.
 
 ## 제품
 
@@ -16,7 +16,7 @@ PCB 배치·동박·DRC와 QLoRA는 하지 않는다.
 고정 입력: `tests/eval/sequential_campaign_v1.json`.
 실행기: `tests/benchmarks/run_sequential_campaign.py`.
 
-최신 측정: `ko-step-016-i2c-hub-s2` (6번까지, seed 2). 직전: `ko-step-015-rail-reach-s2`.
+최신 측정: `ko-step-017-i2c-af-s2` (6번까지, seed 2). 직전: `ko-step-016-i2c-hub-s2`.
 
 ### 리페어 루프가 아무것도 배선하지 않고 있었다
 
@@ -230,17 +230,22 @@ TMP100/케이스 특례로 V+를 옮기지 않는다.
 `wire_mcu_interfaces`는 블록 머지 뒤에만 돌았다. 역할 4개인 I2C 보드는
 `BLOCK_THRESHOLD=5` 아래라 단일 합성이고, SDA는 센서·헤더·풀업 세 멤버라
 `alone`(1핀 넷)에도 안 걸렸다. 허브 연결은 `erc.is_i2c_net`(풀업 검사기와
-같은 정의)으로 카탈로그를 만들고 `extra_alone=False`로 기존 패스를 호출한다.
-어떤 GPIO가 I2C1_SDA인지는 AF 표 문제라 이 패스가 답하지 않는다. PB6/PB7
-특례 없음.
+같은 정의)으로 고르고, 핀은 `pinfunctions`가 DS12288 Table 12에서 고른
+I2C*_SDA/SCL이다. 자유 GPIO 라운드로빈은 PC13/PC14를 버스에 올렸다.
+표에 없는 허브(ESP32 모듈)는 GPIO를 지어내지 않고 보고한다. 이미 버스에
+있는 허브 핀이 기록된 AF가 아니면 옮기고 NC로 둔다. PB6/PB7 리터럴 없음.
+패스는 `_normalize` 안(전사 모드 제외). NC는 점유가 아니다
+(`wire_mcu_interfaces`와 같음).
 
 `Capacitor:Cap_0603`은 Device:C가 FTS 히트가 아니라 `CAP006DG`가 됐다.
-전사 모드는 이미 IEEE 315 R/C/L을 Device:R/C/L에 묶는다. 설계 모드
-`resolve_unknown_symbols`에도 같은 제네릭을 후보로 넣는다. 핀 8을 쓴 C1은
-Device:C가 못 받아 거부.
+전사 모드는 이미 Device:R/C/L을 쓴다. 설계 모드는 핀이 맞으면 그 세
+제네릭을 접두어와 무관하게 후보에 넣고, 핀 수 적은 쪽을 접두어보다
+앞세운다. U1 Capacitor:Cap_0603도 Device:C (CAP006DG 8핀이 짐). 핀 8을
+쓴 C1은 Device:C가 못 받아 거부. 라이브러리명 세 단어 목록은 넣었다가
+삭제했다.
 
 지식 토픽: `search_query`가 공백 없는 partish 토큰일 때만 (TMP100,
-STM32G474RET6). `resistor`는 넣지 않는다.
+STM32G474RET6). `resistor`와 `connections_intent` 문장은 넣지 않는다.
 
 ### 016 seed 2 6번 회로 사실 (`ko-step-016-i2c-hub-s2`)
 
@@ -249,13 +254,30 @@ STM32G474RET6). `resistor`는 넣지 않는다.
 - 선정 부품 있음. C1–C6는 로그 `Capacitor:Cap_0603 -> Device:C`. CAP006DG 없음.
 - 로그 `wired U1.2 to dangling interface net SCL`, `wired U1.3 … SDA`.
   SDA: J1.2, R3.1, U1.3, U2.3, U2.6. SCL: J1.3, R4.1, U1.2, U2.1.
-  U1이 버스에 있다. 핀 번호 2·3이 I2C AF인지는 이 패스가 보장하지 않는다.
+  U1이 버스에 있다. 핀 번호 2·3은 PC13/PC14 — I2C AF 아님.
 - U2.4 V+ = +3V3, U2.2 GND. ADD0(U2.5)=GND. **ADD1(U2.3)이 SDA 위** —
   주소 핀이 데이터 버스에 있다.
 - J1 1=+3V3 / 2=SDA / 3=SCL / 4=GND. R3·R4 10k 버스 풀업.
   R1·R2 4.7k는 또 +3V3–GND만. knowledge 주입 tmp100 세 개. 토픽에 `resistor` 없음.
 - stage=`done`, self-ERC 0, kicad 0, compliance error 0, dead 없음.
   `wired_ratio` 0.5. 점수 자랑으로 쓰지 않는다.
+
+### 017 seed 2 6번 회로 사실 (`ko-step-017-i2c-af-s2`)
+
+실행기 exit 3은 1·2·4·5·6번 vs 016 회귀 카운트. 1–5번을 고치러 가지 않는다.
+6번의 점수 변화도 자랑하지 않는다.
+
+- 선정 부품 있음 (STM32G474RET6, TMP100). C는 Device:C. CAP006DG 없음.
+- 로그 `moved U1.26 off I2C net SDA` (PB2), `wired U1.50 … I2C1_SDA -> PA14`
+  (DS12288 Table 12). `moved U1.25 off SCL` (PB1), `wired U1.49 … I2C1_SCL -> PA13`.
+  최종 SDA: U4.6, J1.SDA, **U1.50**, R1.2, C1.1, R3.1.
+  최종 SCL: U4.1, J1.SCL, R4.1, **U1.49**, R2.2, C1.2.
+- U4.4 V+ = +3V3, U4.2 GND. ADD0(U4.5)·ADD1(U4.3)=GND. 주소 핀 특례 없음.
+- J1이 핀 **이름**(SDA/SCL/VDD/GND)으로 달려 숫자 1–4는 넷 없음 —
+  compliance `J1 … pin 1, 2, 3, 4 is on no net`. I2C_VDD 넷에 R1.1/R2.1/C1.3.
+  C1은 Device:C인데 핀 1–4를 씀. R3·R4 10k는 +3V3 풀업.
+- stage=`repair-2`, self-ERC 12, kicad 6, compliance error 1.
+  지식 토픽: spec summary 문장 + `Conn_01x04`. `connections_intent` 없음.
 
 ## 제품 규칙
 
@@ -266,11 +288,12 @@ STM32G474RET6). `resistor`는 넣지 않는다.
 
 ## 다음 작업 (규칙 9)
 
-1. 6번 seed 2에서 MCU는 SDA/SCL에 있다. 남은 전기 사실: ADD1이 SDA에 있다.
-   TMP100 주소 핀 특례로 고치지 않는다.
-2. 다음 측정: seed 3, 또는 7번(W25Q32JVSS SPI). SPI는 `is_i2c_net` 같은
-   공유 검사기가 없다.
-3. `connections_intent` 문장 전체가 지식 토픽으로 남는다. 1–5번 연마 금지.
+1. I2C 역할이 “MCU가 버스 넷에 있다”로 끝나면 GPIO도 `role_working`이 된다.
+   검사기가 수정기와 같은 AF 정의(`pinfunctions` / 기록된 SDA·SCL)를 써야 한다.
+   TMP100 ADD1 특례·PB6/PB7 리터럴 없음.
+2. 커넥터 핀 이름이 숫자로 안 풀리면 헤더가 죽는다 (017 J1). 6번 특례로
+   이름 목록을 만들지 않는다.
+3. 7번(W25Q32JVSS SPI)은 공유 검사기가 없다. 1–5번 연마 금지.
 4. SchGen 격리, QLoRA 없음.
 
 ## 데이터·학습

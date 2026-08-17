@@ -1032,10 +1032,6 @@ class Agent:
             # and no spaces (TMP100, STM32G474RET6).
             if value and " " not in value and _partish_token(value.lower()):
                 topics.append(value)
-        topics.extend(
-            str(intent) for intent in spec.get("connections_intent", [])[:4]
-            if str(intent).strip()
-        )
         summary = str(spec.get("summary") or "").strip()
         if summary:
             topics.append(summary)
@@ -1664,14 +1660,12 @@ class Agent:
         therefore passes extra_alone=False and a catalog from is_i2c_net.
         """
         symbols = self._resolve_symbols(ir)
-        hub = None
-        hub_pins = 0
-        for ref, comp in ir.components.items():
-            sym = symbols.get(comp.lib_id)
-            if sym and not sym.is_power and len(sym.pins) > hub_pins:
-                hub, hub_pins = ref, len(sym.pins)
-        if hub is None or hub_pins < 16:
+        from .normalize import hub_ref
+
+        hub = hub_ref(ir, symbols)
+        if hub is None:
             return []
+        hub_pins = len(symbols[ir.components[hub].lib_id].pins)
 
         cat_names = {c["net"] for c in catalog}
         net_sizes = {n.name: len(n.nodes) for n in ir.nets}
@@ -1855,24 +1849,9 @@ class Agent:
         return notes
 
     def _join_hub_to_i2c_buses(self, ir: CircuitIR) -> list[str]:
-        """Put the hub on every I2C net the pull-up checker already knows.
+        from .normalize import join_hub_to_i2c_buses
 
-        `wire_mcu_interfaces` only ran after block merge, and only for nets
-        named in the plan. A 4-role I2C board never crosses that threshold,
-        so SDA/SCL could hold the sensor, the header and a pull-up while the
-        MCU had power pins only. The net test is `erc.is_i2c_net` — the same
-        one `ensure_i2c_pullups` uses. Which GPIO is I2C1_SDA is an AF
-        question this pass does not answer; it asks for a free I/O pin.
-        """
-        from .erc import is_i2c_net
-
-        symbols = self._resolve_symbols(ir)
-        catalog = [
-            {"net": net.name} for net in ir.nets if is_i2c_net(ir, symbols, net)
-        ]
-        if not catalog:
-            return []
-        return self.wire_mcu_interfaces(ir, catalog, extra_alone=False)
+        return join_hub_to_i2c_buses(ir, self._resolve_symbols(ir))
 
     def resolve_pin_names(self, ir: CircuitIR) -> list[str]:
         """Rewrite pin NAMES used where numbers belong ('D1.A' → 'D1.2').
@@ -2903,7 +2882,6 @@ class Agent:
         synth_nets = connection_set(ir)
         synth_nc = nc_set(ir)
         res.log.extend(self._normalize(ir, spec, prompt))
-        res.log.extend(self._join_hub_to_i2c_buses(ir))
         res.log.extend(self._limit_main_device_copies(ir, ctx.get("candidates", {}), spec))
         res.stage = "pipeline"
         pr = self._generate(ir, name)
@@ -3010,7 +2988,6 @@ class Agent:
             # patches may use pin names, introduce new lib_ids, invalid
             # footprints, or rail nets that still need their supply symbol
             res.log.extend(self._normalize(ir, spec, prompt))
-            res.log.extend(self._join_hub_to_i2c_buses(ir))
             pr = self._generate(ir, name)
             res.pipeline = pr
 
@@ -3445,6 +3422,7 @@ class Agent:
             resolve_unknown_symbols,
             sanitize_known_device_nets,
             unify_stacked_pins,
+            join_hub_to_i2c_buses,
         )
 
         notes: list[str] = []
@@ -3512,6 +3490,7 @@ class Agent:
             logic = logic_rail(rails)
             if logic:
                 notes += ensure_i2c_pullups(ir, syms(), logic)
+            notes += join_hub_to_i2c_buses(ir, syms())
         else:
             # In transcription mode, symbol-declared NOCONNECT pins must still be marked
             notes += mark_documented_no_connects(ir, syms())
