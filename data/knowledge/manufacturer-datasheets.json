@@ -1,0 +1,262 @@
+[
+  {
+    "id": "ne555-reset-and-control-pins",
+    "type": "device_rule",
+    "statement": "On the 8-pin NE555 (KiCad Timer:NE555D), RESET is pin 4 (active-low). If RESET is unused, short it to VCC (pin 8); if it is used, pull it up to VCC. CONT is pin 5; decoupling it to ground with 0.01 µF can improve astable operation.",
+    "condition": "Any NE555 / NA555 / SA555 / SE555 in D, P, PS, or PW packages.",
+    "values": {
+      "RESET": "pin 4, tie to VCC if unused",
+      "CONT": "pin 5, optional 0.01uF to GND",
+      "VCC": "pin 8, 4.5V to 16V for NE555",
+      "GND": "pin 1"
+    },
+    "tags": [
+      "NE555",
+      "NE555D",
+      "555",
+      "timer",
+      "RESET",
+      "CONT",
+      "Timer"
+    ],
+    "source": {
+      "book": "Texas Instruments NA555/NE555/SA555/SE555 Precision Timers, SLFS022K",
+      "section": "6.3.2 Astable Operation Figure 6-5 Note A; 6.4 Device Functional Modes Table 6-1",
+      "pdf_page_index": 12,
+      "file": "ne555_SLFS022K.pdf",
+      "tier": "A",
+      "provenance": "datasheet"
+    }
+  },
+  {
+    "id": "ne555-astable-ra-rb-pins",
+    "type": "formula",
+    "statement": "NE555 astable (Figure 6-5): RA from VCC to DISCH (pin 7), RB from DISCH to THRES (pin 6) tied to TRIG (pin 2), C from that node to GND. tH ≈ 0.693·(RA+RB)·C, tL ≈ 0.693·RB·C, f ≈ 1.44/((RA+2RB)·C). Decouple CONT (pin 5) with 0.01 µF to GND.",
+    "condition": "Standard 555 astable using the 8-pin SOIC/PDIP pinout.",
+    "formula": "f = 1.44 / ((RA + 2*RB) * C)",
+    "values": {
+      "DISCH": "pin 7",
+      "THRES": "pin 6",
+      "TRIG": "pin 2",
+      "CONT_decouple": "0.01uF"
+    },
+    "tags": [
+      "NE555",
+      "NE555D",
+      "555",
+      "astable",
+      "timer",
+      "RA",
+      "RB"
+    ],
+    "source": {
+      "book": "Texas Instruments NA555/NE555/SA555/SE555 Precision Timers, SLFS022K",
+      "section": "6.3.2 Astable Operation, Figure 6-5, equations (1)-(4)",
+      "pdf_page_index": 11,
+      "file": "ne555_SLFS022K.pdf",
+      "tier": "A",
+      "provenance": "datasheet"
+    }
+  },
+  {
+    "id": "lm386-gain-pins-and-output-network",
+    "type": "device_rule",
+    "statement": "LM386 voltage gain is 20 (26 dB) with pins 1 and 8 open. A capacitor from pin 1 to pin 8 raises gain to 200 (46 dB); 10 µF is the typical-application value. The minimum-parts output network is 0.05 µF in series with 10 Ω from VOUT (pin 5) to GND, plus a 250 µF coupling capacitor to the speaker. Bypass (pin 7) may take 10 µF to GND.",
+    "condition": "LM386 audio power amplifier, 8-pin package.",
+    "values": {
+      "gain_open": "20",
+      "gain_bypassed": "200",
+      "gain_cap_1_to_8": "10uF",
+      "zobel": "10ohm + 0.05uF",
+      "output_coupling": "250uF"
+    },
+    "tags": [
+      "LM386",
+      "audio",
+      "amplifier",
+      "gain",
+      "speaker"
+    ],
+    "source": {
+      "book": "Texas Instruments LM386 Low Voltage Audio Power Amplifier, SNAS545D",
+      "section": "9.2.1 LM386 with Gain = 20 Figure 9-1; 9.2.1.2.1 Gain Control; 9.2.2 Gain = 200 Figure 9-3",
+      "pdf_page_index": 9,
+      "file": "lm386_SNAS545D.pdf",
+      "tier": "A",
+      "provenance": "datasheet"
+    }
+  },
+  {
+    "id": "ams1117-output-cap-and-dropout",
+    "type": "device_rule",
+    "statement": "AMS1117 requires an output capacitor as frequency compensation; 22 µF solid tantalum on the output covers all operating conditions, including when the ADJ pin is bypassed. Dropout (VIN−VOUT) is typically 1.1 V and guaranteed 1.3 V max at 0.8 A. SOT-223 pins: 1 = GND/ADJ, 2 = VOUT, 3 = VIN.",
+    "condition": "AMS1117 adjustable or fixed linear regulator.",
+    "values": {
+      "Cout": "22uF tantalum",
+      "dropout_typ": "1.1V",
+      "dropout_max_0.8A": "1.3V",
+      "pin1": "GND/ADJ",
+      "pin2": "VOUT",
+      "pin3": "VIN"
+    },
+    "tags": [
+      "AMS1117",
+      "LDO",
+      "regulator",
+      "dropout",
+      "tantalum",
+      "output-capacitor"
+    ],
+    "source": {
+      "book": "Advanced Monolithic Systems AMS1117 1A Low Dropout Voltage Regulator, ds1117",
+      "section": "Application Hints, Stability; Electrical Characteristics, Dropout Voltage; Pin Connections",
+      "pdf_page_index": 3,
+      "file": "ams1117_ds1117.pdf",
+      "tier": "A",
+      "provenance": "datasheet"
+    }
+  },
+  {
+    "id": "mcp6001-supply-bypass",
+    "type": "device_rule",
+    "statement": "MCP6001 VDD (1.8 V to 6.0 V) needs a local bypass of 0.01 µF to 0.1 µF within 2 mm of the supply pin, plus a bulk capacitor of 1 µF or larger within 100 mm (that bulk cap may be shared with nearby analog parts). An unused amplifier in a dual/quad package must not float: buffer a mid-supply divider or tie the unused op amp as in Figure 4-5.",
+    "condition": "MCP6001/2/4 family op amp on a single positive supply.",
+    "values": {
+      "local_bypass": "0.01uF to 0.1uF within 2mm",
+      "bulk": ">=1uF within 100mm",
+      "VDD": "1.8V to 6.0V"
+    },
+    "tags": [
+      "MCP6001",
+      "opamp",
+      "decoupling",
+      "bypass",
+      "unused"
+    ],
+    "source": {
+      "book": "Microchip MCP6001/1R/1U/2/4 1 MHz Low-Power Op Amp, DS20001733L",
+      "section": "4.4 Supply Bypass; 4.5 Unused Op Amps",
+      "pdf_page_index": 13,
+      "file": "mcp6001_DS20001733L.pdf",
+      "tier": "A",
+      "provenance": "datasheet"
+    }
+  },
+  {
+    "id": "tmp100-i2c-pullup-and-bypass",
+    "type": "device_rule",
+    "statement": "TMP100 SCL (pin 1) and SDA (pin 6) are open-drain and each require a pull-up resistor; 5 kΩ is the recommended value and the pin current must stay ≤ 3 mA. V+ (pin 4) is 2.7 V to 5.5 V. Figure 12 shows a 0.01 µF supply bypass at V+; §8.2.1 also lists 0.1 µF as a recommended bypass. Place the bypass as close as possible to V+ and GND (pin 2).",
+    "condition": "TMP100 (or TMP101) on an I2C/SMBus with a two-wire host.",
+    "values": {
+      "SCL": "pin 1, pull-up, <=3mA",
+      "SDA": "pin 6, pull-up, <=3mA",
+      "pullup_typical": "5kOhm",
+      "Vplus": "pin 4, 2.7V to 5.5V",
+      "bypass_figure12": "0.01uF",
+      "bypass_also_listed": "0.1uF"
+    },
+    "tags": [
+      "TMP100",
+      "TMP101",
+      "I2C",
+      "SMBus",
+      "pullup",
+      "SDA",
+      "SCL",
+      "decoupling"
+    ],
+    "source": {
+      "book": "Texas Instruments TMP100/TMP101 Temperature Sensor With I2C and SMBus Interface, SBOS231I",
+      "section": "5 Pin Configuration; 8.2 Typical Application Figure 12; 8.2.1 Design Requirements; 9 Power Supply Recommendations",
+      "pdf_page_index": 18,
+      "file": "tmp100_SBOS231I.pdf",
+      "tier": "A",
+      "provenance": "datasheet"
+    }
+  },
+  {
+    "id": "tmp100-address-pins",
+    "type": "device_rule",
+    "statement": "TMP100 ADD0 (pin 5) and ADD1 (pin 3) each connect to GND, V+, or float, giving eight I2C slave addresses (Table 2). ADD1=0 ADD0=0 → 1001000. The pin state is sampled on the first bus communication and must be set before any I2C activity; after that it is latched.",
+    "condition": "TMP100 on a shared I2C bus; one or more devices.",
+    "values": {
+      "ADD0": "pin 5",
+      "ADD1": "pin 3",
+      "address_00": "1001000",
+      "states": "GND, V+, or float"
+    },
+    "tags": [
+      "TMP100",
+      "ADD0",
+      "ADD1",
+      "I2C",
+      "address",
+      "slave"
+    ],
+    "source": {
+      "book": "Texas Instruments TMP100/TMP101 Temperature Sensor With I2C and SMBus Interface, SBOS231I",
+      "section": "7.3.2.2 Serial Bus Address, Table 2",
+      "pdf_page_index": 9,
+      "file": "tmp100_SBOS231I.pdf",
+      "tier": "A",
+      "provenance": "datasheet"
+    }
+  },
+  {
+    "id": "stm32g474-vdd-vdda-decoupling",
+    "type": "device_rule",
+    "statement": "STM32G474 each VDD/VSS pair is decoupled with n×100 nF plus one 4.7 µF; VDDA/VSSA uses 10 nF plus 1 µF; VREF+ uses 100 nF plus 1 µF. Place the ceramics as close as possible to, or under, the pins. KiCad MCU_ST_STM32G4:STM32G474RETx.",
+    "condition": "STM32G474xB/xC/xE minimum power scheme, including STM32G474RET6.",
+    "values": {
+      "VDD_per_pair": "100nF",
+      "VDD_bulk": "4.7uF",
+      "VDDA": "10nF + 1uF",
+      "VREF+": "100nF + 1uF"
+    },
+    "tags": [
+      "STM32G474",
+      "STM32G474RET6",
+      "STM32G474RETx",
+      "decoupling",
+      "VDD",
+      "VDDA"
+    ],
+    "source": {
+      "book": "STMicroelectronics STM32G474xB/xC/xE datasheet, DS12288 Rev 6",
+      "section": "5.1.6 Power supply scheme, Figure 16",
+      "pdf_page_index": 80,
+      "file": "stm32g474xB-xC-xE_DS12288_rev6.pdf",
+      "tier": "A",
+      "provenance": "datasheet"
+    }
+  },
+  {
+    "id": "an2867-crystal-load-capacitors",
+    "type": "formula",
+    "statement": "A Pierce crystal on OSC_IN/OSC_OUT sees CL = (CL1·CL2)/(CL1+CL2) + Cs. CL is the crystal's specified load; Cs is MCU pin plus PCB stray. With CL1 = CL2, each external capacitor is 2·(CL − Cs). Example in the note: CL = 15 pF and Cs = 5 pF → CL1 = CL2 = 20 pF.",
+    "condition": "HSE or LSE Pierce oscillator on an STM32/STM8 with two external load capacitors.",
+    "formula": "CL = (CL1 * CL2) / (CL1 + CL2) + Cs; CL1 = CL2 = 2 * (CL - Cs)",
+    "values": {
+      "example_CL": "15pF",
+      "example_Cs": "5pF",
+      "example_CL1_CL2": "20pF"
+    },
+    "tags": [
+      "crystal",
+      "HSE",
+      "LSE",
+      "oscillator",
+      "load-capacitance",
+      "STM32",
+      "AN2867"
+    ],
+    "source": {
+      "book": "STMicroelectronics AN2867 Oscillator design guide for STM8S, STM8A and STM32, DocID15287 Rev 9",
+      "section": "3.3 CL load capacitance",
+      "pdf_page_index": 12,
+      "file": "an2867_oscillator.pdf",
+      "tier": "A",
+      "provenance": "datasheet"
+    }
+  }
+]

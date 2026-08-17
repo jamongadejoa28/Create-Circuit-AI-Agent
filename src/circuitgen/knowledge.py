@@ -41,14 +41,35 @@ _QUERY_STOPWORDS = {
     # queries ("CAN" otherwise matches the ordinary English verb in prose).
     "type", "can", "fd",
 }
+_PRODUCTION_PROVENANCE = {"textbook", "datasheet"}
+_DATASHEET_DIR = _PROJECT / "data" / "datasheets"
 
 
 def _search_tokens(text: str) -> set[str]:
+    raw = re.findall(r"[a-z0-9]+", text.lower())
+    extra: list[str] = []
+    for token in raw:
+        pieces = re.findall(r"[a-z]+|\d+", token)
+        if len(pieces) < 2:
+            continue
+        # Ordering codes are one FTS token ("ne555d") while the cited
+        # statement talks about "555". Split letter/digit runs so a
+        # catalogue query can reach the datasheet entry. Pieces shorter
+        # than 3 ("ne", "d") are too ambiguous to keep.
+        extra.extend(p for p in pieces if len(p) >= 3)
     return {
         token
-        for token in re.findall(r"[a-z0-9]+", text.lower())
+        for token in [*raw, *extra]
         if len(token) > 1 and token not in _QUERY_STOPWORDS
     }
+
+
+def _partish_token(token: str) -> bool:
+    return (
+        len(token) >= 5
+        and any(c.isalpha() for c in token)
+        and any(c.isdigit() for c in token)
+    )
 
 
 def _hit_tokens(entry: dict) -> set[str]:
@@ -94,13 +115,25 @@ def load_entries(
                     f"{f.name}: entry {e['id']} is an internal fixture; "
                     "it cannot be indexed as production knowledge"
                 )
-            if provenance != "textbook" and not (
+            if provenance not in _PRODUCTION_PROVENANCE and not (
                 allow_internal_fixtures and provenance == "internal-fixture"
             ):
                 raise ValueError(
                     f"{f.name}: entry {e['id']} has unsupported provenance "
                     f"{provenance!r}"
                 )
+            if provenance == "datasheet":
+                if e["source"].get("pdf_page_index") is None:
+                    raise ValueError(
+                        f"{f.name}: entry {e['id']} datasheet source lacks "
+                        "pdf_page_index"
+                    )
+                sheet_name = Path(str(e["source"].get("file") or "")).name
+                # PDFs are gitignored (not redistributed). An unverifiable
+                # citation must not become LLM grounding; it also must not
+                # take the textbook corpus down with it.
+                if not sheet_name or not (_DATASHEET_DIR / sheet_name).is_file():
+                    continue
             seen.add(e["id"])
             e["_file"] = f.name
             entries.append(e)
@@ -176,7 +209,10 @@ class KnowledgeIndex:
         for raw_rank, (raw, score) in enumerate(rows, start=1):
             e = json.loads(raw)
             matched = sorted(query_tokens & _hit_tokens(e))
-            if relevance_gate and len(matched) < min_matches:
+            # A catalogue ordering code in the query is one engineering
+            # fact, not a phrase that needs a second coincidental word.
+            needed = 1 if any(_partish_token(t) and t in matched for t in query_tokens) else min_matches
+            if relevance_gate and len(matched) < needed:
                 continue
             item = {
                 "id": e["id"],

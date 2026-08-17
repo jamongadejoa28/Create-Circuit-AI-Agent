@@ -81,6 +81,49 @@ def test_a_substitute_that_cannot_carry_the_used_pins_is_refused():
     assert ir.components["U1"].lib_id.startswith("Conceptual:"), notes
 
 
+def test_a_two_pin_unknown_is_not_rescued_into_a_large_ic():
+    """search_parts('SW') ranks Si4734 first on token overlap; that radio
+    has pins 1 and 2, so the old first-hit pin test accepted it. A two-pin
+    unknown that only uses 1 and 2 'fits' any IC. Rank the whole set: prefix
+    of the existing ref, then fewest pins."""
+    from circuitgen.normalize import resolve_unknown_symbols
+    from circuitgen.partindex import PartIndex
+
+    parts = PartIndex()
+    ir = CircuitIR("sw")
+    ir.add(Component("SW1", "Device:SW", "SW"))
+    ir.connect("A", ("SW1", "1"))
+    ir.connect("B", ("SW1", "2"))
+    notes = resolve_unknown_symbols(ir, parts)
+    chosen = ir.components["SW1"].lib_id
+    assert chosen != "RF_AM_FM:Si4734-D60-GU", notes
+    assert chosen.startswith("Switch:"), notes
+    assert len(parts.get_part_pins(chosen)) == 2
+
+
+def test_unknown_symbol_prefers_a_stem_matched_requested_part():
+    """The user already selected Switch:SW_Push. Device:SW is that name with
+    the library left off, not a licence to pick any 2-pin switch."""
+    from circuitgen.normalize import resolve_unknown_symbols
+    from circuitgen.partindex import PartIndex
+
+    parts = PartIndex()
+    ir = CircuitIR("sw")
+    ir.add(Component("SW1", "Device:SW", "SW"))
+    ir.connect("A", ("SW1", "1"))
+    ir.connect("B", ("SW1", "2"))
+    notes = resolve_unknown_symbols(ir, parts, preferred=["Device:LED", "Switch:SW_Push"])
+    assert ir.components["SW1"].lib_id == "Switch:SW_Push", notes
+    # Device:LED is also preferred and also 2-pin prefix-D, but SW is not a
+    # stem of LED, so it must not steal a switch ref
+    ir2 = CircuitIR("diode")
+    ir2.add(Component("D1", "Device:Diode_Schottky", "Schottky"))
+    ir2.connect("+3V3", ("D1", "1"))
+    ir2.connect("GND", ("D1", "2"))
+    resolve_unknown_symbols(ir2, parts, preferred=["Device:LED", "Switch:SW_Push"])
+    assert ir2.components["D1"].lib_id == "Device:D_Schottky"
+
+
 def test_a_placeholder_beside_the_real_part_is_removed():
     """Measured on a real 4-motor board: a second STM32G474 appeared as
     Conceptual:STM32G474 next to the real MCU_ST_STM32G4:STM32G474CBTx.

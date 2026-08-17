@@ -1100,7 +1100,21 @@ def ensure_stm32g4_power_network(
 
 
 
-def resolve_unknown_symbols(ir: CircuitIR, parts) -> list[str]:
+def _symbol_name_related(fabricated: str, lib_id: str) -> bool:
+    """Same catalog identity family, not a shared token in a description.
+
+    `Device:SW` is a stem of `Switch:SW_Push`. `Device:SW` is not a stem of
+    `Device:LED`. Used only to admit a user-selected part into the substitute
+    pool — search hits are already name-ranked by the index.
+    """
+    a = re.sub(r"[^a-z0-9]", "", (fabricated or "").lower())
+    b = re.sub(r"[^a-z0-9]", "", (lib_id or "").split(":")[-1].lower())
+    return bool(a and b and (a in b or b in a))
+
+
+def resolve_unknown_symbols(
+    ir: CircuitIR, parts, preferred: list[str] | None = None
+) -> list[str]:
     """Every component must be something the emitter can actually place.
 
     A fabricated lib_id does not stop the run: `_resolve_symbols` leaves it
@@ -1115,10 +1129,14 @@ def resolve_unknown_symbols(ir: CircuitIR, parts) -> list[str]:
 
     Two ways out, in order, neither of them a list of names:
 
-    1. Ask the catalog for the symbol NAME and take the first candidate that
-       has every pin this circuit already uses. That is what rescues
-       Device:Diode_Schottky -> Device:D_Schottky, and the pin test is what
-       stops it rescuing it into something unrelated.
+    1. Ask the catalog for the symbol NAME. Every hit that already carries
+       the pins this circuit uses is a candidate; pick the one whose
+       reference prefix matches the existing ref and that has the fewest
+       pins. Taking the *first* FTS hit was not that test: `search_parts("SW")`
+       leads with `RF_AM_FM:Si4734-D60-GU` (24 pins, token overlap), which
+       has pins 1 and 2, so a two-pin `Device:SW` became a radio IC.
+       A part the user already selected is admitted into the same pool when
+       its symbol name is a stem of the fabricated name (or vice versa).
     2. Otherwise make it a Conceptual box, the mechanism this project already
        uses for parts no library carries. The connections survive, the reader
        sees a labelled box, and the emitted sheet matches the IR.
@@ -1136,6 +1154,20 @@ def resolve_unknown_symbols(ir: CircuitIR, parts) -> list[str]:
     for ref, pin in ir.nc_pins:
         used.setdefault(ref, set()).add(str(pin))
 
+    def carries(lib_id: str, want: set[str]):
+        if not lib_id:
+            return None
+        try:
+            sym = parts.load_symbols([lib_id])[lib_id]
+        except Exception:
+            return None
+        try:
+            for pin in want:
+                sym.pin(str(pin))
+        except KeyError:
+            return None
+        return (sym.reference_prefix or "").upper(), len(sym.pins)
+
     for ref, comp in sorted(ir.components.items()):
         if comp.lib_id.startswith(CONCEPTUAL):
             continue
@@ -1147,24 +1179,33 @@ def resolve_unknown_symbols(ir: CircuitIR, parts) -> list[str]:
 
         name = comp.lib_id.split(":")[-1]
         want = used.get(ref, set())
-        chosen = None
-        for hit in parts.search_parts(name, 8):
+        ref_prefix = (re.match(r"^[A-Za-z]+", ref) or [""])[0].upper()
+        scored: list[tuple] = []
+        seen: set[str] = set()
+        for rank, lib_id in enumerate(preferred or []):
+            if lib_id in seen or not _symbol_name_related(name, lib_id):
+                continue
+            meta = carries(lib_id, want)
+            if meta is None:
+                continue
+            seen.add(lib_id)
+            prefix, n_pins = meta
+            mismatch = 0 if ref_prefix and prefix == ref_prefix else 1
+            scored.append((mismatch, n_pins, 0, rank, lib_id))
+        for rank, hit in enumerate(parts.search_parts(name, 8)):
             lib_id = hit.get("lib_id")
-            if not lib_id:
+            if not lib_id or lib_id in seen:
                 continue
-            try:
-                sym = parts.load_symbols([lib_id])[lib_id]
-            except Exception:
+            meta = carries(lib_id, want)
+            if meta is None:
                 continue
-            try:
-                for pin in want:
-                    sym.pin(pin)
-            except KeyError:
-                continue  # cannot carry this circuit's pins — not a substitute
-            chosen = lib_id
-            break
+            seen.add(lib_id)
+            prefix, n_pins = meta
+            mismatch = 0 if ref_prefix and prefix == ref_prefix else 1
+            scored.append((mismatch, n_pins, 1, rank, lib_id))
 
-        if chosen:
+        if scored:
+            chosen = min(scored)[-1]
             notes.append(f"{ref}: unknown symbol {comp.lib_id} -> {chosen} (catalog, pins fit)")
             comp.lib_id = chosen
         else:

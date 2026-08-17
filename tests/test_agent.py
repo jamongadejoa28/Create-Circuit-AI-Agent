@@ -508,6 +508,20 @@ def test_repair_gate_duplicates_and_same_patch_adds(agent_env):
     assert kept == []
     assert "duplicate" in notes[0]
 
+    # Device:LED is a requested device (prefix D), not a pullup
+    ir.add(Component("D1", "Device:LED", "LED"))
+    kept, notes = agent._filter_ops(
+        ir,
+        [
+            {"op": "add_component", "ref": "D2", "lib_id": "Device:LED", "value": "LED"},
+            {"op": "connect", "ref": "D2", "pin": "1", "net": "R_LED"},
+            {"op": "connect", "ref": "D2", "pin": "2", "net": "GND"},
+        ],
+        ["unconnected pin D1.2"],
+    )
+    assert kept == []
+    assert any("duplicate" in n and "Device:LED" in n for n in notes)
+
     # connect to a ref that nothing in the patch adds stays rejected
     kept, notes = agent._filter_ops(
         ir,
@@ -656,6 +670,22 @@ def test_repair_gate_refuses_a_patch_that_removes_and_wires_the_same_part():
     assert [op["op"] for op in kept] == ["remove_component"]
 
 
+def test_apply_patch_does_not_insert_nodes_for_a_missing_ref():
+    """Measured on the timer campaign board: add U2 was rejected as a
+    duplicate NE555, but connect U2.2 to TRIG still wrote a net node.
+    Conduction counted that ghost as the other member of U1.2, so a lonely
+    control pin scored as working."""
+    from circuitgen.ir_json import apply_patch
+
+    ir = CircuitIR("ghost")
+    ir.add(Component("U1", "Timer:NE555D", "NE555"))
+    ir.connect("TRIG", ("U1", "2"))
+    notes = apply_patch(ir, [{"op": "connect", "ref": "U2", "pin": "2", "net": "TRIG"}])
+    members = {(r, p) for net in ir.nets for r, p in net.nodes}
+    assert ("U2", "2") not in members
+    assert any("not on the board" in n for n in notes), notes
+
+
 def test_repair_gate_checks_set_nc_the_op_name_the_schema_actually_emits():
     """The gate checked for "mark_nc" for its whole life; schemas.REPAIR_PATCH
     and ir_json._apply_one both call it "set_nc", so every NC op walked past
@@ -699,6 +729,65 @@ def test_repeated_block_template_keeps_one_main_part_per_role():
     assert list(ir.components) == ["U1"]
     assert all(node[0] == "U1" for net in ir.nets for node in net.nodes)
     assert any("removed duplicate" in n for n in notes)
+
+
+def test_block_budget_is_pin_derived_not_the_schema_ceiling(agent_env):
+    """A 2-pin speaker must not inherit CIRCUIT_IR.maxItems=30 as a keep-all quota."""
+    parts, knowledge, tmp = agent_env
+    agent = Agent(MockLLM(), parts, knowledge, tmp / "budget")
+    speaker = agent._block_component_budget(
+        {"speaker": [{"lib_id": "Device:Speaker"}], "support_passives": [{"lib_id": "Device:R"}]}
+    )
+    assert speaker < 30
+    assert speaker >= 8
+    mcu_hits = parts.search_parts("STM32G474", limit=1)
+    if mcu_hits:
+        mcu = agent._block_component_budget({"controller": [mcu_hits[0]]})
+        assert mcu >= speaker
+
+
+def test_block_overflow_keeps_the_role_device_and_drops_schema_fill(agent_env):
+    """Measured: speaker block of 1 role emitted exactly 30 Device:R."""
+    parts, knowledge, tmp = agent_env
+    agent = Agent(MockLLM(), parts, knowledge, tmp / "overflow")
+    ir = CircuitIR("speaker")
+    ir.add(Component("LS1", "Device:Speaker", "8ohm"))
+    for n in range(1, 30):
+        ir.add(Component(f"R{n}", "Device:R", "10k"))
+        ir.connect("IN", (f"R{n}", "1"))
+    candidates = {
+        "speaker": [{"lib_id": "Device:Speaker"}],
+        "support_passives": [{"lib_id": "Device:R"}],
+    }
+    budget = agent._block_component_budget(candidates)
+    notes = agent._trim_block_overflow(ir, candidates, budget)
+    assert "LS1" in ir.components
+    assert ir.components["LS1"].lib_id == "Device:Speaker"
+    assert len([r for r in ir.components if not r.startswith("#")]) <= budget
+    assert sum(1 for c in ir.components.values() if c.lib_id == "Device:R") == 0
+    assert any("block overflow" in n for n in notes)
+    # Nets of dropped resistors must not keep dangling refs.
+    leftover = set(ir.components)
+    assert all(node[0] in leftover for net in ir.nets for node in net.nodes)
+
+
+def test_block_overflow_is_noop_under_budget(agent_env):
+    parts, knowledge, tmp = agent_env
+    agent = Agent(MockLLM(), parts, knowledge, tmp / "under")
+    ir = CircuitIR("speaker")
+    ir.add(Component("LS1", "Device:Speaker", "8ohm"))
+    for n in range(1, 3):
+        ir.add(Component(f"R{n}", "Device:R", "10k"))
+    for n in range(1, 4):
+        ir.add(Component(f"C{n}", "Device:C", "100nF"))
+    candidates = {
+        "speaker": [{"lib_id": "Device:Speaker"}],
+        "support_passives": [{"lib_id": "Device:R"}, {"lib_id": "Device:C"}],
+    }
+    budget = agent._block_component_budget(candidates)
+    notes = agent._trim_block_overflow(ir, candidates, budget)
+    assert notes == []
+    assert sorted(ir.components) == ["C1", "C2", "C3", "LS1", "R1", "R2"]
 
 
 def test_repair_gate_rejects_output_pin_to_supply_net(agent_env):
@@ -752,6 +841,40 @@ def test_limit_main_device_copies_respects_role_quantity(agent_env):
         ir2, {"mystery": [{"lib_id": "Driver_Motor:DRV8311H"}]}, spec
     )
     assert sorted(ir2.components) == ["U1", "U2"] and notes2 == []
+
+
+def test_limit_main_device_copies_trims_leds_not_resistors():
+    """Device:LED used to skip the quantity trim because every Device:* did.
+
+    A quantity-1 LED role then kept the extra D2 repair added and shorted.
+    Prefix R/C/L are still allowed to exceed quantity (several pullups).
+    """
+    agent = object.__new__(Agent)
+    ir = CircuitIR("led-qty")
+    ir.add(Component("D1", "Device:LED", "LED"))
+    ir.add(Component("D2", "Device:LED", "LED"))
+    ir.add(Component("R1", "Device:R", "330"))
+    ir.add(Component("R2", "Device:R", "10k"))
+    ir.connect("ANODE", ("D1", "2"), ("R1", "2"))
+    ir.connect("GND", ("D1", "1"))
+    ir.connect("X", ("D2", "1"), ("D2", "2"))
+    spec = {
+        "parts_needed": [
+            {"role": "led", "quantity": 1},
+            {"role": "resistor", "quantity": 1},
+        ]
+    }
+    notes = agent._limit_main_device_copies(
+        ir,
+        {
+            "led": [{"lib_id": "Device:LED", "reference_prefix": "D"}],
+            "resistor": [{"lib_id": "Device:R", "reference_prefix": "R"}],
+        },
+        spec,
+    )
+    assert "D1" in ir.components and "D2" not in ir.components, notes
+    assert "R1" in ir.components and "R2" in ir.components
+    assert any("beyond quantity 1" in n and "D2" in n for n in notes)
 
 
 def test_repair_gate_rejects_error_level_pin_conflicts(agent_env):
@@ -937,6 +1060,36 @@ def test_pattern_binds_the_named_part_instead_of_its_default(agent_env):
     assert res.compliance.missing_parts == [] and res.compliance.ok
 
 
+@pytest.mark.skipif(
+    not (Path(__file__).resolve().parent.parent / "data" / "datasheets" / "tmp100_SBOS231I.pdf").is_file(),
+    reason="TMP100 datasheet PDF is local-only (gitignored)",
+)
+def test_gather_injects_datasheet_knowledge_for_named_parts(agent_env):
+    parts, knowledge, tmp = agent_env
+    agent = Agent(MockLLM(), parts, knowledge, tmp / "kn")
+    spec = {
+        "summary": "STM32G474RET6 and TMP100 on 3.3V I2C",
+        "power": {
+            "rails": [
+                {"name": "+3V3", "voltage": "3.3V"},
+                {"name": "GND", "voltage": "0V"},
+            ]
+        },
+        "parts_needed": [
+            {"role": "MCU", "search_query": "STM32G474RET6", "quantity": 1},
+            {"role": "TEMP_SENSOR", "search_query": "TMP100", "quantity": 1},
+        ],
+        "connections_intent": ["SDA SCL pullup", "address pins"],
+    }
+    _candidates, snippets, _pins = agent._gather(spec)
+    ids = {s["id"] for s in snippets}
+    assert "tmp100-i2c-pullup-and-bypass" in ids, ids
+    assert "tmp100-address-pins" in ids, ids
+    topics = agent._knowledge_trace[-1]["topics"]
+    assert "MCU" not in topics and "TEMP_SENSOR" not in topics, topics
+    assert "select-inamp-vs-single-opamp-difference-amp" not in ids
+
+
 def test_header_roles_fall_back_to_generic_connectors(agent_env):
     parts, knowledge, tmp = agent_env
     agent = Agent(MockLLM(), parts, knowledge, tmp / "hdr")
@@ -1023,7 +1176,12 @@ def test_dropped_power_capacitor_is_restored_not_fatal(agent_env):
     assert any("restored dropped passive role" in n for n in log)
 
 
-def test_dropped_potentiometer_and_speaker_are_exempted_not_floated(agent_env):
+def test_dropped_potentiometer_and_speaker_are_placed_not_exempted(agent_env):
+    """Catalogued non-resistor passives are the requested device.
+
+    Exempting them left campaign audio boards with no speaker after the
+    model filled the template with Device:R. Generic R stays exempt.
+    """
     parts, knowledge, tmp = agent_env
     agent = Agent(MockLLM(), parts, knowledge, tmp / "pot-speaker")
     spec = {
@@ -1043,8 +1201,19 @@ def test_dropped_potentiometer_and_speaker_are_exempted_not_floated(agent_env):
         "speaker": [{"lib_id": "Device:Speaker", "reference_prefix": "LS"}],
     }
     exempt = agent._restore_passive_roles(spec, ir, cands, log)
-    assert exempt == {"potentiometer", "speaker"}
-    assert "RV1" not in ir.components and "LS1" not in ir.components
+    assert exempt == set()
+    assert ir.components["RV1"].lib_id == "Device:R_Potentiometer"
+    assert ir.components["RV1"].value == "10kΩ"
+    assert ir.components["LS1"].lib_id == "Device:Speaker"
+    assert ir.components["LS1"].value == "8Ω"
+    # Unwired — repair connects; do not invent a net.
+    placed = {"RV1", "LS1"}
+    assert not any(r in placed for net in ir.nets for r, _p in net.nodes)
+    assert any("placed dropped passive role 'speaker'" in n for n in log)
+    # idempotent
+    agent._restore_passive_roles(spec, ir, cands, log)
+    assert sum(c.lib_id == "Device:Speaker" for c in ir.components.values()) == 1
+    assert sum(c.lib_id == "Device:R_Potentiometer" for c in ir.components.values()) == 1
 
 
 def test_pattern_synthesis_builds_can_interface(agent_env):

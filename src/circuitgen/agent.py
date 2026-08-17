@@ -33,7 +33,7 @@ from .compliance import (
 )
 from .ir import CircuitIR, Component
 from .ir_json import apply_patch, ir_from_json
-from .knowledge import KnowledgeIndex
+from .knowledge import KnowledgeIndex, _partish_token
 from .partindex import PartIndex
 from .pins import PinType
 from .llm_client import (
@@ -991,8 +991,38 @@ class Agent:
                 ][:CANDIDATES_PER_QUERY]
             candidates[need["role"]] = hits
 
-        topics = [n["search_query"] for n in spec.get("parts_needed", [])]
-        topics += spec.get("connections_intent", [])[:4]
+        topics: list[str] = []
+        for need in spec.get("parts_needed", []):
+            value = str(need.get("search_query") or "").strip()
+            if value:
+                topics.append(value)
+        topics.extend(
+            str(intent) for intent in spec.get("connections_intent", [])[:4]
+            if str(intent).strip()
+        )
+        summary = str(spec.get("summary") or "").strip()
+        if summary:
+            topics.append(summary)
+        # Role labels ("mcu", "sensor") and generic symbols ("R") are one
+        # English word; they fill the 6-snippet budget with unrelated hits.
+        # Only add a catalogue identity when it looks like an ordering code.
+        for hits in candidates.values():
+            if not hits:
+                continue
+            lib_id = str(hits[0].get("lib_id") or "")
+            if ":" not in lib_id:
+                continue
+            symbol = lib_id.split(":", 1)[1]
+            if _partish_token(symbol.lower()):
+                topics.append(symbol)
+        seen_topics: set[str] = set()
+        unique_topics: list[str] = []
+        for topic in topics:
+            if topic in seen_topics:
+                continue
+            seen_topics.add(topic)
+            unique_topics.append(topic)
+        topics = unique_topics
         seen, snippets = set(), []
         trace_hits: list[dict] = []
         for t in topics:
@@ -1169,6 +1199,110 @@ class Agent:
                     f"template conceptual {lib_id}: kept {refs[0]}, removed {refs[1:]}"
                 )
         return notes
+
+    def _block_component_budget(self, candidates: dict[str, list[dict]]) -> int:
+        """Upper bound on a block template's component list.
+
+        `schemas.CIRCUIT_IR` allows 30 components, and the 7B model treated
+        that ceiling as a fill quota: measured on sequential campaign seed 3,
+        a 1-role speaker block and a 1-role volume block each emitted exactly
+        30 parts (54 Device:R on the merged board). A 2-pin speaker does not
+        have 30 pins to hang parts on. The bound is the pin count of the
+        parts the block was asked to place, not a circuit-name list.
+        """
+        pin_total = 0
+        n_main = 0
+        for role, hits in candidates.items():
+            if role == "support_passives" or not hits:
+                continue
+            n_main += 1
+            lib_id = str(hits[0].get("lib_id") or "")
+            try:
+                pin_total += len(self.parts.get_part_pins(lib_id))
+            except KeyError:
+                pin_total += 4
+        if n_main == 0:
+            return 8
+        return min(30, max(8, pin_total // 2 + 4))
+
+    def _trim_block_overflow(
+        self,
+        ir: CircuitIR,
+        candidates: dict[str, list[dict]],
+        budget: int,
+    ) -> list[str]:
+        """When a template is over the pin-derived budget, drop dead extras.
+
+        Filling `CIRCUIT_IR.maxItems` produced 30-part speaker/volume
+        templates whose resistors were then reported dead by
+        `topology.analyze_conduction`. The checker and this trim share that
+        definition. A requested-role device is kept even if currently
+        unwired, because a later repair round is the place that wires it.
+
+        Under the budget this is a no-op, so a 6-part speaker template with
+        still-unwired pins is left for repair rather than stripped.
+        """
+        from collections import Counter
+
+        from .topology import analyze_conduction
+
+        role_ids = {
+            h.get("lib_id")
+            for role, hits in candidates.items()
+            if role != "support_passives"
+            for h in hits
+            if h.get("lib_id")
+        }
+        dropped: list[str] = []
+
+        def live() -> list[str]:
+            return [r for r in ir.components if not r.startswith("#")]
+
+        def remove(ref: str, lib: str) -> None:
+            ir.components.pop(ref, None)
+            for net in ir.nets:
+                net.nodes = [node for node in net.nodes if node[0] != ref]
+            ir.nets = [net for net in ir.nets if net.nodes]
+            ir.nc_pins = [node for node in ir.nc_pins if node[0] != ref]
+            dropped.append(f"{ref} ({lib})")
+
+        if len(live()) <= budget:
+            return []
+
+        symbols = self._resolve_symbols(ir)
+        dead = analyze_conduction(ir, symbols).dead
+        for ref in list(dead):
+            comp = ir.components.get(ref)
+            if comp is None or ref.startswith("#"):
+                continue
+            n = sum(1 for c in ir.components.values() if c.lib_id == comp.lib_id)
+            if comp.lib_id in role_ids and n <= 1:
+                continue
+            remove(ref, comp.lib_id)
+
+        while len(live()) > budget:
+            counts = Counter(ir.components[r].lib_id for r in live())
+            support = [
+                lib for lib, n in counts.items()
+                if not (lib in role_ids and n <= 1)
+            ]
+            if not support:
+                break
+            lib = max(support, key=lambda lid: (counts[lid], lid))
+            refs = [r for r in live() if ir.components[r].lib_id == lib]
+            wired = {
+                r: sum(1 for net in ir.nets for nr, _p in net.nodes if nr == r)
+                for r in refs
+            }
+            remove(sorted(refs, key=lambda r: (wired[r], r))[0], lib)
+
+        if not dropped:
+            return []
+        return [
+            f"block overflow: removed {len(dropped)} extra part(s) past budget "
+            f"{budget}: {', '.join(dropped[:8])}"
+            + ("…" if len(dropped) > 8 else "")
+        ]
 
     def synthesize_ir(
         self, spec: dict, name: str, contract_feedback: list[str] | None = None
@@ -1383,6 +1517,8 @@ class Agent:
         ir_notes: list[str] = []
         ir = ir_from_json(data, ir_notes)
         notes = ir_notes + self._limit_template_copies(ir, candidates)
+        budget = self._block_component_budget(candidates)
+        notes.extend(self._trim_block_overflow(ir, candidates, budget))
         if accepted_level:
             # a degraded attempt loses the knowledge rules and the alternate
             # candidates; the audit record must not imply it had them
@@ -1981,10 +2117,16 @@ class Agent:
         # regardless of op order within the patch
         pending_adds: set[str] = set()
         pending_lib: dict[str, str] = {}
+        existing_libs = {c.lib_id for c in ir.components.values()}
         for op in ops:
             if op.get("op") != "add_component" or op.get("ref", "") in ir.components:
                 continue
             lid = op.get("lib_id", "")
+            # a duplicate main device will be rejected below; treating it as
+            # a pending add would let its connect ops through as "the other
+            # half of the addition"
+            if not self._is_support_copy(lid) and lid in existing_libs:
+                continue
             if lid.startswith("Conceptual:"):
                 pending_adds.add(op.get("ref", ""))
             else:
@@ -2113,14 +2255,17 @@ class Agent:
                         continue
             if kind == "add_component":
                 lid = op.get("lib_id", "")
-                generic = lid.startswith(("Device:", "power:", "Conceptual:"))
+                support_copy = self._is_support_copy(lid)
                 if (
-                    not generic
+                    not support_copy
                     and ref not in ir.components
                     and any(c.lib_id == lid for c in ir.components.values())
                 ):
-                    # blocks duplicated ICs/modules only — a second Device:R
-                    # (pullup, series R) is routine repair material
+                    # a second Device:R (pullup, series R) is routine repair
+                    # material. Device:LED is not: prefix D is a requested
+                    # device, and treating every Device:* as a resistor let
+                    # repair add a second LED and short both of its pins
+                    # onto the current-limit net (LED+button, quantity 1).
                     notes.append(
                         f"rejected op: duplicate {lid} addition while repairing existing circuit"
                     )
@@ -2175,7 +2320,9 @@ class Agent:
         # A part the patch adds but never wires repairs nothing: every one of
         # its pins lands unconnected, so the round strictly INCREASES the
         # error count it was called to reduce. There was no bound on this at
-        # all — `Device:*` is exempt from the duplicate check, and the
+        # all — only R/C/L (and power:/Conceptual:) are exempt from the
+        # duplicate check, and the
+
         # "not part of any reported problem" check only reaches refs that
         # already exist, which a new ref never does. Measured on driver_relay
         # seed 202: one round added R2..R12 and wired only four of them,
@@ -2684,6 +2831,7 @@ class Agent:
         synth_nets = connection_set(ir)
         synth_nc = nc_set(ir)
         res.log.extend(self._normalize(ir, spec, prompt))
+        res.log.extend(self._limit_main_device_copies(ir, ctx.get("candidates", {}), spec))
         res.stage = "pipeline"
         pr = self._generate(ir, name)
         res.pipeline = pr
@@ -3225,8 +3373,18 @@ class Agent:
         notes += normalize_common_symbol_aliases(ir)
         # first, because every pass below reads the symbol: a lib_id nothing
         # can load is invisible to all of them and to the emitter, and the
-        # board then measured is not the board on disk
-        notes += resolve_unknown_symbols(ir, self.parts)
+        # board then measured is not the board on disk. Parts the user named
+        # are extra candidates so Device:SW can become Switch:SW_Push rather
+        # than the first FTS hit that happens to have pins 1 and 2.
+        preferred: list[str] = []
+        for token in requested_part_numbers(prompt, self.parts):
+            if ":" in token:
+                full = self.parts.exact_lib_id(token)
+                if full:
+                    preferred.append(full)
+                    continue
+            preferred.extend(self.parts.exact_symbol_ids(token)[:4])
+        notes += resolve_unknown_symbols(ir, self.parts, preferred)
         # every lib_id is settled now, so a box that duplicates a real part
         # or another box can be recognised
         notes += merge_duplicate_placeholders(ir, syms())
@@ -3389,20 +3547,50 @@ class Agent:
 
         return stem(left) == stem(right)
 
+    def _catalog_reference_prefix(self, lid: str) -> str:
+        """KiCad reference prefix for a catalog lib_id, or '' if unknown."""
+        full = self.parts.exact_lib_id(lid) or lid
+        if ":" in full:
+            hits = self.parts.search_parts(full, 1)
+            if hits and hits[0].get("lib_id") == full:
+                return str(hits[0].get("reference_prefix") or "").upper()
+        try:
+            return (self.parts.load_symbols([full])[full].reference_prefix or "").upper()
+        except Exception:
+            return ""
+
+    def _is_support_copy(self, lid: str) -> bool:
+        """May a repair round add another copy of this lib_id?
+
+        `power:` symbols and Conceptual boxes are bookkeeping. Prefix R/C/L
+        are the support passives a quantity-1 resistor role still needs
+        several of. Device:LED (prefix D) is the requested device — treating
+        every Device:* as a resistor is how a second LED landed on the
+        current-limit net.
+        """
+        if lid.startswith(("power:", "Conceptual:")):
+            return True
+        return self._catalog_reference_prefix(lid) in {"R", "C", "L"}
+
     def _restore_passive_roles(
         self, spec: dict, ir: CircuitIR, candidates: dict, log: list[str]
     ) -> set[str]:
-        """Deterministically restore dropped power caps; exempt other passives.
+        """Deterministically restore dropped power caps; place other catalogued
+        passives; exempt only generic resistors.
 
         A dropped MCU is a dead board; a dropped bulk capacitor is not —
         aborting for it is disproportionate (measured: unknown_module died
         because the model omitted 'power_capacitor'). Caps whose candidates are
         only ``C`` are re-added across the logic rail.
 
-        Other dropped passives (R / pot / speaker) are exempted from the hard
-        gate instead of being placed with zero nets — measured: placing
-        Device:R_Potentiometer unconnected raised role_present while
-        role_working stayed flat and hid conceptual_part_unresolved.
+        Generic ``R`` candidates stay exempt: placing Device:R unconnected
+        raised role_present while role_working stayed flat. Catalogued
+        non-resistor passives (KiCad prefixes RV, LS, L — a pot, a speaker)
+        are different: they ARE the requested device, and exempting them
+        left 011 audio boards with no speaker after the model filled the
+        template with Device:R. Place the first non-simulation candidate;
+        wiring is repair's job. Simulation_* libraries are not placeable
+        parts (same taxonomy filter as Converter_ACDC).
         """
         exempt: set[str] = set()
         present_ids = {c.lib_id for c in ir.components.values()}
@@ -3450,6 +3638,13 @@ class Agent:
                 continue
             if role_already_present(hits):
                 continue
+            hits = [
+                h for h in hits
+                if not str(h.get("lib_id") or "").startswith("Simulation_")
+            ]
+            prefixes = {str(h.get("reference_prefix") or "?") for h in hits}
+            if not hits or not prefixes <= passive_prefixes:
+                continue
             # Only C-only candidate sets are rail caps we can place with a
             # known topology. Keyword lists on the role name are not used.
             if prefixes <= {"C"} and supply:
@@ -3467,8 +3662,29 @@ class Agent:
                     f"restored dropped passive role {role!r}: {ref} across {supply}/GND"
                 )
                 continue
-            exempt.add(role)
-            log.append(f"passive role {role!r} missing from IR — exempted from hard gate")
+            if prefixes <= {"R"}:
+                exempt.add(role)
+                log.append(f"passive role {role!r} missing from IR — exempted from hard gate")
+                continue
+            preferred = [
+                h for h in hits
+                if str(h.get("reference_prefix") or "") not in {"R", "C", "?"}
+            ]
+            hit = (preferred or hits)[0]
+            lid = str(hit.get("lib_id") or "")
+            prefix = (str(hit.get("reference_prefix") or "U").upper() or "U")
+            n = 1
+            while f"{prefix}{n}" in ir.components:
+                n += 1
+            ref = f"{prefix}{n}"
+            ir.add(Component(
+                ref, lid, str(p.get("value") or ""), "",
+                (role or "PASSIVE").upper()[:16],
+            ))
+            present_ids.add(lid)
+            log.append(
+                f"placed dropped passive role {role!r}: {ref} ({lid}) unwired"
+            )
         return exempt
 
     def _pattern_synthesis(
@@ -3760,10 +3976,17 @@ class Agent:
             qty = qty_by_role.get(norm(role))
             if qty is None:
                 continue
-            ids = {
-                h.get("lib_id") for h in hits
-                if h.get("lib_id") and not h.get("lib_id", "").startswith("Device:")
+            # Support passives (KiCad prefix R/C/L) may exceed the role
+            # quantity — one "resistor" line still needs several pullups.
+            # Skipping every Device:* did the same for Device:LED (prefix D),
+            # so a quantity-1 LED role kept the extra D2 repair added.
+            prefixes = {
+                str(h.get("reference_prefix") or "").upper()
+                for h in hits if h.get("lib_id")
             }
+            if prefixes and prefixes <= {"R", "C", "L"}:
+                continue
+            ids = {h.get("lib_id") for h in hits if h.get("lib_id")}
             wired = {
                 r: sum(1 for net in ir.nets for nr, _p in net.nodes if nr == r)
                 for r, c in ir.components.items() if c.lib_id in ids

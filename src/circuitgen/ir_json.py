@@ -102,6 +102,14 @@ def _apply_one(ir: CircuitIR, op: dict) -> str:
         ir.nc_pins = [n for n in ir.nc_pins if n[0] != ref]
         return f"removed {ref}"
     if kind == "connect":
+        if ref not in ir.components:
+            # Measured on the timer board: add U2 was rejected as a duplicate
+            # NE555, but connect U2.2 to TRIG still landed a net node for a
+            # part that was never placed. Conduction then treated the ghost as
+            # the other member of U1's pin, so a lonely control pin scored as
+            # working. The gate is supposed to stop this; this is the last
+            # line of defence if a connect still arrives.
+            return f"skipped connect {ref}.{op.get('pin')} — {ref} is not on the board"
         pair = (ref, str(op["pin"]))
         # a pin can live in only one net: drop stale memberships first
         for net in ir.nets:

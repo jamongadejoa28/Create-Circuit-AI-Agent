@@ -1,5 +1,6 @@
 """Part index + knowledge index (Phase 2 tool surface for the agent)."""
 
+import json
 from pathlib import Path
 
 import pytest
@@ -7,6 +8,15 @@ import pytest
 from circuitgen.knowledge import KNOWLEDGE_DIR, KnowledgeIndex, build_index as build_kn, load_entries
 from circuitgen.partindex import LibrarySource, PartIndex, build_index as build_parts
 from circuitgen.symbols import KICAD_SYMBOL_DIR
+
+_DATASHEET_DIR = Path(__file__).resolve().parent.parent / "data" / "datasheets"
+_RAG_SHEETS = ("tmp100_SBOS231I.pdf", "ne555_SLFS022K.pdf", "ams1117_ds1117.pdf")
+_HAS_RAG_SHEETS = all((_DATASHEET_DIR / name).is_file() for name in _RAG_SHEETS)
+_RAG_IDS = {
+    "tmp100-i2c-pullup-and-bypass",
+    "ne555-reset-and-control-pins",
+    "ams1117-output-cap-and-dropout",
+}
 
 pytestmark = pytest.mark.skipif(
     not KICAD_SYMBOL_DIR.exists(), reason="KiCad bundled libraries not mounted"
@@ -107,7 +117,18 @@ def test_knowledge_entries_valid():
     assert len(entries) >= 8
     ids = {e["id"] for e in entries}
     assert {"decoupling-cap-per-ic", "pullup-resistor-sizing", "led-series-resistor"} <= ids
-    assert all(e["source"].get("provenance") == "textbook" for e in entries)
+    if _HAS_RAG_SHEETS:
+        assert _RAG_IDS <= ids
+    else:
+        assert not (_RAG_IDS & ids)
+    assert all(
+        e["source"].get("provenance") in {"textbook", "datasheet"} for e in entries
+    )
+    assert all(
+        e["source"].get("pdf_page_index") is not None
+        for e in entries
+        if e["source"].get("provenance") == "datasheet"
+    )
 
 
 def test_internal_fixture_cannot_enter_production_knowledge(tmp_path):
@@ -143,6 +164,40 @@ def test_knowledge_search(tmp_path):
     # generic knowledge when two meaningful terms match.
     generic = idx.search_knowledge("AS5048A SPI encoder power decoupling")
     assert any(h["id"] == "decoupling-cap-per-ic" for h in generic)
+    if _HAS_RAG_SHEETS:
+        tmp100 = idx.search_knowledge("TMP100")
+        assert any(h["id"] == "tmp100-i2c-pullup-and-bypass" for h in tmp100), tmp100
+        ne555 = idx.search_knowledge("NE555D")
+        assert any(h["id"] == "ne555-reset-and-control-pins" for h in ne555), ne555
+
+
+def test_missing_datasheet_pdf_is_not_indexed(tmp_path):
+    textbook = (KNOWLEDGE_DIR / "passive-values.json").read_text(encoding="utf-8")
+    (tmp_path / "passive-values.json").write_text(textbook, encoding="utf-8")
+    (tmp_path / "ghost.json").write_text(
+        json.dumps(
+            [
+                {
+                    "id": "ghost-part",
+                    "type": "device_rule",
+                    "statement": "A part with no local PDF.",
+                    "tags": ["ghost"],
+                    "source": {
+                        "book": "Missing",
+                        "section": "1",
+                        "pdf_page_index": 0,
+                        "file": "definitely-absent.pdf",
+                        "provenance": "datasheet",
+                    },
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    loaded = load_entries(tmp_path)
+    ids = {e["id"] for e in loaded}
+    assert "led-series-resistor" in ids
+    assert "ghost-part" not in ids
 
 
 # ---- footprints (plan §8.2 completion) ----

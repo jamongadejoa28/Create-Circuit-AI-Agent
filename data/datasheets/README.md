@@ -4,8 +4,11 @@
 PyMuPDF로 읽어 확인할 수 있어야 합니다. 검증 불가능한 인용은 없느니만 못합니다 —
 아무도 확인하지 않은 판정을 내리게 하니까요.
 
-이 폴더의 모든 PDF는 **제조사 공식 배포본**이고, 아래 표의 URL에서 그대로 받은 것입니다.
-받은 날짜: **2026-08-11**. 전부 PyMuPDF로 열리는 것을 확인했습니다.
+이 폴더의 모든 PDF는 **제조사 공식 배포본**입니다. st.com `/resource/en/...` 는
+이 환경에서 타임아웃되므로, ST 문서는 유통사(Farnell)나 기존에 공개된 동일 문서
+사본에서 받았고, 1페이지 문서번호·개정판으로 제조사 문서임을 확인했습니다.
+받은 날짜: ESP32·G4는 **2026-08-11**, 나머지(555/LM386/MCP6001/TMP100/AMS1117/F103/H743/AN2867)는
+**2026-08-17**. 전부 PyMuPDF로 열리는 것을 확인했습니다.
 
 ## 코드에서 인용하는 법
 
@@ -33,25 +36,19 @@ PyMuPDF로 읽어 확인할 수 있어야 합니다. 검증 불가능한 인용�
 | `esp32-s3-wroom-1_wroom-1u_datasheet_en.pdf` | ESP32-S3-WROOM-1/1U, Version 1.8 | 53 | [espressif.com](https://www.espressif.com/sites/default/files/documentation/esp32-s3-wroom-1_wroom-1u_datasheet_en.pdf) |
 | `esp32-c3-mini-1_datasheet_en.pdf` | ESP32-C3-MINI-1/1U, Version 2.2 | 48 | [espressif.com](https://www.espressif.com/sites/default/files/documentation/esp32-c3-mini-1_datasheet_en.pdf) |
 | `esp32-c3-wroom-02_datasheet_en.pdf` | ESP32-C3-WROOM-02/02U, Version 1.7 | 47 | [espressif.com](https://www.espressif.com/sites/default/files/documentation/esp32-c3-wroom-02_datasheet_en.pdf) |
+| `ne555_SLFS022K.pdf` | SLFS022K (NE555 family) | 39 | [ti.com](https://www.ti.com/lit/ds/symlink/ne555.pdf) |
+| `lm386_SNAS545D.pdf` | SNAS545D | 34 | [ti.com](https://www.ti.com/lit/ds/symlink/lm386.pdf) |
+| `mcp6001_DS20001733L.pdf` | DS20001733L | 50 | [microchip.com](https://ww1.microchip.com/downloads/en/DeviceDoc/MCP6001-1R-1U-2-4-1-MHz-Low-Power-Op-Amp-DS20001733L.pdf) |
+| `tmp100_SBOS231I.pdf` | SBOS231I | 31 | [ti.com](https://www.ti.com/lit/ds/symlink/tmp100.pdf) |
+| `ams1117_ds1117.pdf` | AMS1117 ds1117 | 8 | [advanced-monolithic.com](http://www.advanced-monolithic.com/pdf/ds1117.pdf) |
+| `stm32f103x8_DS5319.pdf` | DS5319 Rev 18 | 116 | [st.com](https://www.st.com/resource/en/datasheet/stm32f103c8.pdf) — bytes via [Farnell 3770728](https://www.farnell.com/datasheets/3770728.pdf) |
+| `stm32h743_DS12110.pdf` | DS12110 Rev 10 | 357 | [st.com](https://www.st.com/resource/en/datasheet/stm32h743vi.pdf) — bytes via [Farnell 4001001](https://www.farnell.com/datasheets/4001001.pdf) |
+| `an2867_oscillator.pdf` | AN2867 DocID15287 Rev 9 | 41 | [st.com](https://www.st.com/resource/en/application_note/an2867-oscillator-design-guide-for-stm8afals-stm32-mcus-and-mpus-stmicroelectronics.pdf) — bytes via public ST copy at [hands.com](https://hands.com/~lkcl/eoma/laptop_15in/CD00221665.pdf). Latest on st.com is Rev 24; CL formula is cited from this Rev 9 copy. |
 
 칩 데이터시트와 **모듈** 데이터시트를 모두 둔 이유: 실제로 보드에 올라가는 것은 모듈인 경우가
 많고, 모듈의 전원·안테나·스트래핑 핀 요구사항은 칩 문서에 없습니다.
 
-## 아직 없는 것 — 직접 받아주셔야 합니다
-
-**st.com은 이 환경에서 자동 다운로드를 차단합니다.** 사이트 루트는 301을 주지만
-`/resource/en/...` PDF 경로는 5분을 기다려도 0바이트입니다(봇 차단). 비공식 미러로
-대체하지 않았습니다 — 공식 배포본이 아니면 인용의 근거가 되지 못합니다.
-
-브라우저로 받아서 이 폴더에 넣어주시면 됩니다:
-
-| 문서 | 왜 필요한가 | URL |
-|---|---|---|
-| STM32F103 데이터시트 | 가장 흔한 입문 MCU | [st.com](https://www.st.com/resource/en/datasheet/stm32f103c8.pdf) |
-| STM32H743 데이터시트 | 고성능 대안 | [st.com](https://www.st.com/resource/en/datasheet/stm32h743vi.pdf) |
-| AN2867 크리스탈 발진기 설계 | 크리스탈 부하 커패시터 값의 근거 | [st.com](https://www.st.com/resource/en/application_note/an2867-oscillator-design-guide-for-stm8afals-stm32-mcus-and-mpus-stmicroelectronics.pdf) |
-
-파일을 넣으신 뒤 이 표에 파일명·개정판·쪽수를 추가해 주시면 됩니다.
+Keil에서 받은 995쪽 PDF는 DS5319가 아니라 **RM0008**이었습니다. 잘못된 파일은 넣지 않습니다.
 `tests/tools/check_datasheets.py`가 폴더 전체를 열어 확인하고, 같은 문서가 두 이름으로
 들어오면 잡아냅니다.
 
