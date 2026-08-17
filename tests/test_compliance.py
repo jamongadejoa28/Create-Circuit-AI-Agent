@@ -219,6 +219,23 @@ def test_every_device_limit_carries_a_datasheet_citation():
             assert isinstance(claim["pdf_page_index"], int)
 
 
+def test_tmp100_limits_are_on_the_cited_datasheet_page():
+    from pathlib import Path
+
+    pdf = Path(__file__).resolve().parent.parent / "data" / "datasheets" / "tmp100_SBOS231I.pdf"
+    if not pdf.is_file():
+        pytest.skip("tmp100_SBOS231I.pdf is not in this checkout")
+    import fitz
+
+    doc = fitz.open(pdf)
+    page = doc[3].get_text()
+    assert "Recommended Operating Conditions" in page
+    assert "2.7" in page and "5.5" in page
+    assert "Power supply, V+" in page and "7.5" in page
+    pins = doc[2].get_text()
+    assert "Supply voltage, 2.7 V to 5.5 V" in pins
+
+
 def test_compliance_report_combines_both_checks():
     report = check_compliance(mcu_board("+5V"), SYMS, "BME280 보드")
     assert not report.ok

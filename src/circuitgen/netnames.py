@@ -45,10 +45,12 @@ _SUPPLY_PIN_PREFIXES = (
 )
 
 # The only positive-supply pin names generic enough to act on without a
-# datasheet. Anything else — VDDIO vs VDDCORE, an op-amp's V+/V-, a
-# programming VPP — needs a device rule, and guessing is how an STM32G474
-# shipped with VDD on +5V.
-UNAMBIGUOUS_SUPPLY_NAMES: frozenset[str] = frozenset({"VDD", "VCC"})
+# per-pin device rule. The part must still have exactly one of these names
+# (_supply_target): V+ on a TMP100 is the positive rail the same way VDD
+# is; V+ together with V- on an op-amp stays refused. Anything else —
+# VDDIO vs VDDCORE, a programming VPP — needs a device rule, and guessing
+# is how an STM32G474 shipped with VDD on +5V.
+UNAMBIGUOUS_SUPPLY_NAMES: frozenset[str] = frozenset({"VDD", "VCC", "V+"})
 
 # Rails the pipeline can create supply symbols for, highest first.
 STANDARD_RAILS: tuple[tuple[float, str, str], ...] = (

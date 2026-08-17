@@ -538,6 +538,80 @@ def test_a_recorded_device_within_range_is_wired():
     assert any("datasheet range confirms it" in n for n in notes)
 
 
+def test_a_lone_vplus_with_recorded_limits_is_wired():
+    """TMP100's only positive name is V+. An op-amp's V+/V- pair stays refused."""
+    from circuitgen.normalize import complete_generic_power_pins
+
+    lib = "Sensor_Temperature:TMP100"
+    sym = _sym(lib, [
+        (1, "SCL", PinType.BIDIR), (2, "GND", PinType.PWRIN),
+        (4, "V+", PinType.PWRIN), (6, "SDA", PinType.BIDIR),
+    ])
+    ir = CircuitIR("vplus")
+    ir.add(Component("U2", lib, "TMP100"))
+    notes = complete_generic_power_pins(ir, {lib: sym}, ["+3V3", "GND"])
+    assert {n.name for n in ir.nets if ("U2", "4") in n.nodes} == {"+3V3"}
+    assert {n.name for n in ir.nets if ("U2", "2") in n.nodes} == {"GND"}
+    assert any("datasheet range confirms it" in n for n in notes)
+
+
+def test_supply_pin_on_a_signal_is_detached_then_wired_when_limits_exist():
+    """Shares check_requested_rail_reach: V+ on SCL is not a rail choice."""
+    from circuitgen.normalize import (
+        complete_generic_power_pins,
+        detach_supply_pins_from_nonsupply_nets,
+    )
+
+    lib = "Sensor_Temperature:TMP100"
+    symbols = {lib: _sym(lib, [
+        (1, "SCL", PinType.BIDIR), (2, "GND", PinType.PWRIN),
+        (4, "V+", PinType.PWRIN), (6, "SDA", PinType.BIDIR),
+    ])}
+    ir = CircuitIR("miswired")
+    ir.add(Component("U2", lib, "TMP100"))
+    ir.connect("SCL", ("U2", "1"), ("U2", "4"))
+    ir.connect("GND", ("U2", "2"))
+    spec = {"power": {"rails": [
+        {"name": "+3V3", "voltage": "3.3V"},
+        {"name": "GND", "voltage": "0V"},
+    ]}}
+
+    notes = detach_supply_pins_from_nonsupply_nets(ir, symbols, spec)
+    assert any("U2.4" in n and "SCL" in n for n in notes)
+    assert not any(("U2", "4") in n.nodes for n in ir.nets)
+    assert {n.name for n in ir.nets if ("U2", "1") in n.nodes} == {"SCL"}
+
+    notes += complete_generic_power_pins(ir, symbols, ["+3V3", "GND"])
+    assert {n.name for n in ir.nets if ("U2", "4") in n.nodes} == {"+3V3"}
+
+    again = (
+        detach_supply_pins_from_nonsupply_nets(ir, symbols, spec)
+        + complete_generic_power_pins(ir, symbols, ["+3V3", "GND"])
+    )
+    assert {n.name for n in ir.nets if ("U2", "4") in n.nodes} == {"+3V3"}
+    assert {n.name for n in ir.nets if ("U2", "1") in n.nodes} == {"SCL"}
+    assert not any("disconnected" in n for n in again)
+
+
+def test_detach_does_not_second_guess_an_existing_rail():
+    from circuitgen.normalize import detach_supply_pins_from_nonsupply_nets
+
+    lib = "Vendor:CHIP"
+    symbols = {lib: _sym(lib, [
+        (1, "VDD", PinType.PWRIN), (2, "VSS", PinType.PWRIN),
+    ])}
+    ir = CircuitIR("rail")
+    ir.add(Component("U1", lib, "CHIP"))
+    ir.connect("+5V", ("U1", "1"))
+    spec = {"power": {"rails": [
+        {"name": "+3V3", "voltage": "3.3V"},
+        {"name": "GND", "voltage": "0V"},
+    ]}}
+    notes = detach_supply_pins_from_nonsupply_nets(ir, symbols, spec)
+    assert {n.name for n in ir.nets if ("U1", "1") in n.nodes} == {"+5V"}
+    assert notes == []
+
+
 def test_partially_wired_supplies_never_bridge_two_rails():
     """Some VDD pins already on +5V and the rest sent to +3V3 would short the
     rails through the die's supply bus."""

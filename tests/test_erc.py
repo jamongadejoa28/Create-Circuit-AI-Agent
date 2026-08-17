@@ -121,6 +121,24 @@ def test_pwr_flag_not_duplicated():
     assert ensure_pwr_flags(ir, SYMS) == []  # second run adds nothing
 
 
+def test_pwr_flag_is_not_added_to_a_signal_net_that_has_a_stray_supply_pin():
+    """A PWRIN on SCL is a wiring error, not a power net to silence with a flag."""
+    ir = mk([("U1", "test:MCU")])
+    ir.connect("SCL", ("U1", "1"), ("U1", "4"))  # VCC + SCL on the same signal
+    assert ensure_pwr_flags(ir, SYMS) == []
+    assert not any(c.lib_id == "power:PWR_FLAG" for c in ir.components.values())
+
+
+def test_stale_pwr_flag_on_a_signal_net_is_removed():
+    ir = mk([("U1", "test:MCU"), ("#FLG01", "power:PWR_FLAG")])
+    ir.connect("SCL", ("U1", "1"), ("U1", "4"), ("#FLG01", "1"))
+    notes = ensure_pwr_flags(ir, SYMS)
+    assert "removed:#FLG01" in notes
+    assert "#FLG01" not in ir.components
+    assert not any(("U1", "1") in n.nodes and n.name != "SCL" for n in ir.nets)
+    assert ensure_pwr_flags(ir, SYMS) == []
+
+
 # ---- extended rules (plan §8.2) ----
 
 

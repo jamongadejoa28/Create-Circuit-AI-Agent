@@ -583,3 +583,40 @@ def test_a_package_swap_does_not_make_the_role_look_missing():
     assert check("MCU_ST_STM32G4:STM32G474RETx") == []   # another package
     assert check("MCU_ST_STM32G4:STM32G431CBTx")         # different family
     assert check("Device:R")                             # not a controller
+
+
+def test_hub_joins_an_i2c_bus_that_already_has_sensor_header_and_pullup():
+    """A 4-role I2C board never crosses BLOCK_THRESHOLD, so the merge-time
+    wire_mcu_interfaces call never ran. SDA already had three members — not a
+    single-pin net — and the MCU had only supply pins on the board.
+    """
+    from circuitgen.agent import Agent
+    from circuitgen.ir import CircuitIR, Component
+    from circuitgen.partindex import PartIndex
+
+    class Refuses:
+        def complete_json(self, *a, **k):
+            raise RuntimeError("no model in this test")
+
+    agent = object.__new__(Agent)
+    agent.parts = PartIndex()
+    agent.llm = Refuses()
+
+    mcu = "MCU_ST_STM32G4:STM32G474RETx"
+    sensor = "Sensor_Temperature:TMP100"
+    ir = CircuitIR("i2c")
+    ir.add(Component("U1", mcu, "STM32G474RET6"))
+    ir.add(Component("U2", sensor, "TMP100"))
+    ir.add(Component("R3", "Device:R", "10k"))
+    ir.add(Component("J1", "Connector_Generic:Conn_01x04", "I2C"))
+    ir.connect("+3V3", ("U1", "16"), ("U2", "4"), ("R3", "2"), ("J1", "1"))
+    ir.connect("GND", ("U1", "15"), ("U2", "2"), ("J1", "4"))
+    ir.connect("SDA", ("U2", "6"), ("J1", "2"), ("R3", "1"))
+    ir.connect("SCL", ("U2", "1"), ("J1", "3"))
+
+    notes = agent._join_hub_to_i2c_buses(ir)
+    sda = next(n for n in ir.nets if n.name == "SDA")
+    scl = next(n for n in ir.nets if n.name == "SCL")
+    assert "U1" in {r for r, _ in sda.nodes}, notes
+    assert "U1" in {r for r, _ in scl.nodes}, notes
+    assert agent._join_hub_to_i2c_buses(ir) == []

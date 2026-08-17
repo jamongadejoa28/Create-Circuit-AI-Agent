@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from circuitgen.agent import Agent, request_mode
+from circuitgen.agent import Agent, repair_problem_list, request_mode
 from circuitgen.kicad_cli import KICAD_CLI
 from circuitgen.knowledge import KNOWLEDGE_DIR, KnowledgeIndex, build_index as build_kn
 from circuitgen.ir import CircuitIR, Component, PinDef, SymbolDef
@@ -312,6 +312,48 @@ def test_repair_prompt_names_the_op_that_answers_the_problem(agent_env):
     ir.connect("GND", ("R1", "2"))
     agent._repair(ir, ["power_pin_unpowered: nothing drives SIG"], {})
     assert "connect op" not in llm.prompts[-1]
+
+
+def test_repair_prompt_includes_already_gathered_knowledge(agent_env):
+    parts, knowledge, tmp = agent_env
+    llm = RecordingLLM(patches=[{"ops": []}])
+    agent = Agent(llm, parts, knowledge, tmp / "repair-kn")
+    ir = CircuitIR("kn")
+    ir.add(Component("U2", "Sensor_Temperature:TMP100", "TMP100"))
+    agent._repair_knowledge = [{
+        "id": "tmp100-i2c-pullup-and-bypass",
+        "statement": "V+ (pin 4) is 2.7 V to 5.5 V",
+    }]
+    agent._repair(ir, ["power_pin_misses_requested_rail: U2.4 (V+) is on SCL"], {})
+    prompt = llm.prompts[-1]
+    assert "KNOWLEDGE" in prompt
+    assert "tmp100-i2c-pullup-and-bypass" in prompt
+
+
+def test_repair_problem_list_uses_compliance_when_erc_is_clean():
+    from circuitgen.compliance import ComplianceReport
+    from circuitgen.ir import ValidationIssue
+    from circuitgen.pipeline import PipelineResult
+
+    pr = PipelineResult(ok=True)
+    report = ComplianceReport(issues=[
+        ValidationIssue(
+            "compliance", "power_pin_misses_requested_rail", "error",
+            "U2.4", "supply pin U2.4 (V+) is on SCL, which is not any requested rail (+3V3)",
+        )
+    ])
+    problems = repair_problem_list(pr, report)
+    assert problems and problems[0].startswith("power_pin_misses_requested_rail")
+
+    erc_pr = PipelineResult(ok=False, self_erc=[
+        ValidationIssue("circuitgen-erc", "unconnected_pin", "error", "U2.4", "pin on no net")
+    ])
+    erc_problems = repair_problem_list(erc_pr, report)
+    assert erc_problems[0].startswith("unconnected_pin")
+    assert not any("power_pin_misses_requested_rail" in p for p in erc_problems)
+
+    clean = repair_problem_list(PipelineResult(ok=True), ComplianceReport())
+    assert clean == []
 
 
 def test_rejected_repair_round_retries_with_the_gate_reason(agent_env):
@@ -1078,6 +1120,7 @@ def test_gather_injects_datasheet_knowledge_for_named_parts(agent_env):
         "parts_needed": [
             {"role": "MCU", "search_query": "STM32G474RET6", "quantity": 1},
             {"role": "TEMP_SENSOR", "search_query": "TMP100", "quantity": 1},
+            {"role": "i2c_pullup", "search_query": "resistor", "quantity": 2},
         ],
         "connections_intent": ["SDA SCL pullup", "address pins"],
     }
@@ -1087,6 +1130,7 @@ def test_gather_injects_datasheet_knowledge_for_named_parts(agent_env):
     assert "tmp100-address-pins" in ids, ids
     topics = agent._knowledge_trace[-1]["topics"]
     assert "MCU" not in topics and "TEMP_SENSOR" not in topics, topics
+    assert "resistor" not in topics, topics
     assert "select-inamp-vs-single-opamp-difference-amp" not in ids
 
 

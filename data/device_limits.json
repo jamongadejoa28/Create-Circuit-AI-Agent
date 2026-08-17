@@ -19,7 +19,7 @@
       "absolute_max_v": 4.0,
       "source": {
         "document": "STM32G474xB STM32G474xC STM32G474xE datasheet, DS12288 Rev 6",
-        "file": "DS_stm32g474ve.pdf",
+        "file": "stm32g474xB-xC-xE_DS12288_rev6.pdf",
         "claims": [
           {
             "table": "Table 14. Voltage characteristics",
@@ -32,6 +32,37 @@
             "pdf_page_index": 83,
             "printed_page": "84/236",
             "text": "VDD standard operating voltage: min 1.71 V, max 3.6 V"
+          }
+        ]
+      }
+    },
+    {
+      "match": "Sensor_Temperature:TMP100",
+      "supply_pin_prefixes": ["V+"],
+      "operating_min_v": 2.7,
+      "operating_max_v": 5.5,
+      "absolute_max_v": 7.5,
+      "source": {
+        "document": "Texas Instruments TMP100/TMP101 Temperature Sensor With I2C and SMBus Interface, SBOS231I",
+        "file": "tmp100_SBOS231I.pdf",
+        "claims": [
+          {
+            "table": "6.3 Recommended Operating Conditions",
+            "pdf_page_index": 3,
+            "printed_page": "4/31",
+            "text": "Supply voltage: min 2.7 V, max 5.5 V"
+          },
+          {
+            "table": "6.1 Absolute Maximum Ratings",
+            "pdf_page_index": 3,
+            "printed_page": "4/31",
+            "text": "Power supply, V+: max 7.5 V"
+          },
+          {
+            "table": "Pin Functions",
+            "pdf_page_index": 2,
+            "printed_page": "3/31",
+            "text": "V+ pin 4: Supply voltage, 2.7 V to 5.5 V"
           }
         ]
       }

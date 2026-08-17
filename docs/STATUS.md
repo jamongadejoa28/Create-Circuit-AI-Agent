@@ -3,7 +3,7 @@
 > 다른 `docs/*.md`는 역사 기록이다. 새 계획 파일을 만들지 않는다.
 > 판정 기준: [`working-rules.md`](working-rules.md).
 
-갱신: 2026-08-17 · 제조사 데이터시트 RAG. 1–5번 캠페인 연마는 멈춤.
+갱신: 2026-08-17 · MCU를 I2C 버스에 올리고 Capacitor:Cap_0603이 8핀 IC가 되지 않게. 1–5번 연마는 멈춤.
 
 ## 제품
 
@@ -16,9 +16,7 @@ PCB 배치·동박·DRC와 QLoRA는 하지 않는다.
 고정 입력: `tests/eval/sequential_campaign_v1.json`.
 실행기: `tests/benchmarks/run_sequential_campaign.py`.
 
-최신 측정: `ko-step-013-symbol-qty-s{1,2,3}`. 직전: `ko-step-012-place-passives-s{1,2,3}`.
-010은 스키마 상한 8 시도(되돌림). 기준: `ko-step-006-catalog-bind`.
-점수 변화로 개선을 주장하지 않는다.
+최신 측정: `ko-step-016-i2c-hub-s2` (6번까지, seed 2). 직전: `ko-step-015-rail-reach-s2`.
 
 ### 리페어 루프가 아무것도 배선하지 않고 있었다
 
@@ -170,24 +168,109 @@ IR이 같아진다. `apply_patch`도 없는 ref의 connect를 쓰지 않는다.
   (이 변경은 오디오 경로를 안 건드림). seed 3는 schematic=None (풋프린트
   Package:Speaker / LEMO2 실패 로그). 스피커·포트는 보드에 있음.
 
+## 전원 핀이 신호망에 있으면 ERC가 0이 되던 것
+
+6번 seed 1 (`ko-step-014-knowledge-rag-s1`): 선정 부품 U1 `STM32G474RETx` +
+U2 `TMP100` 있음. J1 1x4는 +3V3/SDA/SCL/GND. R3·R4 10k가 SDA·SCL을 +3V3로
+당김. 데이터시트 권장은 5 kΩ — 4.7 kΩ(R1/R2)는 +3V3–GND에만 있고 버스가
+아니다. U2.4(V+)가 SCL, U2.3(ADD1)이 SDA, U2.5(ADD0)만 GND. TMP100 전용
+바이패스 없음. MCU 쪽 100 nF/10 nF/1 µF/4.7 µF는 기존 DS12288 정규화.
+knowledge_trace에 `tmp100-i2c-pullup-and-bypass`, `tmp100-address-pins`,
+`stm32g474-vdd-vdda-decoupling` 주입. 7B가 그걸 배선으로 옮기지는 못했다.
+
+U2.4가 SCL 위에 있고, `ensure_pwr_flags`가 SCL에 PWR_FLAG를 붙였다.
+self-ERC 0 → 리페어 루프는 `while not pr.ok`라서 한 번도 안 돌았다.
+`check_requested_rail_reach`는 그 뒤에야 `power_pin_misses_requested_rail`을
+보고했다. 검사기와 수정기가 같은 정의를 공유하지 않은 구멍(규칙 4).
+TMP100/케이스 특례로 V+를 옮기지 않는다.
+
+고친 것:
+
+- `ensure_pwr_flags`는 보드 공급 넷(이름 `is_supply`/`is_ground`, 또는
+  `power:*` 심볼. PWR_FLAG는 증거로 안 친다)에만 깃발을 단다. 신호망에 이미
+  붙은 깃발은 제거한다.
+- `detach_supply_pins_from_nonsupply_nets`가 같은
+  `check_requested_rail_reach` 기록을 보고, 보드 공급이 아닌 넷에서 PWRIN을
+  떼어 미연결로 둔다. 기존 `complete_generic_power_pins`가 인용된 전압 범위가
+  있으면 로직 레일에 붙인다. 이미 `+5V` 같은 레일 위에 있으면 안 옮긴다
+  (`test_generic_completion_never_overrides_an_existing_connection`과 같음).
+- `UNAMBIGUOUS_SUPPLY_NAMES`에 단독 `V+`를 넣는다. V+/V- 쌍은 이름 두 개라
+  기존처럼 거부.
+- `data/device_limits.json`에 TMP100 2.7–5.5 V / abs 7.5 V
+  (SBOS231I §6.3·§6.1, pdf 페이지 인덱스 3). STM32 항목의 `file`은 실제 파일명
+  `stm32g474xB-xC-xE_DS12288_rev6.pdf`로 맞춤.
+- ERC가 깨끗해도 compliance 에러가 있으면 리페어가 돌아간다. 합성에서 모은
+  KNOWLEDGE 스니펫을 리페어 프롬프트에도 넣는다.
+
+### 015 seed 2 6번 회로 사실 (`ko-step-015-rail-reach-s2`)
+
+실행기 exit 3은 1·2·4·5번 vs 014 baseline 회귀 카운트다. 1–5번을 고치러 가지 않는다.
+
+- 선정 부품 보드에 있음: U1 `MCU_ST_STM32G4:STM32G474RETx`, U2 `Sensor_Temperature:TMP100`.
+- U2.4(V+)는 **+3V3**, U2.2 GND. `supply_rail_reach_mismatches` 0.
+  로그에 `disconnected U2.4 from SCL`이 없다 — 이 시드는 모델이 V+를 레일에
+  둔 것으로 본다. detach 패스가 이 보드에서 발동했다고 주장하지 않는다.
+  PWR_FLAG는 +3V3·GND에만 있다 (SCL 없음).
+- U2.1 SCL, U2.6 SDA, J1 1=+3V3 / 2=SDA / 3=SCL / 4=GND.
+  ADD1(U2.3)·ADD0(U2.5)는 둘 다 GND (SBOS231I Table 2의 1001000).
+- **SDA/SCL 넷에 U1 핀이 없다.** TMP100·헤더·10k 풀업(R3/R4)만 버스에 있다.
+  MCU는 전원만 연결. `role_working` 4/4는 이 사실과 별개다.
+- R1/R2 4.7k는 또 +3V3–GND에만 있다 (버스 풀업 아님).
+- 모델이 `Capacitor:Cap_0603`을 썼고 `resolve_unknown_symbols`가
+  `Power_Management:CAP006DG`(8핀)로 바꿨다. 리페어가 그 핀을 GND/+3V3에
+  던졌다. C5.8·C6.4/5/7/8은 여전히 미연결 → compliance
+  `component_does_no_work` 2건, stage=`repair-3`, self-ERC 6, kicad 5.
+  단락 op 게이트는 다시 넣지 않는다.
+- knowledge 주입: `tmp100-i2c-pullup-and-bypass`, `tmp100-address-pins`,
+  `stm32g474-vdd-vdda-decoupling`. `resistor-e24-series`/`e12-series`도
+  슬롯을 쓴다 (토픽 `resistor`).
+
+### MCU가 I2C에 없고 커패시터가 8핀 IC가 되던 것
+
+`wire_mcu_interfaces`는 블록 머지 뒤에만 돌았다. 역할 4개인 I2C 보드는
+`BLOCK_THRESHOLD=5` 아래라 단일 합성이고, SDA는 센서·헤더·풀업 세 멤버라
+`alone`(1핀 넷)에도 안 걸렸다. 허브 연결은 `erc.is_i2c_net`(풀업 검사기와
+같은 정의)으로 카탈로그를 만들고 `extra_alone=False`로 기존 패스를 호출한다.
+어떤 GPIO가 I2C1_SDA인지는 AF 표 문제라 이 패스가 답하지 않는다. PB6/PB7
+특례 없음.
+
+`Capacitor:Cap_0603`은 Device:C가 FTS 히트가 아니라 `CAP006DG`가 됐다.
+전사 모드는 이미 IEEE 315 R/C/L을 Device:R/C/L에 묶는다. 설계 모드
+`resolve_unknown_symbols`에도 같은 제네릭을 후보로 넣는다. 핀 8을 쓴 C1은
+Device:C가 못 받아 거부.
+
+지식 토픽: `search_query`가 공백 없는 partish 토큰일 때만 (TMP100,
+STM32G474RET6). `resistor`는 넣지 않는다.
+
+### 016 seed 2 6번 회로 사실 (`ko-step-016-i2c-hub-s2`)
+
+실행기 exit 3은 2·5번 vs 015 회귀 카운트. 1–5번을 고치러 가지 않는다.
+
+- 선정 부품 있음. C1–C6는 로그 `Capacitor:Cap_0603 -> Device:C`. CAP006DG 없음.
+- 로그 `wired U1.2 to dangling interface net SCL`, `wired U1.3 … SDA`.
+  SDA: J1.2, R3.1, U1.3, U2.3, U2.6. SCL: J1.3, R4.1, U1.2, U2.1.
+  U1이 버스에 있다. 핀 번호 2·3이 I2C AF인지는 이 패스가 보장하지 않는다.
+- U2.4 V+ = +3V3, U2.2 GND. ADD0(U2.5)=GND. **ADD1(U2.3)이 SDA 위** —
+  주소 핀이 데이터 버스에 있다.
+- J1 1=+3V3 / 2=SDA / 3=SCL / 4=GND. R3·R4 10k 버스 풀업.
+  R1·R2 4.7k는 또 +3V3–GND만. knowledge 주입 tmp100 세 개. 토픽에 `resistor` 없음.
+- stage=`done`, self-ERC 0, kicad 0, compliance error 0, dead 없음.
+  `wired_ratio` 0.5. 점수 자랑으로 쓰지 않는다.
+
 ## 제품 규칙
 
 - verified: `data/rules/ldo_linear_regulator.json` 하나
 - draft: I2C 풀업, USB-C sink CC — 승격 금지
 - 지식: `data/knowledge/manufacturer-datasheets.json` (provenance `datasheet`, pdf 페이지 인덱스 필수)
+- 전압 한도: `data/device_limits.json` — STM32G474, TMP100 (SBOS231I)
 
 ## 다음 작업 (규칙 9)
 
-1. RAG 검색은 붙는다 (`ko-step-014-knowledge-rag-s1` 6번 knowledge_trace:
-   `tmp100-i2c-pullup-and-bypass`, `tmp100-address-pins`,
-   `stm32g474-vdd-vdda-decoupling` 주입). 7B가 그걸 배선으로 옮기지는 못했다.
-2. 6번 seed 1 회로 사실: 선정 부품 U1 `STM32G474RETx` + U2 `TMP100` 있음.
-   J1 1x4는 +3V3/SDA/SCL/GND. R3·R4 10k가 SDA·SCL을 +3V3로 당김.
-   데이터시트 권장은 5 kΩ — 4.7 kΩ(R1/R2)는 +3V3–GND에만 있고 버스가 아니다.
-   U2.4(V+)가 SCL, U2.3(ADD1)이 SDA, U2.5(ADD0)만 GND. TMP100 전용 바이패스 없음.
-   MCU 쪽 100 nF/10 nF/1 µF/4.7 µF는 기존 DS12288 정규화.
-3. 다음 측정은 seed 2·3의 6번, 또는 7번 이후. V+를 SCL에 올린 것을 케이스
-   특례 코드로 고치지 않는다. 1–5번 연마로 돌아가지 않는다.
+1. 6번 seed 2에서 MCU는 SDA/SCL에 있다. 남은 전기 사실: ADD1이 SDA에 있다.
+   TMP100 주소 핀 특례로 고치지 않는다.
+2. 다음 측정: seed 3, 또는 7번(W25Q32JVSS SPI). SPI는 `is_i2c_net` 같은
+   공유 검사기가 없다.
+3. `connections_intent` 문장 전체가 지식 토픽으로 남는다. 1–5번 연마 금지.
 4. SchGen 격리, QLoRA 없음.
 
 ## 데이터·학습

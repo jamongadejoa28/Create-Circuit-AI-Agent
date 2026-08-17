@@ -55,6 +55,38 @@ KNOWLEDGE_PER_TOPIC = 2
 BLOCK_THRESHOLD = 5  # parts_needed roles at/above which block decomposition kicks in
 
 
+def repair_problem_list(pr, compliance: ComplianceReport | None = None) -> list[str]:
+    """What the next repair round is asked to fix.
+
+    Pipeline ERC first. When that is clean, the same compliance inspector
+    that used to run only after the loop — otherwise an ERC-0 board with a
+    supply pin on SCL never entered repair (rule 4: inspector and fixer
+    share the definition).
+    """
+    problems = [
+        f"{i.rule}: {i.message}"[:180]
+        for i in pr.self_erc
+        if i.severity == "error"
+    ]
+    problems += [e[:200] for e in pr.errors if not e.startswith("self ERC errors")]
+    if not problems:
+        problems += [
+            f"{i.rule}: {i.message}"[:180]
+            for i in pr.self_erc
+            if i.severity == "warning"
+        ]
+    if not pr.ok:
+        return problems
+    extra = []
+    if compliance is not None:
+        extra = [
+            f"{i.rule}: {i.message}"[:180]
+            for i in compliance.issues
+            if i.severity == "error"
+        ]
+    return extra if extra else problems
+
+
 def request_mode(prompt: str) -> str:
     """Separate exact transcription from design using connection structure.
 
@@ -293,6 +325,7 @@ class Agent:
         # None = auto-approve, recorded as such in the audit log (§12)
         self.approve_requirements = approve_requirements
         self._knowledge_trace: list[dict] = []
+        self._repair_knowledge: list[dict] = []
 
     # ---- stage 1: requirements ----
 
@@ -994,7 +1027,10 @@ class Agent:
         topics: list[str] = []
         for need in spec.get("parts_needed", []):
             value = str(need.get("search_query") or "").strip()
-            if value:
+            # Generic class words ("resistor", "header") fill the 6-snippet
+            # cap with e12/e24 noise. Ordering codes have letters and digits
+            # and no spaces (TMP100, STM32G474RET6).
+            if value and " " not in value and _partish_token(value.lower()):
                 topics.append(value)
         topics.extend(
             str(intent) for intent in spec.get("connections_intent", [])[:4]
@@ -1043,6 +1079,12 @@ class Agent:
                     snippets.append(hit)
         snippets = snippets[:6]
         injected = {hit["id"] for hit in snippets}
+        seen_repair = {hit["id"] for hit in self._repair_knowledge}
+        for hit in snippets:
+            if hit["id"] not in seen_repair:
+                seen_repair.add(hit["id"])
+                self._repair_knowledge.append(hit)
+        self._repair_knowledge = self._repair_knowledge[:6]
         self._knowledge_trace.append(
             {
                 "topics": topics,
@@ -1605,7 +1647,9 @@ class Agent:
             f"by {best_id} with {best_io}; {moved} pins carried across by name"
         )
 
-    def wire_mcu_interfaces(self, ir: CircuitIR, catalog: list[dict]) -> list[str]:
+    def wire_mcu_interfaces(
+        self, ir: CircuitIR, catalog: list[dict], *, extra_alone: bool = True
+    ) -> list[str]:
         """Connect dangling interface nets to free MCU pins.
 
         Measured pattern (golden guard cycles): blocks complete internally
@@ -1613,6 +1657,11 @@ class Agent:
         single-pin. Deterministic code computes the dangling-net and
         free-pin lists; a single tightly-scoped LLM call only maps
         net→pin (round-robin fallback if it fails).
+
+        `extra_alone` is the original behaviour: also offer single-pin
+        signal nets. I2C buses already have a sensor, a header and a
+        pull-up, so they are never "alone"; the single-circuit path
+        therefore passes extra_alone=False and a catalog from is_i2c_net.
         """
         symbols = self._resolve_symbols(ir)
         hub = None
@@ -1671,7 +1720,7 @@ class Agent:
             # or read.
             if etype in ("INPUT", "OUTPUT", "BIDIR", "OPENCOLL", "OPENEMIT"):
                 alone.append(net.name)
-        if alone:
+        if extra_alone:
             dangling += alone
         if not dangling:
             return []
@@ -1804,6 +1853,26 @@ class Agent:
                 + (" ..." if len(remaining) > 8 else "")
             )
         return notes
+
+    def _join_hub_to_i2c_buses(self, ir: CircuitIR) -> list[str]:
+        """Put the hub on every I2C net the pull-up checker already knows.
+
+        `wire_mcu_interfaces` only ran after block merge, and only for nets
+        named in the plan. A 4-role I2C board never crosses that threshold,
+        so SDA/SCL could hold the sensor, the header and a pull-up while the
+        MCU had power pins only. The net test is `erc.is_i2c_net` — the same
+        one `ensure_i2c_pullups` uses. Which GPIO is I2C1_SDA is an AF
+        question this pass does not answer; it asks for a free I/O pin.
+        """
+        from .erc import is_i2c_net
+
+        symbols = self._resolve_symbols(ir)
+        catalog = [
+            {"net": net.name} for net in ir.nets if is_i2c_net(ir, symbols, net)
+        ]
+        if not catalog:
+            return []
+        return self.wire_mcu_interfaces(ir, catalog, extra_alone=False)
 
     def resolve_pin_names(self, ir: CircuitIR) -> list[str]:
         """Rewrite pin NAMES used where numbers belong ('D1.A' → 'D1.2').
@@ -2413,11 +2482,13 @@ class Agent:
                 "Your previous patch was rejected — do not repeat it: "
                 + json.dumps(feedback[:6], ensure_ascii=False)
             )
+        knowledge = (self._repair_knowledge or [])[:6]
         content = (
             "\n".join(instructions) + "\n"
             + f"PROBLEMS: {json.dumps(shown, ensure_ascii=False)}\n\n"
             f"CURRENT_IR: {json.dumps(view, ensure_ascii=False)}\n\n"
             f"CANDIDATES: {json.dumps(slim, ensure_ascii=False)}"
+            + (f"\n\nKNOWLEDGE: {json.dumps(knowledge, ensure_ascii=False)}" if knowledge else "")
         )
         patch = _with_retry(lambda: self.llm.complete_json(
             [{"role": "system", "content": _SYSTEM}, {"role": "user", "content": content}],
@@ -2448,6 +2519,7 @@ class Agent:
             )
         rec = RunRecord(self.out_dir)
         self._knowledge_trace = []
+        self._repair_knowledge = []
         rec.set("prompt", prompt)
         rec.set("name", name)
         project = Path(__file__).resolve().parents[2]
@@ -2831,6 +2903,7 @@ class Agent:
         synth_nets = connection_set(ir)
         synth_nc = nc_set(ir)
         res.log.extend(self._normalize(ir, spec, prompt))
+        res.log.extend(self._join_hub_to_i2c_buses(ir))
         res.log.extend(self._limit_main_device_copies(ir, ctx.get("candidates", {}), spec))
         res.stage = "pipeline"
         pr = self._generate(ir, name)
@@ -2844,20 +2917,27 @@ class Agent:
         # only once the same problems come back with nothing new to say.
         pending_feedback: list[str] = []
         sent_feedback: list[str] = []
-        while not pr.ok and rounds < MAX_REPAIRS:
+        while rounds < MAX_REPAIRS:
             # Individual issues, each truncated — pipeline.errors joins ALL
             # self-ERC errors into one string, and a board once produced a
             # 10k-char blob that no list cap could contain.
-            problems = [
-                f"{i.rule}: {i.message}"[:180]
-                for i in pr.self_erc
-                if i.severity == "error"
-            ]
-            problems += [e[:200] for e in pr.errors if not e.startswith("self ERC errors")]
+            compliance_now = None
+            if pr.ok:
+                compliance_now = check_compliance(
+                    ir, self._resolve_symbols(ir), prompt, self.parts, spec,
+                    ctx.get("candidates") or {},
+                )
+            problems = repair_problem_list(pr, compliance_now)
+            # ERC-clean and requirement-clean: do not spend rounds on warnings.
+            if pr.ok and (compliance_now is None or compliance_now.ok):
+                break
             if not problems:
-                # KiCad-only violations with no self-ERC error: give the
-                # model our warnings as the best available localization.
-                problems += [f"{i.rule}: {i.message}"[:180] for i in pr.self_erc if i.severity == "warning"]
+                break
+            if pr.ok and compliance_now is not None and not compliance_now.ok:
+                res.log.append(
+                    f"pipeline ERC clean; {sum(1 for i in compliance_now.issues if i.severity == 'error')} "
+                    "compliance error(s) still in play"
+                )
             if problems == last_problems and pending_feedback == sent_feedback:
                 res.log.append("same problems twice — stopping auto-repair")
                 break
@@ -2930,6 +3010,7 @@ class Agent:
             # patches may use pin names, introduce new lib_ids, invalid
             # footprints, or rail nets that still need their supply symbol
             res.log.extend(self._normalize(ir, spec, prompt))
+            res.log.extend(self._join_hub_to_i2c_buses(ir))
             pr = self._generate(ir, name)
             res.pipeline = pr
 
@@ -3351,6 +3432,7 @@ class Agent:
         from .normalize import (
             complete_generic_power_pins,
             complete_known_device_pins,
+            detach_supply_pins_from_nonsupply_nets,
             ensure_dc_power_entry,
             ensure_i2c_pullups,
             ensure_relay_flyback,
@@ -3413,6 +3495,11 @@ class Agent:
         # J1 Pin 1, U1 Pin 3, C1 Pin 1" said what the circuit is, and adding
         # to it is contradicting them, not helping.
         if not transcribed:
+            # A PWRIN on SCL is not a rail choice — take it off so the
+            # attach passes below can join it to the requested logic rail
+            # when the part has a cited voltage range. Shares
+            # check_requested_rail_reach with the compliance inspector.
+            notes += detach_supply_pins_from_nonsupply_nets(ir, syms(), spec)
             notes += complete_known_device_pins(ir, syms(), rails)
             # the residual of that device table: supply pins on parts nobody
             # wrote a rule for. A 7B left 28 of a 132-pin MCU's supply pins

@@ -10,6 +10,7 @@ from .netnames import (
     UNAMBIGUOUS_SUPPLY_NAMES,
     is_ground,
     is_ground_pin,
+    is_supply,
     logic_rail,
     supply_voltage,
 )
@@ -587,6 +588,10 @@ def ensure_pwr_flags(
     for net in ir.nets:
         has_power_in = False
         has_power_out = False
+        flags = [
+            r for r, _ in net.nodes
+            if r in ir.components and ir.components[r].lib_id == PWR_FLAG_LIB_ID
+        ]
         for ref, pin_no in net.nodes:
             comp = ir.components.get(ref)
             if comp is None or comp.lib_id not in symbols:
@@ -601,6 +606,17 @@ def ensure_pwr_flags(
                 has_power_in = True
             elif etype == PinType.PWROUT:
                 has_power_out = True
+        # A PWRIN parked on SCL is not a power net. Flagging it made KiCad
+        # and self-ERC report 0, so the repair loop never ran, while
+        # check_requested_rail_reach still saw the pin missing the rail.
+        if not net_carries_board_supply(ir, net):
+            if flags:
+                drop = set(flags)
+                net.nodes = [node for node in net.nodes if node[0] not in drop]
+                for ref in drop:
+                    ir.components.pop(ref, None)
+                added.extend(f"removed:{ref}" for ref in sorted(drop))
+            continue
         if has_power_in and not has_power_out:
             if only_nets is not None and net.name not in only_nets:
                 continue
@@ -764,6 +780,61 @@ def mark_documented_no_connects(
     return notes
 
 
+def net_carries_board_supply(ir: CircuitIR, net) -> bool:
+    """True when this net is a board rail, not a signal with a PWRIN on it.
+
+    A power:PWR_FLAG is not evidence — it is the thing ensure_pwr_flags
+    decides whether to add. Measured: TMP100 V+ landed on SCL, a flag
+    followed, self-ERC went to 0, and repair never ran.
+    """
+    if is_ground(net.name) or is_supply(net.name):
+        return True
+    for ref, _ in net.nodes:
+        comp = ir.components.get(ref)
+        if comp is None:
+            continue
+        if comp.lib_id.startswith("power:") and comp.lib_id != PWR_FLAG_LIB_ID:
+            return True
+    return False
+
+
+def detach_supply_pins_from_nonsupply_nets(
+    ir: CircuitIR, symbols: dict[str, SymbolDef], spec: dict | None
+) -> list[str]:
+    """Take device PWRIN pins off nets that are not board supplies.
+
+    Shares ``check_requested_rail_reach`` with the compliance inspector
+    (rule 4). Does not move a pin that is already on a named or symbol
+    supply — that rail choice is left for the checker to report, matching
+    complete_generic_power_pins. The pin is left unconnected so the
+    existing attach pass can join it to the logic rail when the part has
+    a cited voltage range.
+    """
+    from .compliance import check_requested_rail_reach
+
+    _issues, records = check_requested_rail_reach(ir, symbols, spec)
+    notes: list[str] = []
+    for rec in records:
+        if rec["match"] or rec["reason"] not in ("signal_or_other", "not_requested_rail"):
+            continue
+        net_name = rec["net"]
+        if not net_name:
+            continue
+        net = next((n for n in ir.nets if n.name == net_name), None)
+        if net is None or net_carries_board_supply(ir, net):
+            continue
+        node = (rec["reference"], rec["pin"])
+        for n in ir.nets:
+            n.nodes = [nd for nd in n.nodes if nd != node]
+        notes.append(
+            f"disconnected {rec['reference']}.{rec['pin']} "
+            f"({rec['pin_name'] or 'power input'}) from {net_name} — "
+            f"a supply pin was on a net that is not a board rail"
+        )
+    ir.nets = [n for n in ir.nets if n.nodes]
+    return notes
+
+
 def complete_generic_power_pins(
     ir: CircuitIR, symbols: dict[str, SymbolDef], rails: list[str]
 ) -> list[str]:
@@ -781,10 +852,10 @@ def complete_generic_power_pins(
       VSSX) — matching GROUND_NAMES exactly would classify those as positive
       supplies and short the rail to ground.
     - the remaining unconnected supply pins go to the logic rail ONLY when
-      the part has exactly one distinct positive-supply name and it is VDD or
-      VCC. A part with VDD+VDDX, or an op-amp with V+/V-, is left alone: its
-      pins stay unconnected, which self-ERC and the compliance gate both
-      report loudly.
+      the part has exactly one distinct positive-supply name and it is in
+      UNAMBIGUOUS_SUPPLY_NAMES (VDD, VCC, or a lone V+). A part with
+      VDD+VDDX, or an op-amp with V+/V-, is left alone: its pins stay
+      unconnected, which self-ERC and the compliance gate both report loudly.
     """
     from .compliance import load_device_limits
 
@@ -1168,6 +1239,11 @@ def resolve_unknown_symbols(
             return None
         return (sym.reference_prefix or "").upper(), len(sym.pins)
 
+    # IEEE 315 R/C/L — transcription already binds these. Design-mode
+    # fabricated names (Capacitor:Cap_0603) are not search hits for Device:C,
+    # so FTS ranked an 8-pin power IC (CAP006DG) that merely *has* pins 1 and 2.
+    ieee_passive = {"R": "Device:R", "C": "Device:C", "L": "Device:L"}
+
     for ref, comp in sorted(ir.components.items()):
         if comp.lib_id.startswith(CONCEPTUAL):
             continue
@@ -1192,6 +1268,14 @@ def resolve_unknown_symbols(
             prefix, n_pins = meta
             mismatch = 0 if ref_prefix and prefix == ref_prefix else 1
             scored.append((mismatch, n_pins, 0, rank, lib_id))
+        generic = ieee_passive.get(ref_prefix)
+        if generic and generic not in seen:
+            meta = carries(generic, want)
+            if meta is not None:
+                seen.add(generic)
+                prefix, n_pins = meta
+                mismatch = 0 if ref_prefix and prefix == ref_prefix else 1
+                scored.append((mismatch, n_pins, 0, -1, generic))
         for rank, hit in enumerate(parts.search_parts(name, 8)):
             lib_id = hit.get("lib_id")
             if not lib_id or lib_id in seen:

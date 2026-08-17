@@ -124,6 +124,36 @@ def test_unknown_symbol_prefers_a_stem_matched_requested_part():
     assert ir2.components["D1"].lib_id == "Device:D_Schottky"
 
 
+def test_unknown_capacitor_becomes_device_c_not_an_eight_pin_ic():
+    """Measured: Capacitor:Cap_0603 ranked Power_Management:CAP006DG because
+    that IC has pins 1 and 2 and Device:C is not an FTS hit for Cap_0603.
+    Transcription already binds IEEE 315 C to Device:C; design mode did not.
+    """
+    from circuitgen.normalize import resolve_unknown_symbols
+    from circuitgen.partindex import PartIndex
+
+    parts = PartIndex()
+    ir = CircuitIR("cap")
+    ir.add(Component("C1", "Capacitor:Cap_0603", "100nF"))
+    ir.connect("+3V3", ("C1", "1"))
+    ir.connect("GND", ("C1", "2"))
+    notes = resolve_unknown_symbols(ir, parts)
+    assert ir.components["C1"].lib_id == "Device:C", notes
+    assert resolve_unknown_symbols(ir, parts) == []
+
+
+def test_ieee_passive_generic_is_refused_when_the_used_pins_do_not_fit():
+    from circuitgen.normalize import resolve_unknown_symbols
+    from circuitgen.partindex import PartIndex
+
+    parts = PartIndex()
+    ir = CircuitIR("notcap")
+    ir.add(Component("C1", "Capacitor:Cap_0603", "100nF"))
+    ir.connect("SIG", ("C1", "8"))
+    resolve_unknown_symbols(ir, parts)
+    assert ir.components["C1"].lib_id != "Device:C"
+
+
 def test_a_placeholder_beside_the_real_part_is_removed():
     """Measured on a real 4-motor board: a second STM32G474 appeared as
     Conceptual:STM32G474 next to the real MCU_ST_STM32G4:STM32G474CBTx.
