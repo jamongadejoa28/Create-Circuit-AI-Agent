@@ -1954,7 +1954,10 @@ class Agent:
                     if (r, number) not in expanded:
                         expanded.append((r, number))
             net.nodes = expanded
+        from .normalize import drop_unknown_pins, rewrite_anonymous_header_contacts
+        notes += rewrite_anonymous_header_contacts(ir, symbols)
         ir.nc_pins = [(r, fix(r, str(p))) for r, p in ir.nc_pins]
+        notes += drop_unknown_pins(ir, symbols)
         # Block synthesis frequently marks all unused pins NC, then the merge
         # or MCU-interface pass connects a subset.  Connected always wins.
         before = len(ir.nc_pins)
@@ -2208,13 +2211,73 @@ class Agent:
                     sym = self.parts.load_symbols([lib_id])[lib_id]
                 except Exception:
                     return None
-            try:
-                sym.pin(str(pin))
-            except KeyError:
+            if not sym.has_pin(str(pin)):
                 return ", ".join(p.number for p in sym.pins)
             return None
 
-        kept, notes = [], []
+        kept: list[dict] = []
+        notes: list[str] = []
+        claimed: dict[str, set[str]] = {}
+
+        def occupy(ref: str, pin: str) -> None:
+            claimed.setdefault(ref, set()).add(str(pin))
+
+        claimed_on_net: dict[tuple[str, str], str] = {}
+
+        def occupied_contacts(ref: str, lib_id: str) -> set[str]:
+            sym = symbols.get(lib_id)
+            if sym is None:
+                return set(claimed.get(ref, ()))
+            real = {p.number for p in sym.visible_contacts()}
+            used = {str(p) for net in ir.nets for r, p in net.nodes if r == ref}
+            used |= claimed.get(ref, set())
+            return used & real
+
+        def bind_anonymous_connect(ref: str, lib_id: str, op: dict) -> bool:
+            """Rewrite a nameless-header pin token onto a free contact.
+
+            Same `anonymous_header_contact` the normalize pass uses. Returns
+            True when the op now names a real pin (original or rewritten).
+            """
+            from .normalize import anonymous_header_contact, header_contact_on_net
+
+            pin = str(op.get("pin", ""))
+            net_name = str(op.get("net", ""))
+            missing = absent_pin(lib_id, pin)
+            if missing is None:
+                occupy(ref, pin)
+                if op.get("op") == "connect" and net_name:
+                    claimed_on_net[(ref, net_name)] = pin
+                return True
+            if op.get("op") != "connect":
+                return False
+            sym = symbols.get(lib_id)
+            if sym is None:
+                try:
+                    sym = self.parts.load_symbols([lib_id])[lib_id]
+                except Exception:
+                    return False
+            numbers = {p.number for p in sym.visible_contacts()}
+            already = header_contact_on_net(ir, ref, net_name, numbers)
+            already = already or claimed_on_net.get((ref, net_name))
+            comp = ir.components.get(ref) or Component(ref, lib_id, "")
+            bound = anonymous_header_contact(
+                comp, sym, pin, occupied_contacts(ref, lib_id),
+                {**symbols, lib_id: sym},
+                already_on_net=already,
+            )
+            if not bound:
+                return False
+            notes.append(
+                f"rewrote connect {ref}.{pin} -> pin {bound} "
+                f"(anonymous header contact)"
+            )
+            op["pin"] = bound
+            occupy(ref, bound)
+            if net_name:
+                claimed_on_net[(ref, net_name)] = bound
+            return True
+
         for op in ops:
             kind = op.get("op")
             ref = op.get("ref", "")
@@ -2224,8 +2287,8 @@ class Agent:
                     # legitimate second half of that addition (ops are
                     # filtered before any is applied)
                     have = pending_lib.get(ref)
-                    numbers = absent_pin(have, op.get("pin", "")) if have else None
-                    if numbers is not None:
+                    if have and not bind_anonymous_connect(ref, have, op):
+                        numbers = absent_pin(have, op.get("pin", ""))
                         notes.append(
                             f"rejected op: {kind} {ref}.{op.get('pin')} — {have} has no "
                             f"such pin ({numbers})"
@@ -2237,8 +2300,8 @@ class Agent:
                 continue
             if kind in ("connect", "disconnect", "set_nc") and ref in ir.components:
                 comp_lib = ir.components[ref].lib_id
-                numbers = absent_pin(comp_lib, op.get("pin", ""))
-                if numbers is not None:
+                if not bind_anonymous_connect(ref, comp_lib, op):
+                    numbers = absent_pin(comp_lib, op.get("pin", ""))
                     notes.append(
                         f"rejected op: {kind} {ref}.{op.get('pin')} — {comp_lib} has no "
                         f"such pin ({numbers})"
@@ -3423,6 +3486,7 @@ class Agent:
             sanitize_known_device_nets,
             unify_stacked_pins,
             join_hub_to_i2c_buses,
+            detach_capacitors_across_i2c_lines,
         )
 
         notes: list[str] = []
@@ -3490,6 +3554,7 @@ class Agent:
             logic = logic_rail(rails)
             if logic:
                 notes += ensure_i2c_pullups(ir, syms(), logic)
+            notes += detach_capacitors_across_i2c_lines(ir, syms(), logic)
             notes += join_hub_to_i2c_buses(ir, syms())
         else:
             # In transcription mode, symbol-declared NOCONNECT pins must still be marked

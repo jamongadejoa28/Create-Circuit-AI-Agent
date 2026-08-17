@@ -123,3 +123,27 @@ def resolve_function_ending(
         if found:
             return found
     return None
+
+
+def pin_carries_function_ending(
+    lib_id: str, symbol: SymbolDef, pin: str, suffix: str, path: str = ""
+) -> bool:
+    """Whether this package pin is recorded as `suffix` or `*_suffix`.
+
+    The join pass and the compliance checker share this so a GPIO on SDA
+    cannot look like a working I2C hub.
+    """
+    device = device_for(lib_id, path)
+    if device is None:
+        return False
+    try:
+        port = symbol.pin(str(pin)).name
+    except KeyError:
+        return False
+    pins = device.get("pins") or {}
+    entry = pins.get(port) or pins.get((port or "").upper())
+    if not entry:
+        return False
+    want = suffix.upper()
+    names = [*(entry.get("functions") or []), *(entry.get("additional") or [])]
+    return any(fn.upper() == want or fn.upper().endswith("_" + want) for fn in names)

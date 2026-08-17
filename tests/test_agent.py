@@ -1948,6 +1948,238 @@ def test_connector_ground_name_expands_to_every_ground_contact():
     assert any("4 ground pin(s)" in note for note in notes)
 
 
+def test_anonymous_header_pin_tokens_become_unused_contact_numbers():
+    """017 J1 stored SDA/SCL/VDD/GND as pin ids on Conn_01x04 (Pin_1..Pin_4).
+
+    The header's job is those nets on real pads. Which number gets which
+    token is not a pinout table — only that every token becomes a unused
+    number and the named tokens are gone.
+    """
+    from circuitgen.partindex import PartIndex
+    from circuitgen.topology import analyze_conduction
+
+    agent = object.__new__(Agent)
+    agent.parts = PartIndex()
+    ir = CircuitIR("hdr-names")
+    ir.add(Component("J1", "Connector_Generic:Conn_01x04", "I2C"))
+    ir.add(Component("U2", "Sensor_Temperature:TMP100", "TMP100"))
+    ir.connect("SDA", ("J1", "SDA"), ("U2", "6"))
+    ir.connect("SCL", ("J1", "SCL"), ("U2", "1"))
+    ir.connect("GND", ("J1", "GND"), ("U2", "2"))
+    ir.connect("I2C_VDD", ("J1", "VDD"), ("U2", "4"))
+
+    notes = agent.resolve_pin_names(ir)
+    j1 = {p for n in ir.nets for r, p in n.nodes if r == "J1"}
+    assert j1 == {"1", "2", "3", "4"}
+    assert not (j1 & {"SDA", "SCL", "VDD", "GND"})
+    by_net = {n.name: {p for r, p in n.nodes if r == "J1"} for n in ir.nets}
+    assert all(len(pins) == 1 for pins in by_net.values())
+    assert ("U2", "6") in next(n.nodes for n in ir.nets if n.name == "SDA")
+    assert any("anonymous header contact" in n for n in notes), notes
+    symbols = agent._resolve_symbols(ir)
+    dead = analyze_conduction(ir, symbols).dead
+    assert "J1" not in dead, dead.get("J1")
+
+    snap = [(n.name, tuple(n.nodes)) for n in ir.nets]
+    agent.resolve_pin_names(ir)
+    assert [(n.name, tuple(n.nodes)) for n in ir.nets] == snap
+
+
+def test_pins_the_symbol_does_not_have_are_dropped_from_nets():
+    """017 C1 was Device:C with members 1–4. Pins 3 and 4 are not on the
+    symbol; they stayed as unknown_pin. Same fact as the repair gate
+    (G5V-1 K1.3) and ERC `unknown_pin`. A two-pin resistor's pin 3 goes
+    too. Header name tokens are rewritten first, not dropped."""
+    from circuitgen.erc import check_circuit
+    from circuitgen.partindex import PartIndex
+
+    agent = object.__new__(Agent)
+    agent.parts = PartIndex()
+    ir = CircuitIR("phantoms")
+    ir.add(Component("C1", "Device:C", "0.01uF"))
+    ir.add(Component("R1", "Device:R", "5k"))
+    ir.add(Component("J1", "Connector_Generic:Conn_01x04", "I2C"))
+    ir.connect("SDA", ("C1", "1"), ("R1", "2"), ("J1", "SDA"))
+    ir.connect("SCL", ("C1", "2"))
+    ir.connect("I2C_VDD", ("C1", "3"), ("R1", "1"))
+    ir.connect("GND", ("C1", "4"), ("R1", "3"), ("J1", "GND"))
+    notes = agent.resolve_pin_names(ir)
+    c1 = {p for n in ir.nets for r, p in n.nodes if r == "C1"}
+    r1 = {p for n in ir.nets for r, p in n.nodes if r == "R1"}
+    j1 = {p for n in ir.nets for r, p in n.nodes if r == "J1"}
+    assert c1 == {"1", "2"}
+    assert r1 == {"1", "2"}
+    assert j1 <= {"1", "2", "3", "4"} and j1
+    assert any("C1.3" in n for n in notes) and any("C1.4" in n for n in notes)
+    assert any("R1.3" in n for n in notes)
+    symbols = agent._resolve_symbols(ir)
+    unknown = [i for i in check_circuit(ir, symbols) if i.rule == "unknown_pin"]
+    assert not [i for i in unknown if i.path.startswith(("C1.", "R1."))], unknown
+    assert agent.resolve_pin_names(ir) == []
+
+
+def test_a_named_diode_nc_token_is_resolved_before_unknown_pins_drop():
+    """nc_pins used to be dropped before fix(), so D1.A vanished."""
+    from circuitgen.partindex import PartIndex
+
+    agent = object.__new__(Agent)
+    agent.parts = PartIndex()
+    ir = CircuitIR("d-nc")
+    ir.add(Component("D1", "Device:D", "1N4148"))
+    ir.connect("NET", ("D1", "K"))
+    ir.nc_pins = [("D1", "A")]
+    agent.resolve_pin_names(ir)
+    assert ir.nc_pins == [("D1", "2")]
+
+
+def test_anonymous_header_nc_token_becomes_a_contact_number():
+    """rewrite used to look at nets only, so J1.SDA as NC was dropped."""
+    from circuitgen.partindex import PartIndex
+
+    agent = object.__new__(Agent)
+    agent.parts = PartIndex()
+    ir = CircuitIR("j-nc")
+    ir.add(Component("J1", "Connector_Generic:Conn_01x04", "I2C"))
+    ir.connect("SDA", ("J1", "1"))
+    ir.nc_pins = [("J1", "SDA")]
+    agent.resolve_pin_names(ir)
+    assert ir.nc_pins and ir.nc_pins[0][0] == "J1"
+    assert ir.nc_pins[0][1] in {"2", "3", "4"}
+    assert ir.nc_pins[0][1] != "SDA"
+
+
+def test_anonymous_header_does_not_steal_a_numbered_contact():
+    agent = object.__new__(Agent)
+    agent.parts = PartIndex()
+    ir = CircuitIR("hdr-mixed")
+    ir.add(Component("J1", "Connector_Generic:Conn_01x04", "I2C"))
+    ir.add(Component("U2", "Sensor_Temperature:TMP100", "TMP100"))
+    ir.connect("+3V3", ("J1", "1"), ("U2", "4"))
+    ir.connect("SDA", ("J1", "SDA"), ("U2", "6"))
+    agent.resolve_pin_names(ir)
+    plus = {p for n in ir.nets if n.name == "+3V3" for r, p in n.nodes if r == "J1"}
+    sda = {p for n in ir.nets if n.name == "SDA" for r, p in n.nodes if r == "J1"}
+    assert plus == {"1"}
+    assert sda and sda <= {"2", "3", "4"} and "SDA" not in sda
+
+
+def test_a_resistor_pin_token_is_not_an_anonymous_header_contact():
+    """Device:R is nameless but not a header. SDA is not pin 1."""
+    agent = object.__new__(Agent)
+    agent.parts = PartIndex()
+    ir = CircuitIR("r-token")
+    ir.add(Component("R1", "Device:R", "10k"))
+    ir.connect("SDA", ("R1", "SDA"))
+    agent.resolve_pin_names(ir)
+    r1 = {p for n in ir.nets for r, p in n.nodes if r == "R1"}
+    assert r1 == set()
+    assert all("1" not in {p for r, p in n.nodes if r == "R1"} for n in ir.nets)
+
+
+def test_named_usb_c_pin_is_not_zipped_onto_a_free_number():
+    """USB-C contacts have names. A token the symbol does not have is
+    not the next free pad — it is unknown and is dropped."""
+    agent = object.__new__(Agent)
+    agent.parts = PartIndex()
+    ir = CircuitIR("usb-sda")
+    ir.add(Component("J1", "Connector:USB_C_Receptacle_USB2.0_16P", "USB-C"))
+    ir.connect("SDA", ("J1", "SDA"))
+    agent.resolve_pin_names(ir)
+    j1 = [(n.name, p) for n in ir.nets for r, p in n.nodes if r == "J1"]
+    assert j1 == []
+
+
+def test_repair_gate_rewrites_anonymous_header_connect_ops():
+    agent = object.__new__(Agent)
+    agent.parts = PartIndex()
+    ir = CircuitIR("gate-hdr")
+    ir.add(Component("J1", "Connector_Generic:Conn_01x04", "I2C"))
+    kept, notes = agent._filter_ops(
+        ir,
+        [
+            {"op": "connect", "ref": "J1", "pin": "SDA", "net": "SDA"},
+            {"op": "connect", "ref": "J1", "pin": "SCL", "net": "SCL"},
+            {"op": "set_nc", "ref": "J1", "pin": "FOO"},
+        ],
+        ["unconnected pin J1.1"],
+    )
+    connect = [op for op in kept if op["op"] == "connect"]
+    assert [op["pin"] for op in connect] == ["1", "2"]
+    assert connect[0]["net"] == "SDA" and connect[1]["net"] == "SCL"
+    assert all(op["op"] != "set_nc" for op in kept)
+    assert any("anonymous header contact" in n for n in notes), notes
+    assert any("has no such pin" in n for n in notes), notes
+
+
+def test_repair_gate_reuses_the_header_contact_already_on_that_net():
+    """After SDA is pin 2, connect J1.SDA must not take pin 3."""
+    agent = object.__new__(Agent)
+    agent.parts = PartIndex()
+    ir = CircuitIR("reuse")
+    ir.add(Component("J1", "Connector_Generic:Conn_01x04", "I2C"))
+    ir.add(Component("U2", "Sensor_Temperature:TMP100", "TMP100"))
+    ir.connect("SDA", ("J1", "SDA"), ("U2", "6"))
+    ir.connect("SCL", ("J1", "SCL"), ("U2", "1"))
+    agent.resolve_pin_names(ir)
+    sda_pin = next(p for n in ir.nets if n.name == "SDA" for r, p in n.nodes if r == "J1")
+    kept, notes = agent._filter_ops(
+        ir,
+        [{"op": "connect", "ref": "J1", "pin": "SDA", "net": "SDA"}],
+        ["unconnected pin J1.3"],
+    )
+    assert kept == [{"op": "connect", "ref": "J1", "pin": sda_pin, "net": "SDA"}]
+    j1 = {p for n in ir.nets if n.name == "SDA" for r, p in n.nodes if r == "J1"}
+    assert j1 == {sda_pin}
+
+
+def test_two_named_tokens_on_the_same_net_share_one_header_contact():
+    from circuitgen.normalize import rewrite_anonymous_header_contacts
+    from circuitgen.partindex import PartIndex
+
+    parts = PartIndex()
+    lib = "Connector_Generic:Conn_01x04"
+    ir = CircuitIR("same-net")
+    ir.add(Component("J1", lib, "I2C"))
+    ir.connect("SDA", ("J1", "SDA"), ("J1", "DATA"))
+    symbols = parts.load_symbols([lib])
+    rewrite_anonymous_header_contacts(ir, symbols)
+    j1 = [p for r, p in ir.nets[0].nodes if r == "J1"]
+    assert len(j1) == 1 and j1[0] in {"1", "2", "3", "4"}
+
+
+_017_I2C_RUN = (
+    Path(__file__).resolve().parent
+    / "artifacts/benchmarks/sequential/ko-step-017-i2c-af-s2"
+    / "006-온도센서_아이투시/run.json"
+)
+
+
+@pytest.mark.skipif(not _017_I2C_RUN.is_file(), reason="017 campaign artifact is local")
+def test_017_named_header_pins_become_numbered_contacts():
+    from circuitgen.ir_json import ir_from_json
+    from circuitgen.partindex import PartIndex
+    from circuitgen.topology import analyze_conduction
+
+    run = json.loads(_017_I2C_RUN.read_text(encoding="utf-8"))
+    ir = ir_from_json(run["ir"])
+    before = {p for n in ir.nets for r, p in n.nodes if r == "J1"}
+    assert before & {"SDA", "SCL", "VDD", "GND"}
+    agent = object.__new__(Agent)
+    agent.parts = PartIndex()
+    agent.resolve_pin_names(ir)
+    after = {p for n in ir.nets for r, p in n.nodes if r == "J1"}
+    assert after <= {"1", "2", "3", "4"}
+    assert not (after & {"SDA", "SCL", "VDD", "GND"})
+    assert after == {"1", "2", "3", "4"}
+    symbols = agent._resolve_symbols(ir)
+    dead = analyze_conduction(ir, symbols).dead
+    assert "J1" not in dead, dead.get("J1")
+    c1 = {p for n in ir.nets for r, p in n.nodes if r == "C1"}
+    r1 = {p for n in ir.nets for r, p in n.nodes if r == "R1"}
+    assert c1 <= {"1", "2"}
+    assert r1 <= {"1", "2"}
+
+
 def test_transcription_uses_exact_reference_for_role_fulfilment(agent_env):
     from circuitgen.compliance import role_fulfilment
 

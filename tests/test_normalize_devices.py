@@ -798,3 +798,546 @@ def test_a_resistor_already_bridging_two_nets_is_never_repurposed():
     on = {n.name for n in ir.nets if any(r == "R9" for r, _p in n.nodes)}
     assert on == {"SDA", "GND"}, "the bleeder keeps its own job"
     assert any(c.value == "10k" for c in ir.components.values()), "a real pull-up was added"
+
+
+def test_a_capacitor_across_sda_and_scl_moves_onto_the_supply():
+    """017 C1 (0.01 µF) sat on SDA and SCL. Figure 12 is V+ to GND."""
+    from circuitgen.erc import capacitors_across_i2c_lines, check_circuit
+    from circuitgen.normalize import detach_capacitors_across_i2c_lines
+    from circuitgen.symbols import load_symbols
+
+    sensor = "Sensor_Temperature:TMP100"
+    symbols = load_symbols([
+        sensor, "Device:C", "Device:R", "power:+3V3", "power:GND",
+    ])
+    ir = CircuitIR("i2c-c")
+    ir.add(Component("U1", sensor, "TMP100"))
+    ir.add(Component("C1", "Device:C", "0.01uF"))
+    ir.add(Component("C2", "Device:C", "100nF"))
+    ir.add(Component("R9", "Device:R", "10k"))
+    ir.add(Component("#PWR01", "power:+3V3", "+3V3"))
+    ir.add(Component("#PWR02", "power:GND", "GND"))
+    ir.connect("+3V3", ("#PWR01", "1"), ("U1", "4"), ("C2", "1"))
+    ir.connect("GND", ("#PWR02", "1"), ("U1", "2"), ("C2", "2"))
+    ir.connect("SDA", ("U1", "6"), ("C1", "1"))
+    ir.connect("SCL", ("U1", "1"), ("C1", "2"), ("R9", "1"))
+    ir.connect("+3V3", ("R9", "2"))
+
+    before = capacitors_across_i2c_lines(ir, symbols)
+    assert before == [("C1", "SDA", "SCL")] or before == [("C1", "SCL", "SDA")]
+    assert any(i.rule == "capacitor_across_i2c" for i in check_circuit(ir, symbols))
+
+    notes = detach_capacitors_across_i2c_lines(ir, symbols, "+3V3")
+    c1 = {n.name for n in ir.nets if any(r == "C1" for r, _ in n.nodes)}
+    c2 = {n.name for n in ir.nets if any(r == "C2" for r, _ in n.nodes)}
+    r9 = {n.name for n in ir.nets if any(r == "R9" for r, _ in n.nodes)}
+    sda = next(n for n in ir.nets if n.name == "SDA")
+    scl = next(n for n in ir.nets if n.name == "SCL")
+    assert c1 == {"+3V3", "GND"}, notes
+    assert c2 == {"+3V3", "GND"}
+    assert r9 == {"SCL", "+3V3"}
+    assert ("C1", "1") not in sda.nodes and ("C1", "2") not in sda.nodes
+    assert ("C1", "1") not in scl.nodes and ("C1", "2") not in scl.nodes
+    assert capacitors_across_i2c_lines(ir, symbols) == []
+    assert not any(i.rule == "capacitor_across_i2c" for i in check_circuit(ir, symbols))
+    assert detach_capacitors_across_i2c_lines(ir, symbols, "+3V3") == []
+
+
+def _two_pin_c():
+    return SymbolDef(
+        "Device:C",
+        "",
+        [
+            PinDef("1", "~", PinType.PASSIVE, 0, 0, 0, 2.54),
+            PinDef("2", "~", PinType.PASSIVE, 0, 0, 180, 2.54),
+        ],
+        reference_prefix="C",
+    )
+
+
+def _two_pin_r():
+    return SymbolDef(
+        "Device:R",
+        "",
+        [
+            PinDef("1", "~", PinType.PASSIVE, 0, 0, 0, 2.54),
+            PinDef("2", "~", PinType.PASSIVE, 0, 0, 180, 2.54),
+        ],
+        reference_prefix="R",
+    )
+
+
+def _tmp100_pins():
+    return _sym("Sensor_Temperature:TMP100", [
+        (1, "SCL", PinType.BIDIR), (2, "GND", PinType.PWRIN),
+        (4, "V+", PinType.PWRIN), (6, "SDA", PinType.BIDIR),
+    ])
+
+
+def test_bypass_uses_the_i2c_device_ground_not_the_first_gnd_net():
+    """AGND listed first used to steal the bypass off TMP100 GND."""
+    from circuitgen.erc import capacitors_across_i2c_lines
+    from circuitgen.normalize import detach_capacitors_across_i2c_lines
+
+    tmp = "Sensor_Temperature:TMP100"
+    amp = "Amplifier:X"
+    symbols = {
+        tmp: _tmp100_pins(),
+        "Device:C": _two_pin_c(),
+        amp: _sym(amp, [(1, "AGND", PinType.PWRIN), (2, "OUT", PinType.OUTPUT)]),
+    }
+    ir = CircuitIR("agnd-first")
+    ir.add(Component("U9", amp, "X"))
+    ir.add(Component("U1", tmp, "TMP100"))
+    ir.add(Component("C1", "Device:C", "0.01uF"))
+    ir.connect("AGND", ("U9", "1"))
+    ir.connect("+3V3", ("U1", "4"))
+    ir.connect("GND", ("U1", "2"))
+    ir.connect("SDA", ("U1", "6"), ("C1", "1"))
+    ir.connect("SCL", ("U1", "1"), ("C1", "2"))
+    assert [n.name for n in ir.nets if n.name in {"AGND", "GND"}][0] == "AGND"
+    assert capacitors_across_i2c_lines(ir, symbols)
+    detach_capacitors_across_i2c_lines(ir, symbols, "+3V3")
+    c1 = {n.name for n in ir.nets if any(r == "C1" for r, _ in n.nodes)}
+    assert c1 == {"+3V3", "GND"}
+    assert not any(r == "C1" for n in ir.nets if n.name == "AGND" for r, _ in n.nodes)
+
+
+def test_bypass_follows_the_sensor_vplus_net_not_the_rail_argument():
+    """V+ on VCC used to be NC'd because the caller passed +3V3."""
+    from circuitgen.normalize import detach_capacitors_across_i2c_lines
+
+    tmp = "Sensor_Temperature:TMP100"
+    symbols = {tmp: _tmp100_pins(), "Device:C": _two_pin_c()}
+    ir = CircuitIR("vcc-named")
+    ir.add(Component("U1", tmp, "TMP100"))
+    ir.add(Component("C1", "Device:C", "0.01uF"))
+    ir.connect("VCC", ("U1", "4"))
+    ir.connect("GND", ("U1", "2"))
+    ir.connect("SDA", ("U1", "6"), ("C1", "1"))
+    ir.connect("SCL", ("U1", "1"), ("C1", "2"))
+    detach_capacitors_across_i2c_lines(ir, symbols, "+3V3")
+    c1 = {n.name for n in ir.nets if any(r == "C1" for r, _ in n.nodes)}
+    assert c1 == {"VCC", "GND"}
+
+
+def _mcu_vbat_before_vdd():
+    """STM32G474 PWRIN order starts at VBAT; two VDD pins share +3V3."""
+    return _sym("MCU:X", [
+        (1, "VBAT", PinType.PWRIN),
+        (15, "VSS", PinType.PWRIN),
+        (16, "VDD", PinType.PWRIN),
+        (32, "VDD", PinType.PWRIN),
+        (49, "SCL", PinType.BIDIR),
+        (50, "SDA", PinType.BIDIR),
+    ])
+
+
+def test_bypass_uses_the_rail_most_of_the_ic_power_pins_share():
+    """Pin-list first PWRIN is VBAT; Figure 12 is the VDD rail those pins share."""
+    from circuitgen.normalize import detach_capacitors_across_i2c_lines
+
+    mcu = "MCU:X"
+    symbols = {mcu: _mcu_vbat_before_vdd(), "Device:C": _two_pin_c()}
+    ir = CircuitIR("vbat-first")
+    ir.add(Component("U1", mcu, "X"))
+    ir.add(Component("C1", "Device:C", "0.01uF"))
+    ir.connect("VBAT", ("U1", "1"))
+    ir.connect("GND", ("U1", "15"))
+    ir.connect("+3V3", ("U1", "16"), ("U1", "32"))
+    ir.connect("SDA", ("U1", "50"), ("C1", "1"))
+    ir.connect("SCL", ("U1", "49"), ("C1", "2"))
+    detach_capacitors_across_i2c_lines(ir, symbols, None)
+    c1 = {n.name for n in ir.nets if any(r == "C1" for r, _ in n.nodes)}
+    assert c1 == {"+3V3", "GND"}
+    assert not any(r == "C1" for n in ir.nets if n.name == "VBAT" for r, _ in n.nodes)
+
+
+def test_bypass_does_not_fall_onto_vbat_when_the_sensor_supply_is_open():
+    """TMP100 V+ unconnected used to skip the sensor and park C1 on MCU VBAT."""
+    from circuitgen.normalize import detach_capacitors_across_i2c_lines
+
+    tmp = "Sensor_Temperature:TMP100"
+    mcu = "MCU:X"
+    symbols = {
+        tmp: _tmp100_pins(),
+        mcu: _mcu_vbat_before_vdd(),
+        "Device:C": _two_pin_c(),
+    }
+    ir = CircuitIR("open-vplus")
+    ir.add(Component("U1", mcu, "X"))
+    ir.add(Component("U2", tmp, "TMP100"))
+    ir.add(Component("C1", "Device:C", "0.01uF"))
+    ir.connect("VBAT", ("U1", "1"))
+    ir.connect("GND", ("U1", "15"), ("U2", "2"))
+    ir.connect("+3V3", ("U1", "16"), ("U1", "32"))
+    ir.connect("SDA", ("U1", "50"), ("U2", "6"), ("C1", "1"))
+    ir.connect("SCL", ("U1", "49"), ("U2", "1"), ("C1", "2"))
+    detach_capacitors_across_i2c_lines(ir, symbols, None)
+    c1 = {n.name for n in ir.nets if any(r == "C1" for r, _ in n.nodes)}
+    assert c1 == {"+3V3", "GND"}
+
+
+def _three_pad_c():
+    return SymbolDef(
+        "Device:C",
+        "",
+        [
+            PinDef("1", "~", PinType.PASSIVE, 0, 0, 0, 2.54),
+            PinDef("2", "~", PinType.PASSIVE, 0, 0, 180, 2.54),
+            PinDef("3", "~", PinType.PASSIVE, 0, 0, 90, 2.54),
+        ],
+        reference_prefix="C",
+    )
+
+
+def _pwr(lib_id, name):
+    return SymbolDef(
+        lib_id, "",
+        [PinDef("1", name, PinType.PWRIN, 0, 0, 0, 2.54)],
+        is_power=True, reference_prefix="#PWR",
+    )
+
+
+def test_a_capacitor_with_an_unused_third_pad_still_leaves_the_bus():
+    from circuitgen.erc import capacitors_across_i2c_lines, check_circuit
+    from circuitgen.normalize import detach_capacitors_across_i2c_lines, ensure_pwr_flags
+
+    tmp = "Sensor_Temperature:TMP100"
+    cap = _three_pad_c()
+    symbols = {
+        tmp: _tmp100_pins(), "Device:C": cap,
+        "power:+3V3": _pwr("power:+3V3", "+3V3"),
+        "power:GND": _pwr("power:GND", "GND"),
+        "power:PWR_FLAG": SymbolDef(
+            "power:PWR_FLAG", "",
+            [PinDef("1", "pwr", PinType.PWROUT, 0, 0, 0, 2.54)],
+            is_power=True, reference_prefix="#FLG",
+        ),
+    }
+    ir = CircuitIR("three-pad")
+    ir.add(Component("U1", tmp, "TMP100"))
+    ir.add(Component("C1", "Device:C", "0.01uF"))
+    ir.add(Component("#PWR01", "power:+3V3", "+3V3"))
+    ir.add(Component("#PWR02", "power:GND", "GND"))
+    ir.connect("+3V3", ("#PWR01", "1"), ("U1", "4"))
+    ir.connect("GND", ("#PWR02", "1"), ("U1", "2"))
+    ir.connect("SDA", ("U1", "6"), ("C1", "1"))
+    ir.connect("SCL", ("U1", "1"), ("C1", "2"))
+    ensure_pwr_flags(ir, symbols)
+    assert capacitors_across_i2c_lines(ir, symbols)
+    detach_capacitors_across_i2c_lines(ir, symbols, None)
+    c1 = {n.name for n in ir.nets if any(r == "C1" for r, _ in n.nodes)}
+    assert c1 == {"+3V3", "GND"}
+    issues = check_circuit(ir, symbols)
+    assert not any(i.rule == "capacitor_across_i2c" for i in issues)
+    assert not any(i.rule == "decoupling_missing" and "U1@" in i.path for i in issues)
+
+
+def test_a_third_pad_on_the_bus_still_leaves_with_the_other_two():
+    """Checker saw two nets; fixer used to noop because three pins sat on them."""
+    from circuitgen.erc import capacitors_across_i2c_lines, check_circuit
+    from circuitgen.normalize import detach_capacitors_across_i2c_lines
+
+    tmp = "Sensor_Temperature:TMP100"
+    symbols = {tmp: _tmp100_pins(), "Device:C": _three_pad_c()}
+    ir = CircuitIR("three-on-bus")
+    ir.add(Component("U1", tmp, "TMP100"))
+    ir.add(Component("C1", "Device:C", "0.01uF"))
+    ir.connect("+3V3", ("U1", "4"))
+    ir.connect("GND", ("U1", "2"))
+    ir.connect("SDA", ("U1", "6"), ("C1", "1"), ("C1", "3"))
+    ir.connect("SCL", ("U1", "1"), ("C1", "2"))
+    assert capacitors_across_i2c_lines(ir, symbols)
+    notes = detach_capacitors_across_i2c_lines(ir, symbols, None)
+    c1 = {n.name for n in ir.nets if any(r == "C1" for r, _ in n.nodes)}
+    assert c1 == {"+3V3", "GND"}, notes
+    sda = next(n for n in ir.nets if n.name == "SDA")
+    scl = next(n for n in ir.nets if n.name == "SCL")
+    assert not any(r == "C1" for r, _ in sda.nodes)
+    assert not any(r == "C1" for r, _ in scl.nodes)
+    assert ("C1", "3") in ir.nc_pins
+    assert not any(i.rule == "capacitor_across_i2c" for i in check_circuit(ir, symbols))
+
+
+def test_two_named_sensors_on_different_rails_do_not_follow_net_order():
+    """One C cannot be both bypasses; node order must not pick +3V3 vs +5V."""
+    from circuitgen.normalize import detach_capacitors_across_i2c_lines
+
+    tmp = "Sensor_Temperature:TMP100"
+    symbols = {tmp: _tmp100_pins(), "Device:C": _two_pin_c()}
+
+    def board(sda_u2_first: bool):
+        ir = CircuitIR("two-tmp")
+        ir.add(Component("U2", tmp, "TMP100"))
+        ir.add(Component("U3", tmp, "TMP100"))
+        ir.add(Component("C1", "Device:C", "0.01uF"))
+        ir.connect("+3V3", ("U2", "4"))
+        ir.connect("+5V", ("U3", "4"))
+        ir.connect("GND", ("U2", "2"), ("U3", "2"))
+        if sda_u2_first:
+            ir.connect("SDA", ("U2", "6"), ("U3", "6"), ("C1", "1"))
+        else:
+            ir.connect("SDA", ("U3", "6"), ("U2", "6"), ("C1", "1"))
+        ir.connect("SCL", ("U2", "1"), ("U3", "1"), ("C1", "2"))
+        notes = detach_capacitors_across_i2c_lines(ir, symbols, None)
+        on = {n.name for n in ir.nets if any(r == "C1" for r, _ in n.nodes)}
+        return on, {(r, p) for r, p in ir.nc_pins if r == "C1"}, notes
+
+    a_on, a_nc, a_notes = board(True)
+    b_on, b_nc, b_notes = board(False)
+    assert a_on == b_on == set()
+    assert a_nc == b_nc == {("C1", "1"), ("C1", "2")}
+    assert any("do not share one supply/return pair" in n for n in a_notes)
+    assert not any("named I2C devices" in n for n in a_notes + b_notes)
+    assert not any("no supply/GND nets" in n for n in a_notes + b_notes)
+
+
+def test_two_named_sensors_on_the_same_rail_keep_that_bypass():
+    from circuitgen.normalize import detach_capacitors_across_i2c_lines
+
+    tmp = "Sensor_Temperature:TMP100"
+    symbols = {tmp: _tmp100_pins(), "Device:C": _two_pin_c()}
+
+    def board(sda_u2_first: bool):
+        ir = CircuitIR("two-tmp-same")
+        ir.add(Component("U2", tmp, "TMP100"))
+        ir.add(Component("U3", tmp, "TMP100"))
+        ir.add(Component("C1", "Device:C", "0.01uF"))
+        ir.connect("+3V3", ("U2", "4"), ("U3", "4"))
+        ir.connect("GND", ("U2", "2"), ("U3", "2"))
+        if sda_u2_first:
+            ir.connect("SDA", ("U2", "6"), ("U3", "6"), ("C1", "1"))
+        else:
+            ir.connect("SDA", ("U3", "6"), ("U2", "6"), ("C1", "1"))
+        ir.connect("SCL", ("U2", "1"), ("U3", "1"), ("C1", "2"))
+        detach_capacitors_across_i2c_lines(ir, symbols, None)
+        return {n.name for n in ir.nets if any(r == "C1" for r, _ in n.nodes)}
+
+    assert board(True) == board(False) == {"+3V3", "GND"}
+
+
+def test_a_four_pin_shunt_is_not_an_i2c_pullup():
+    from circuitgen.erc import two_pin_bridges
+    from circuitgen.normalize import ensure_i2c_pullups
+
+    tmp = "Sensor_Temperature:TMP100"
+    shunt = SymbolDef(
+        "Device:R_Shunt",
+        "",
+        [
+            PinDef("1", "~", PinType.PASSIVE, 0, 0, 0, 2.54),
+            PinDef("2", "~", PinType.PASSIVE, 0, 0, 0, 2.54),
+            PinDef("3", "~", PinType.PASSIVE, 0, 0, 0, 2.54),
+            PinDef("4", "~", PinType.PASSIVE, 0, 0, 0, 2.54),
+        ],
+        reference_prefix="R",
+    )
+    symbols = {
+        tmp: _tmp100_pins(),
+        "Device:R_Shunt": shunt,
+        "Device:R": _two_pin_r(),
+        "power:+3V3": _pwr("power:+3V3", "+3V3"),
+    }
+    ir = CircuitIR("shunt")
+    ir.add(Component("U1", tmp, "TMP100"))
+    ir.add(Component("RS1", "Device:R_Shunt", "0.01"))
+    ir.add(Component("#PWR01", "power:+3V3", "+3V3"))
+    ir.connect("+3V3", ("#PWR01", "1"), ("U1", "4"), ("RS1", "2"))
+    ir.connect("GND", ("U1", "2"))
+    ir.connect("SDA", ("U1", "6"), ("RS1", "1"))
+    ir.connect("KELVIN_A", ("RS1", "3"))
+    ir.connect("KELVIN_B", ("RS1", "4"))
+    ir.connect("SCL", ("U1", "1"))
+    assert two_pin_bridges(ir, symbols, "R", "SDA") == []
+    ensure_i2c_pullups(ir, symbols, "+3V3")
+    added = [c for c in ir.components.values() if c.lib_id == "Device:R" and c.value == "10k"]
+    assert added, "SDA still needs a 2-terminal pull-up"
+    sda = next(n for n in ir.nets if n.name == "SDA")
+    assert any(r for r, _ in sda.nodes if ir.components[r].lib_id == "Device:R")
+
+
+def test_a_feedthrough_on_rail_gnd_and_sda_is_not_decoupling():
+    from circuitgen.erc import capacitors_across_i2c_lines, two_pin_bridges
+
+    tmp = "Sensor_Temperature:TMP100"
+    symbols = {tmp: _tmp100_pins(), "Device:C": _three_pad_c()}
+    ir = CircuitIR("feed-decap")
+    ir.add(Component("U1", tmp, "TMP100"))
+    ir.add(Component("C1", "Device:C", "feed"))
+    ir.connect("+3V3", ("U1", "4"), ("C1", "1"))
+    ir.connect("GND", ("U1", "2"), ("C1", "2"))
+    ir.connect("SDA", ("U1", "6"), ("C1", "3"))
+    ir.connect("SCL", ("U1", "1"))
+    assert capacitors_across_i2c_lines(ir, symbols) == []
+    assert two_pin_bridges(ir, symbols, "C", "+3V3") == []
+
+
+def test_a_feedthrough_across_sda_scl_and_a_rail_still_leaves_the_bus():
+    from circuitgen.erc import capacitors_across_i2c_lines
+    from circuitgen.normalize import detach_capacitors_across_i2c_lines
+
+    tmp = "Sensor_Temperature:TMP100"
+    symbols = {tmp: _tmp100_pins(), "Device:C": _three_pad_c()}
+    ir = CircuitIR("feed-bus")
+    ir.add(Component("U1", tmp, "TMP100"))
+    ir.add(Component("C1", "Device:C", "feed"))
+    ir.connect("+3V3", ("U1", "4"), ("C1", "3"))
+    ir.connect("GND", ("U1", "2"))
+    ir.connect("SDA", ("U1", "6"), ("C1", "1"))
+    ir.connect("SCL", ("U1", "1"), ("C1", "2"))
+    assert capacitors_across_i2c_lines(ir, symbols)
+    detach_capacitors_across_i2c_lines(ir, symbols, None)
+    sda = next(n for n in ir.nets if n.name == "SDA")
+    scl = next(n for n in ir.nets if n.name == "SCL")
+    assert not any(r == "C1" for r, _ in sda.nodes)
+    assert not any(r == "C1" for r, _ in scl.nodes)
+    c1 = {n.name for n in ir.nets if any(r == "C1" for r, _ in n.nodes)}
+    assert "SDA" not in c1 and "SCL" not in c1
+    assert "+3V3" in c1 and "GND" in c1
+
+
+def _pwr_flag():
+    return SymbolDef(
+        "power:PWR_FLAG", "",
+        [PinDef("1", "pwr", PinType.PWROUT, 0, 0, 0, 2.54)],
+        is_power=True, reference_prefix="#FLG",
+    )
+
+
+def test_a_feedthrough_third_pad_on_another_rail_still_counts_as_bypass():
+    """Pin 3 on +5V used to leave three nets; the note said bypass, ERC did not."""
+    from circuitgen.erc import capacitors_across_i2c_lines, check_circuit, two_pin_bridges
+    from circuitgen.normalize import detach_capacitors_across_i2c_lines, ensure_pwr_flags
+
+    tmp = "Sensor_Temperature:TMP100"
+    symbols = {
+        tmp: _tmp100_pins(),
+        "Device:C": _three_pad_c(),
+        "power:+3V3": _pwr("power:+3V3", "+3V3"),
+        "power:+5V": _pwr("power:+5V", "+5V"),
+        "power:GND": _pwr("power:GND", "GND"),
+        "power:PWR_FLAG": _pwr_flag(),
+    }
+    ir = CircuitIR("feed-other-rail")
+    ir.add(Component("U1", tmp, "TMP100"))
+    ir.add(Component("C1", "Device:C", "feed"))
+    ir.add(Component("#PWR01", "power:+3V3", "+3V3"))
+    ir.add(Component("#PWR02", "power:GND", "GND"))
+    ir.add(Component("#PWR03", "power:+5V", "+5V"))
+    ir.connect("+3V3", ("#PWR01", "1"), ("U1", "4"))
+    ir.connect("GND", ("#PWR02", "1"), ("U1", "2"))
+    ir.connect("+5V", ("#PWR03", "1"), ("C1", "3"))
+    ir.connect("SDA", ("U1", "6"), ("C1", "1"))
+    ir.connect("SCL", ("U1", "1"), ("C1", "2"))
+    ensure_pwr_flags(ir, symbols)
+    assert capacitors_across_i2c_lines(ir, symbols)
+    notes = detach_capacitors_across_i2c_lines(ir, symbols, None)
+    c1 = {n.name for n in ir.nets if any(r == "C1" for r, _ in n.nodes)}
+    assert c1 == {"+3V3", "GND"}, notes
+    assert ("C1", "3") in ir.nc_pins
+    assert set(two_pin_bridges(ir, symbols, "C", "+3V3")) == {"GND"}
+    issues = check_circuit(ir, symbols)
+    assert not any(i.rule == "capacitor_across_i2c" for i in issues)
+    assert not any(i.rule == "decoupling_missing" and "U1@" in i.path for i in issues)
+
+
+def test_prefix_c_lowercase_still_counts_as_decoupling_after_the_move():
+    from circuitgen.erc import check_circuit, two_pin_bridges
+    from circuitgen.normalize import detach_capacitors_across_i2c_lines, ensure_pwr_flags
+
+    tmp = "Sensor_Temperature:TMP100"
+    cap = SymbolDef(
+        "Device:C", "",
+        [
+            PinDef("1", "~", PinType.PASSIVE, 0, 0, 0, 2.54),
+            PinDef("2", "~", PinType.PASSIVE, 0, 0, 180, 2.54),
+        ],
+        reference_prefix="c",
+    )
+    symbols = {
+        tmp: _tmp100_pins(), "Device:C": cap,
+        "power:+3V3": _pwr("power:+3V3", "+3V3"),
+        "power:GND": _pwr("power:GND", "GND"),
+        "power:PWR_FLAG": _pwr_flag(),
+    }
+    ir = CircuitIR("prefix-c")
+    ir.add(Component("U1", tmp, "TMP100"))
+    ir.add(Component("C1", "Device:C", "0.01uF"))
+    ir.add(Component("#PWR01", "power:+3V3", "+3V3"))
+    ir.add(Component("#PWR02", "power:GND", "GND"))
+    ir.connect("+3V3", ("#PWR01", "1"), ("U1", "4"))
+    ir.connect("GND", ("#PWR02", "1"), ("U1", "2"))
+    ir.connect("SDA", ("U1", "6"), ("C1", "1"))
+    ir.connect("SCL", ("U1", "1"), ("C1", "2"))
+    ensure_pwr_flags(ir, symbols)
+    detach_capacitors_across_i2c_lines(ir, symbols, None)
+    assert set(two_pin_bridges(ir, symbols, "C", "+3V3")) == {"GND"}
+    issues = check_circuit(ir, symbols)
+    assert not any(i.rule == "decoupling_missing" and "U1@" in i.path for i in issues)
+
+
+def test_an_integer_pin_number_on_a_foreign_rail_is_still_ncd():
+    from circuitgen.erc import two_pin_bridges
+    from circuitgen.normalize import detach_capacitors_across_i2c_lines
+
+    tmp = "Sensor_Temperature:TMP100"
+    symbols = {tmp: _tmp100_pins(), "Device:C": _three_pad_c()}
+    ir = CircuitIR("int-pin")
+    ir.add(Component("U1", tmp, "TMP100"))
+    ir.add(Component("C1", "Device:C", "feed"))
+    ir.connect("+3V3", ("U1", "4"))
+    ir.connect("GND", ("U1", "2"))
+    ir.connect("+5V", ("C1", 3))
+    ir.connect("SDA", ("U1", "6"), ("C1", "1"))
+    ir.connect("SCL", ("U1", "1"), ("C1", "2"))
+    detach_capacitors_across_i2c_lines(ir, symbols, None)
+    c1 = {n.name for n in ir.nets if any(r == "C1" for r, _ in n.nodes)}
+    assert c1 == {"+3V3", "GND"}
+    assert not any(n.name == "+5V" and any(r == "C1" for r, _ in n.nodes) for n in ir.nets)
+    assert any(r == "C1" and str(p) == "3" for r, p in ir.nc_pins)
+    assert set(two_pin_bridges(ir, symbols, "C", "+3V3")) == {"GND"}
+
+
+def test_a_timing_capacitor_on_nets_named_sda_scl_is_not_moved():
+    from circuitgen.erc import capacitors_across_i2c_lines, is_i2c_net
+    from circuitgen.normalize import detach_capacitors_across_i2c_lines
+
+    timer = "Timer:NE555"
+    symbols = {
+        timer: _sym(timer, [
+            (1, "GND", PinType.PWRIN), (6, "THRES", PinType.INPUT),
+            (7, "DISCH", PinType.OUTPUT), (8, "VCC", PinType.PWRIN),
+        ]),
+        "Device:C": _two_pin_c(),
+    }
+    ir = CircuitIR("555-labels")
+    ir.add(Component("U1", timer, "NE555"))
+    ir.add(Component("C1", "Device:C", "10nF"))
+    ir.connect("SDA", ("U1", "7"), ("C1", "1"))
+    ir.connect("SCL", ("U1", "6"), ("C1", "2"))
+    ir.connect("VCC", ("U1", "8"))
+    ir.connect("GND", ("U1", "1"))
+    assert capacitors_across_i2c_lines(ir, symbols) == []
+    assert is_i2c_net(ir, symbols, next(n for n in ir.nets if n.name == "SDA"))
+    assert detach_capacitors_across_i2c_lines(ir, symbols, "VCC") == []
+    c1 = {n.name for n in ir.nets if any(r == "C1" for r, _ in n.nodes)}
+    assert c1 == {"SDA", "SCL"}
+
+
+def test_a_capacitor_from_sda_to_gnd_is_not_across_the_bus():
+    from circuitgen.erc import capacitors_across_i2c_lines
+    from circuitgen.normalize import detach_capacitors_across_i2c_lines
+    from circuitgen.symbols import load_symbols
+
+    sensor = "Sensor_Temperature:TMP100"
+    symbols = load_symbols([sensor, "Device:C", "power:GND"])
+    ir = CircuitIR("filter")
+    ir.add(Component("U1", sensor, "TMP100"))
+    ir.add(Component("C1", "Device:C", "100pF"))
+    ir.add(Component("#PWR02", "power:GND", "GND"))
+    ir.connect("SDA", ("U1", "6"), ("C1", "1"))
+    ir.connect("GND", ("#PWR02", "1"), ("U1", "2"), ("C1", "2"))
+    assert capacitors_across_i2c_lines(ir, symbols) == []
+    assert detach_capacitors_across_i2c_lines(ir, symbols, "+3V3") == []
+    assert ("C1", "1") in next(n for n in ir.nets if n.name == "SDA").nodes

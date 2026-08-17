@@ -47,15 +47,21 @@ def component_value(text: str) -> float | None:
     return None
 
 
+def _same_contact(node: tuple[str, str], ref: str, pin: str | int) -> bool:
+    """Pin identity is the number, not int vs str (`ir.connect(..., 3)`)."""
+    return node[0] == ref and str(node[1]) == str(pin)
+
+
 def move_pin(ir: CircuitIR, ref: str, pin: str, net_name: str) -> None:
     """Put a pin on `net_name`, removing it from wherever it was.
 
     Four byte-equivalent copies of this lived inside individual device rules.
     """
+    pin = str(pin)
     for net in ir.nets:
-        net.nodes = [node for node in net.nodes if node != (ref, pin)]
+        net.nodes = [node for node in net.nodes if not _same_contact(node, ref, pin)]
     ir.connect(net_name, (ref, pin))
-    ir.nc_pins = [node for node in ir.nc_pins if node != (ref, pin)]
+    ir.nc_pins = [node for node in ir.nc_pins if not _same_contact(node, ref, pin)]
 
 
 class RefAllocator:
@@ -145,6 +151,206 @@ def unify_stacked_pins(ir: CircuitIR, symbols: dict[str, SymbolDef]) -> list[str
                     f"{ref}.{pin.number}: stacked with wired pin — joined net {target}"
                 )
     return notes
+
+
+def header_contact_on_net(
+    ir: CircuitIR, ref: str, net_name: str, numbers: set[str]
+) -> str | None:
+    """Numbered pad of `ref` already sitting on `net_name`, if any.
+
+    A later `connect J1.SDA` to that same net is that pad, not the next
+    free number — otherwise repair would put SDA on two contacts.
+    """
+    for net in ir.nets:
+        if net.name != net_name:
+            continue
+        for r, pin in net.nodes:
+            if r == ref and str(pin) in numbers:
+                return str(pin)
+    return None
+
+
+def anonymous_header_contact(
+    comp: Component,
+    sym: SymbolDef,
+    token: str,
+    occupied: set[str],
+    symbols: dict[str, SymbolDef] | None = None,
+    already_on_net: str | None = None,
+) -> str | None:
+    """Map a pin token to a header contact number when the symbol is nameless.
+
+    KiCad ``Conn_01xNN`` pins are named Pin_1..Pin_N. The model writes the
+    net role as the pin id (J1.SDA). That token is not a pin of the symbol,
+    so pads 1–4 stay empty and the header does no work (017 J1). If this
+    header already has a numbered pad on the net, that pad is the contact.
+    Otherwise the next unused number is. There is no net-name → pin-number
+    table. USB-C and other named-contact symbols return None here — their
+    names already go through ``resolve_pin_names``.
+    """
+    from .compliance import _header_like_component
+
+    token = str(token)
+    if not _header_like_component(comp, symbols or {comp.lib_id: sym}):
+        return None
+    if not sym.contacts_are_anonymous():
+        return None
+    try:
+        return sym.pin(token).number
+    except KeyError:
+        pass
+    if already_on_net:
+        return already_on_net
+    return sym.next_free_contact_number(occupied)
+
+
+def rewrite_anonymous_header_contacts(
+    ir: CircuitIR, symbols: dict[str, SymbolDef]
+) -> list[str]:
+    """Replace nameless-header pin tokens with unused contact numbers.
+
+    Same definition as the repair gate (`anonymous_header_contact`): checker
+    and fixer share it. Assignment order is (net name, token) so the pass
+    is deterministic, not a pinout.
+    """
+    notes: list[str] = []
+    for ref, comp in ir.components.items():
+        if ref.startswith("#"):
+            continue
+        sym = symbols.get(comp.lib_id)
+        if sym is None:
+            continue
+        numbers = {p.number for p in sym.visible_contacts()}
+        occupied = {
+            str(p) for net in ir.nets for r, p in net.nodes
+            if r == ref and str(p) in numbers
+        }
+        phantoms: list[tuple[object, str]] = []
+        seen: set[tuple[int, str]] = set()
+        for net in ir.nets:
+            for r, p in net.nodes:
+                if r != ref:
+                    continue
+                token = str(p)
+                if token in numbers:
+                    continue
+                key = (id(net), token)
+                if key in seen:
+                    continue
+                seen.add(key)
+                phantoms.append((net, token))
+        if not phantoms:
+            continue
+        phantoms.sort(key=lambda item: (item[0].name, item[1]))
+        mapping: dict[tuple[int, str], str] = {}
+        net_bound: dict[int, str] = {}
+        for net, token in phantoms:
+            already = header_contact_on_net(ir, ref, net.name, numbers)
+            already = already or net_bound.get(id(net))
+            bound = anonymous_header_contact(
+                comp, sym, token, occupied, symbols, already_on_net=already,
+            )
+            if bound is None:
+                continue
+            mapping[(id(net), token)] = bound
+            net_bound[id(net)] = bound
+            occupied.add(bound)
+            notes.append(
+                f"bound {ref}.{token} -> pin {bound} (anonymous header contact)"
+            )
+        if not mapping:
+            continue
+        for net in ir.nets:
+            rewritten = [
+                (r, mapping.get((id(net), str(p)), str(p)) if r == ref else p)
+                for r, p in net.nodes
+            ]
+            deduped: list[tuple[str, str]] = []
+            for node in rewritten:
+                if node not in deduped:
+                    deduped.append(node)
+            net.nodes = deduped
+    new_nc: list[tuple[str, str]] = []
+    occupied_nc: dict[str, set[str]] = {}
+    for r, p in ir.nc_pins:
+        token = str(p)
+        comp = ir.components.get(r)
+        if r.startswith("#") or comp is None:
+            new_nc.append((r, p))
+            continue
+        sym = symbols.get(comp.lib_id)
+        if sym is None:
+            new_nc.append((r, p))
+            continue
+        numbers = {pin.number for pin in sym.visible_contacts()}
+        occupied = occupied_nc.get(r)
+        if occupied is None:
+            occupied = {
+                str(pin) for net in ir.nets for rr, pin in net.nodes
+                if rr == r and str(pin) in numbers
+            }
+            occupied_nc[r] = occupied
+        if token in numbers:
+            new_nc.append((r, token))
+            occupied.add(token)
+            continue
+        bound = anonymous_header_contact(comp, sym, token, occupied, symbols)
+        if bound is None:
+            new_nc.append((r, p))
+            continue
+        occupied.add(bound)
+        new_nc.append((r, bound))
+        notes.append(
+            f"bound {r}.{token} -> pin {bound} (anonymous header contact)"
+        )
+    ir.nc_pins = new_nc
+    return notes
+
+
+def drop_unknown_pins(ir: CircuitIR, symbols: dict[str, SymbolDef]) -> list[str]:
+    """Remove net membership the symbol does not have.
+
+    Same fact ERC reports as `unknown_pin` and the repair gate's
+    `absent_pin` (`SymbolDef.has_pin`). Synthesis can put C1.3 on a
+    Device:C (017: pins 1–4 on a two-pin capacitor). Headers must be
+    rewritten first — J1.SDA is not a pin number until
+    `rewrite_anonymous_header_contacts` runs. Conceptual boxes grow
+    from named pins and are not judged.
+    """
+    notes: list[str] = []
+    for net in ir.nets:
+        kept: list[tuple[str, str]] = []
+        for ref, pin in net.nodes:
+            token = str(pin)
+            comp = ir.components.get(ref)
+            if comp is None or comp.lib_id.startswith("Conceptual:"):
+                kept.append((ref, pin))
+                continue
+            sym = symbols.get(comp.lib_id)
+            if sym is None or sym.has_pin(token):
+                kept.append((ref, pin))
+                continue
+            notes.append(
+                f"dropped {ref}.{token} from {net.name} — "
+                f"{comp.lib_id} has no pin {token}"
+            )
+        net.nodes = kept
+    ir.nets = [n for n in ir.nets if n.nodes]
+    ir.nc_pins = [
+        (r, p) for r, p in ir.nc_pins
+        if _nc_pin_exists(ir, symbols, r, p)
+    ]
+    return notes
+
+
+def _nc_pin_exists(
+    ir: CircuitIR, symbols: dict[str, SymbolDef], ref: str, pin
+) -> bool:
+    comp = ir.components.get(ref)
+    if comp is None or comp.lib_id.startswith("Conceptual:"):
+        return True
+    sym = symbols.get(comp.lib_id)
+    return sym is None or sym.has_pin(str(pin))
 
 
 def migrate_component(
@@ -520,6 +726,86 @@ def ensure_i2c_pullups(
         notes.append(
             f"added {ref} {I2C_PULLUP_VALUE} pull-up on I2C line {net.name} to "
             f"{rail}: the bus is open-drain and has no high-side driver"
+        )
+    return notes
+
+
+def detach_capacitors_across_i2c_lines(
+    ir: CircuitIR, symbols: dict[str, SymbolDef], rail: str | None = None
+) -> list[str]:
+    """Take a 2-pin C off SDA/SCL and put it on the I2C device's rails.
+
+    Checker and fixer share `erc.capacitors_across_i2c_lines` (member pin
+    name or recorded AF, not a net label). Placement is
+    `i2c_device_supply_and_return` — the PWRIN and ground pins of an IC
+    on those lines — not the first gnd net and not `rail`. `rail` is
+    unused; the agent still passes the logic rail so the call site stays
+    one sequence. The model's 017 C1 (0.01 µF) sat on SDA and SCL after
+    phantom pins were dropped; SBOS231I Figure 12 draws that value as a
+    supply bypass at V+ to GND (pdf index 18).
+    """
+    from .erc import capacitors_across_i2c_lines, i2c_device_bypass_rails
+
+    _ = rail  # placement is the device pins, not this name
+    pairs = capacitors_across_i2c_lines(ir, symbols)
+    if not pairs:
+        return []
+    notes: list[str] = []
+    for ref, a, b in pairs:
+        pin_net = {
+            (r, str(p)): n.name for n in ir.nets for r, p in n.nodes
+        }
+        sym = symbols.get(ir.components[ref].lib_id)
+        if sym is None:
+            continue
+        bus_pins = [
+            str(p.number)
+            for p in sym.pins
+            if pin_net.get((ref, str(p.number))) in {a, b}
+        ]
+        if not bus_pins:
+            continue
+        supply, gnd, reason = i2c_device_bypass_rails(ir, symbols, a, b)
+        if supply and gnd and len(bus_pins) >= 2:
+            move_pin(ir, ref, bus_pins[0], supply)
+            move_pin(ir, ref, bus_pins[1], gnd)
+            # Extra pads still on a foreign net (a feedthrough pin on +5V
+            # while the sensor is on +3V3) would leave three connected nets,
+            # so two_pin_bridges would not see a bypass after we claimed one.
+            pin_net = {
+                (r, str(pn)): n.name for n in ir.nets for r, pn in n.nodes
+            }
+            for p in sym.pins:
+                n = pin_net.get((ref, str(p.number)))
+                if n and n not in {supply, gnd}:
+                    pin = str(p.number)
+                    for net in ir.nets:
+                        net.nodes = [
+                            node for node in net.nodes
+                            if not _same_contact(node, ref, pin)
+                        ]
+                    if not any(_same_contact(node, ref, pin) for node in ir.nc_pins):
+                        ir.nc_pins.append((ref, pin))
+            notes.append(
+                f"moved {ref} off I2C {a}/{b} onto {supply}/{gnd}: a capacitor "
+                f"across the bus is not a supply bypass (knowledge: "
+                f"decoupling-cap-per-ic; SBOS231I Figure 12, pdf index 18)"
+            )
+            continue
+        for net in ir.nets:
+            if net.name in {a, b}:
+                net.nodes = [node for node in net.nodes if node[0] != ref]
+        for pin in bus_pins:
+            if (ref, pin) not in ir.nc_pins:
+                ir.nc_pins.append((ref, pin))
+        if reason == "disagree":
+            why = "I2C devices on the bus do not share one supply/return pair"
+        else:
+            why = "the I2C device has no supply/GND nets"
+        notes.append(
+            f"removed {ref} from I2C {a}/{b}: a capacitor across the bus is "
+            f"not a supply bypass; {why} "
+            f"(knowledge: decoupling-cap-per-ic; SBOS231I Figure 12, pdf index 18)"
         )
     return notes
 
@@ -994,42 +1280,26 @@ def hub_ref(ir: CircuitIR, symbols: dict[str, SymbolDef]) -> str | None:
     return chosen
 
 
-def _pin_carries_function_ending(
-    lib_id: str, symbol: SymbolDef, pin: str, suffix: str
-) -> bool:
-    from .pinfunctions import device_for
-
-    device = device_for(lib_id)
-    if device is None:
-        return False
-    try:
-        port = symbol.pin(str(pin)).name
-    except KeyError:
-        return False
-    entry = (device.get("pins") or {}).get(port) or (device.get("pins") or {}).get(
-        (port or "").upper()
-    )
-    if not entry:
-        return False
-    want = suffix.upper()
-    names = [*(entry.get("functions") or []), *(entry.get("additional") or [])]
-    return any(fn.upper() == want or fn.upper().endswith("_" + want) for fn in names)
-
-
 def join_hub_to_i2c_buses(
     ir: CircuitIR, symbols: dict[str, SymbolDef]
 ) -> list[str]:
-    """Put the hub on every I2C net the pull-up checker already knows.
+    """Put the hub on I2C and SPI nets at recorded alternate-function pins.
 
-    The pin is a recorded alternate function (I2C1_SDA, …), not the next
-    free GPIO. Round-robin I/O put STM32 PC13/PC14 on SDA/SCL — those
-    ports have no I2C AF in DS12288 Table 12. A hub pin already on the net
-    that is not a recorded function is moved when the table exists. No
-    recorded function means the net is left as-is (unwired, or the model's
-    own GPIO) and that is said out loud when we declined to invent a pin.
+    I2C: SDA/SCL must be recorded (I2C*_SDA/SCL). Round-robin GPIO put
+    STM32 PC13/PC14 on SDA/SCL — those ports have no I2C AF in DS12288
+    Table 12.
+
+    SPI: SCK/MOSI/MISO must be recorded (SPI*_SCK/MOSI/MISO). Chip-select
+    (NSS/CS) may stay on GPIO — that is a valid software CS. A hub pin
+    already on SCK that is not a recorded function is moved when the table
+    exists. No recorded function means the net is left as-is.
     """
-    from .erc import i2c_line_role, is_i2c_net
-    from .pinfunctions import resolve_function_ending
+    from .erc import (
+        i2c_line_role,
+        is_i2c_net,
+        spi_line_role,
+    )
+    from .pinfunctions import pin_carries_function_ending, resolve_function_ending
 
     hub = hub_ref(ir, symbols)
     if hub is None:
@@ -1040,25 +1310,23 @@ def join_hub_to_i2c_buses(
         return []
     used = {p for net in ir.nets for r, p in net.nodes if r == hub}
     notes: list[str] = []
-    for net in ir.nets:
-        if not is_i2c_net(ir, symbols, net):
-            continue
-        role = i2c_line_role(ir, symbols, net)
-        if role is None:
-            continue
+
+    def join_line(net, role: str, kind: str, move_wrong: bool) -> None:
+        nonlocal used
         on_hub = [p for r, p in net.nodes if r == hub]
-        if on_hub and any(
-            _pin_carries_function_ending(lib_id, sym, p, role) for p in on_hub
+        if on_hub and (
+            not move_wrong
+            or any(pin_carries_function_ending(lib_id, sym, p, role) for p in on_hub)
         ):
-            continue
+            return
         found = resolve_function_ending(lib_id, sym, role, used - set(on_hub))
         if found is None:
             if not on_hub:
                 notes.append(
-                    f"{hub} ({lib_id}) has no recorded I2C {role} pin; "
+                    f"{hub} ({lib_id}) has no recorded {kind} {role} pin; "
                     f"left net {net.name} unwired"
                 )
-            continue
+            return
         pin, why = found
         for old in on_hub:
             if old == pin:
@@ -1069,15 +1337,30 @@ def join_hub_to_i2c_buses(
             if (hub, old) not in ir.nc_pins:
                 ir.nc_pins.append((hub, old))
             notes.append(
-                f"moved {hub}.{old} off I2C net {net.name}; "
+                f"moved {hub}.{old} off {kind} net {net.name}; "
                 f"it is not a recorded {role} pin"
             )
         ir.nc_pins = [x for x in ir.nc_pins if x != (hub, pin)]
         if pin not in on_hub:
             ir.connect(net.name, (hub, pin))
         used.add(pin)
-        notes.append(f"wired {hub}.{pin} to I2C net {net.name}: {why}")
+        notes.append(f"wired {hub}.{pin} to {kind} net {net.name}: {why}")
+
+    for net in ir.nets:
+        if not is_i2c_net(ir, symbols, net):
+            continue
+        role = i2c_line_role(ir, symbols, net)
+        if role is None:
+            continue
+        join_line(net, role, "I2C", move_wrong=True)
+    for net in ir.nets:
+        role = spi_line_role(ir, symbols, net)
+        if role in ("SCK", "MOSI", "MISO"):
+            join_line(net, role, "SPI", move_wrong=True)
+        elif role == "NSS":
+            join_line(net, role, "SPI", move_wrong=False)
     return notes
+
 
 def ensure_relay_flyback(
     ir: CircuitIR, symbols: dict[str, SymbolDef]

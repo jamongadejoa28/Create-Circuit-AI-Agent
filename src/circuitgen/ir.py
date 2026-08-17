@@ -8,9 +8,12 @@ Phase 3.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 from .pins import PinType
+
+_PIN_ALNUM = re.compile(r"[^A-Za-z0-9]")
 
 
 @dataclass
@@ -52,6 +55,16 @@ class SymbolDef:
                 return p
         raise KeyError(f"{self.lib_id} has no pin {number!r}")
 
+    def has_pin(self, number: str) -> bool:
+        """Whether `pin()` would succeed. ERC, the repair gate, and the
+        drop-unknown-pins pass share this so a phantom C1.3 cannot be a
+        net member while the checker calls it unknown."""
+        try:
+            self.pin(str(number))
+        except KeyError:
+            return False
+        return True
+
     @property
     def is_source(self) -> bool:
         """CANDIDATE FIX (scratch): a cell/battery — two PASSIVE terminals
@@ -72,6 +85,39 @@ class SymbolDef:
         """
         units = sorted({p.unit for p in self.pins} - {0})
         return units or [1]
+
+    def visible_contacts(self) -> list[PinDef]:
+        return [p for p in self.pins if not p.hidden]
+
+    def contact_name_restates_number(self, pin: PinDef) -> bool:
+        """True when the name carries no identity beyond the pin number.
+
+        KiCad generic headers are ``Pin_1`` / ``Pin_2``; some symbols repeat
+        the number as the name; empty and ``~`` are KiCad's blank. A pin
+        named SDA or CC1 is not this.
+        """
+        name = (pin.name or "").strip()
+        if not name or name in ("~", "~{}"):
+            return True
+        n = _PIN_ALNUM.sub("", name).upper()
+        number = _PIN_ALNUM.sub("", pin.number).upper()
+        return bool(number) and (n == number or n == "PIN" + number)
+
+    def contacts_are_anonymous(self) -> bool:
+        pins = self.visible_contacts()
+        return bool(pins) and all(self.contact_name_restates_number(p) for p in pins)
+
+    def next_free_contact_number(self, occupied: set[str]) -> str | None:
+        """Lowest unused visible pin number. NC is not occupancy — a later
+        pass drops stale NC markers once the pin is on a net."""
+        def key(num: str) -> tuple:
+            return (0, int(num)) if str(num).isdigit() else (1, str(num))
+
+        free = sorted(
+            (p.number for p in self.visible_contacts() if p.number not in occupied),
+            key=key,
+        )
+        return free[0] if free else None
 
 
 @dataclass

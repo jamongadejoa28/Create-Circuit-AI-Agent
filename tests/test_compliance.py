@@ -6,6 +6,8 @@ KiCad ERC 0.
 """
 
 import json
+from pathlib import Path
+
 import pytest
 
 from circuitgen.compliance import (
@@ -24,6 +26,11 @@ from circuitgen.normalize import ensure_pwr_flags
 from circuitgen.pins import PinType
 
 STM32 = "MCU_ST_STM32G4:STM32G474RETx"
+_016_I2C_RUN = (
+    Path(__file__).resolve().parent
+    / "artifacts/benchmarks/sequential/ko-step-016-i2c-hub-s2"
+    / "006-온도센서_아이투시/run.json"
+)
 
 
 def sym(lib_id, pin_specs, is_power=False, ref="U"):
@@ -469,3 +476,164 @@ def test_transcription_reports_provenance_backed_pin_name_conflict():
     assert any(
         issue.rule == "canonical_pin_binding_conflict" for issue in report.errors
     )
+
+
+def test_gpio_on_i2c_is_not_a_working_mcu_role():
+    """GPIO on an I2C net still conducts, so role_working used to stay 4/4.
+
+    016's fact is U1.2=PC13 on SCL and U1.3=PC14 on SDA (LQFP64). This
+    fixture is not that board: it puts pin 2 on SDA to show the role-job
+    rule, not to copy 016 pin-for-pin.
+    """
+    from circuitgen.compliance import check_compliance, role_jobs_done
+    from circuitgen.partindex import PartIndex
+    from circuitgen.pinfunctions import resolve_function_pin
+
+    parts = PartIndex()
+    mcu = STM32
+    sensor = "Sensor_Temperature:TMP100"
+    symbols = parts.load_symbols([mcu, sensor, "Device:R"])
+    spec = {
+        "parts_needed": [
+            {"role": "MCU", "search_query": "STM32G474RET6"},
+            {"role": "sensor", "search_query": "TMP100"},
+        ]
+    }
+    cands = {
+        "MCU": [{"lib_id": mcu}],
+        "sensor": [{"lib_id": sensor}],
+    }
+
+    ir = CircuitIR("gpio-i2c")
+    ir.add(Component("U1", mcu, "STM32G474RET6"))
+    ir.add(Component("U2", sensor, "TMP100"))
+    ir.add(Component("R3", "Device:R", "10k"))
+    ir.connect("SDA", ("U1", "2"), ("U2", "6"), ("R3", "1"))
+    ir.connect("SCL", ("U1", "3"), ("U2", "1"))
+    judged, working, broken = role_jobs_done(spec, ir, symbols, cands, dead={})
+    assert judged >= 1
+    assert working < judged
+    assert any("MCU" in b and "recorded SDA" in b for b in broken), broken
+
+    report = check_compliance(ir, symbols, spec=spec, candidates=cands)
+    assert not report.ok
+    assert any(i.rule == "i2c_hub_pin_not_recorded" for i in report.errors)
+
+    ir2 = CircuitIR("af-i2c")
+    ir2.add(Component("U1", mcu, "STM32G474RET6"))
+    ir2.add(Component("U2", sensor, "TMP100"))
+    ir2.add(Component("R3", "Device:R", "10k"))
+    sda_pin = resolve_function_pin(mcu, symbols[mcu], "I2C1_SDA")[0]
+    scl_pin = resolve_function_pin(mcu, symbols[mcu], "I2C1_SCL")[0]
+    ir2.connect("SDA", ("U1", sda_pin), ("U2", "6"), ("R3", "1"))
+    ir2.connect("SCL", ("U1", scl_pin), ("U2", "1"))
+    judged2, working2, broken2 = role_jobs_done(spec, ir2, symbols, cands, dead={})
+    assert working2 == judged2, broken2
+    report2 = check_compliance(ir2, symbols, spec=spec, candidates=cands)
+    assert not any(i.rule == "i2c_hub_pin_not_recorded" for i in report2.errors)
+
+
+def test_gpio_on_spi_clock_is_not_a_working_mcu_role():
+    from circuitgen.compliance import check_compliance, role_jobs_done
+    from circuitgen.partindex import PartIndex
+    from circuitgen.pinfunctions import resolve_function_ending
+
+    parts = PartIndex()
+    mcu = STM32
+    eeprom = "Memory_EEPROM:25LCxxx-MC"
+    symbols = parts.load_symbols([mcu, eeprom])
+    spec = {"parts_needed": [
+        {"role": "MCU", "search_query": "STM32G474RET6"},
+        {"role": "eeprom", "search_query": "25LC"},
+    ]}
+    cands = {"MCU": [{"lib_id": mcu}], "eeprom": [{"lib_id": eeprom}]}
+    clk = next(
+        p.number for p in symbols[eeprom].pins
+        if (p.name or "").split("/")[0].strip().upper() == "SCK"
+    )
+    ir = CircuitIR("gpio-spi")
+    ir.add(Component("U1", mcu, "STM32G474RET6"))
+    ir.add(Component("U2", eeprom, "25LC"))
+    ir.connect("FOO", ("U1", "2"), ("U2", clk))
+    judged, working, broken = role_jobs_done(spec, ir, symbols, cands, dead={})
+    assert working < judged
+    assert any("MCU" in b and "recorded SCK" in b for b in broken), broken
+    report = check_compliance(ir, symbols, spec=spec, candidates=cands)
+    assert any(i.rule == "spi_hub_pin_not_recorded" for i in report.errors)
+
+    sck = resolve_function_ending(mcu, symbols[mcu], "SCK")[0]
+    ir2 = CircuitIR("af-spi")
+    ir2.add(Component("U1", mcu, "STM32G474RET6"))
+    ir2.add(Component("U2", eeprom, "25LC"))
+    ir2.connect("FOO", ("U1", sck), ("U2", clk))
+    judged2, working2, broken2 = role_jobs_done(spec, ir2, symbols, cands, dead={})
+    assert working2 == judged2, broken2
+    report2 = check_compliance(ir2, symbols, spec=spec, candidates=cands)
+    assert not any(i.rule == "spi_hub_pin_not_recorded" for i in report2.errors)
+
+
+def test_unrecorded_hub_on_i2c_is_not_an_af_failure():
+    """No datasheet row: the fixer does not invent a pin, the checker is silent."""
+    from circuitgen.erc import i2c_hub_af_failures
+    from circuitgen.partindex import PartIndex
+
+    parts = PartIndex()
+    mcu = "RF_Module:ESP32-WROOM-32"
+    sensor = "Sensor_Temperature:TMP100"
+    symbols = parts.load_symbols([mcu, sensor])
+    ir = CircuitIR("esp")
+    ir.add(Component("U1", mcu, "ESP32"))
+    ir.add(Component("U2", sensor, "TMP100"))
+    ir.connect("SDA", ("U1", "21"), ("U2", "6"))
+    ir.connect("SCL", ("U2", "1"))
+    assert i2c_hub_af_failures(ir, symbols) == []
+
+
+@pytest.mark.skipif(not _016_I2C_RUN.is_file(), reason="016 campaign artifact is local")
+def test_016_pc13_on_sda_is_an_i2c_af_error():
+    """The 016 board was compliance-ok with U1.3 on SDA and U1.2 on SCL."""
+    from circuitgen.erc import i2c_hub_af_failures
+    from circuitgen.ir_json import ir_from_json
+    from circuitgen.partindex import PartIndex
+
+    run = json.loads(_016_I2C_RUN.read_text(encoding="utf-8"))
+    ir = ir_from_json(run["ir"])
+    symbols = PartIndex().load_symbols(sorted({c.lib_id for c in ir.components.values()}))
+    fails = i2c_hub_af_failures(ir, symbols)
+    paths = {p for p, _ in fails}
+    assert "U1.3" in paths and "U1.2" in paths, fails
+    report = check_compliance(ir, symbols, spec=run.get("spec") or {})
+    assert not report.ok
+    assert {i.rule for i in report.errors} >= {"i2c_hub_pin_not_recorded"}
+    assert report.role_working < report.role_judged
+    assert any("mcu" in x.lower() for x in report.role_not_working)
+
+
+def test_family_wildcard_lets_af_failure_reach_the_mcu_role_without_candidates():
+    """STM32G474RET6 is not a substring of STM32G474RETx. Token matching
+    left the MCU role unverifiable, so GPIO-on-SDA never hit role_jobs_done."""
+    from circuitgen.compliance import role_fulfilment, role_jobs_done
+    from circuitgen.partindex import PartIndex
+
+    parts = PartIndex()
+    mcu = STM32
+    sensor = "Sensor_Temperature:TMP100"
+    symbols = parts.load_symbols([mcu, sensor, "Device:R"])
+    spec = {
+        "parts_needed": [
+            {"role": "mcu", "search_query": "STM32G474RET6"},
+            {"role": "sensor", "search_query": "TMP100"},
+        ]
+    }
+    ir = CircuitIR("wild")
+    ir.add(Component("U1", mcu, "STM32G474RET6"))
+    ir.add(Component("U2", sensor, "TMP100"))
+    ir.add(Component("R3", "Device:R", "10k"))
+    ir.connect("SDA", ("U1", "2"), ("U2", "6"), ("R3", "1"))
+    ir.connect("SCL", ("U1", "3"), ("U2", "1"))
+    total, present, missing, _s, unver = role_fulfilment(spec, ir, symbols)
+    assert "mcu" not in unver and "mcu" not in missing, (unver, missing)
+    assert present >= 1
+    judged, working, broken = role_jobs_done(spec, ir, symbols, dead={})
+    assert working < judged
+    assert any("mcu" in b.lower() and "recorded SDA" in b for b in broken), broken

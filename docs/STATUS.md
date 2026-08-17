@@ -3,7 +3,7 @@
 > 다른 `docs/*.md`는 역사 기록이다. 새 계획 파일을 만들지 않는다.
 > 판정 기준: [`working-rules.md`](working-rules.md).
 
-갱신: 2026-08-17 · I2C 허브는 기록된 AF 핀만, Capacitor:Cap_0603은 ref가 C가 아니어도 Device:C. 1–5번 연마는 멈춤.
+갱신: 2026-08-17 · I2C 버스 가로지르는 C는 그 소자의 V+/GND로.
 
 ## 제품
 
@@ -279,6 +279,104 @@ STM32G474RET6). `resistor`와 `connections_intent` 문장은 넣지 않는다.
 - stage=`repair-2`, self-ERC 12, kicad 6, compliance error 1.
   지식 토픽: spec summary 문장 + `Conn_01x04`. `connections_intent` 없음.
 
+### 익명 헤더 핀 토큰이 숫자 접점이 되지 않던 것
+
+`Conn_01x04` 핀 이름은 `Pin_1`..`Pin_4`다. 모델이 넷 역할을 핀 id로 쓰면
+(`J1.SDA`) `resolve_pin_names`의 이름 일치도, 리페어 게이트의 핀 존재 검사도
+실패해서 패드 1–4가 비고 헤더가 죽는다. 고친 정의는 심볼 사실이다: 보이는
+핀의 이름이 번호(또는 `Pin_N`/`~`)뿐이면 남은 번호가 그 접점이다. 정규화와
+게이트가 `anonymous_header_contact`를 공유한다. SDA→2 표는 없다. USB-C처럼
+이름 있는 접점은 그대로 이름 매칭. Device:R도 이름이 비어 익명이지만
+헤더가 아니다 — geometry 검사기와 같은 `_header_like_component`(KiCad
+prefix J / `conn_` / pinheader 풋프린트). 이미 그 넷에 숫자 접점이 있으면
+리페어 `connect J1.SDA`는 빈 번호를 새로 쓰지 않고 그 접점을 다시 쓴다.
+
+### I2C 역할이 넷 멤버십만 보던 것
+
+`role_jobs_done`은 전도만 봤다. MCU GPIO가 SDA에 있어도 부품은 살아 있어
+`role_working`이 올랐다. 검사 `erc.i2c_hub_af_failures`는 조인과 같은 네 사실
+(`is_i2c_net`, `i2c_line_role`, `hub_ref`, `pin_carries_function_ending`)을
+쓴다. 표가 없으면 침묵(ESP32). 016 IR: U1.3 SDA·U1.2 SCL →
+`i2c_hub_pin_not_recorded` error, compliance not ok. MCU 역할은
+`part_present`(RET6↔RETx)로 U1에 붙고 `role_working`이 떨어진다. 017 IR:
+AF 핀이라 이 규칙은 0건.
+
+### SPI가 넷 라벨도 기록된 클럭도 없이 허브 GPIO에 있던 것
+
+I2C와 같은 구멍이다. MCU 표는 DS12288 Table 12의
+`SPI*_SCK`/`MOSI`/`MISO`/`NSS`. Table 12 추출이 pdf index 60부터라
+PA5(SPI1_SCK)가 JSON에 없었다 — 올바른 PA5 배선이 GPIO로 오판됐을
+자리라 추출을 56–71로 넓혔다. SCK/MOSI/MISO는 기록된 AF가 아니면
+`spi_hub_pin_not_recorded`. CS/NSS는 GPIO여도 된다(소프트웨어 칩 선택).
+WP/HOLD 특례와 W25Q 핀 번호 목록은 없다. 표가 없으면 침묵(ESP32).
+
+핀 이름 별칭 CLK/DI/DO/CS를 전 심볼에 쓰던 것은 지웠다. 4017 CLK와
+W25Q CLK가 같은 토큰이라, FOO 넷에서 조인이 PC13을 PA5로 옮겼다.
+저장소에 W25Q 데이터시트가 없어 플래시 표는 만들지 않았다. 이름 없는
+넷의 W25Q CLK는 SCK가 아니다. MCU가 아직 없고 넷이 SCK이면 라벨이
+버스다. MCU가 이미 SCK에 있으면 라벨은 증거가 아니다 — 25LC처럼 핀
+이름이 SCK일 때만 조인이 GPIO를 AF로 옮긴다.
+
+### 넷 라벨만으로 SPI/I2C를 정하던 것
+
+같은 토폴로지(STM32 GPIO + 저항)인데 넷 이름이 `FOO`이면 버스가 아니고
+`SCK`/`SDA`이면 버스였다. 조인이 PC13을 PA5로 옮겼다. ESP32 IO21은 핀
+이름도 AF 표도 없어서, 넷 이름 `SDA`가 풀업 검사의 근거였다.
+
+한 정의(`i2c_line_role` / `spi_line_role`): 멤버 핀 이름이 Table 12
+접미사(SDA/SCL, SCK/MOSI/MISO/NSS) → 기록된 AF → 넷 라벨은 **그 넷에
+`device_for` 부품이 없을 때만**. 핀 수 `<=2` 게이트는 없음 — Conn_01x02와
+Conn_01x03이 같은 넷 멤버십인데 갈렸다. MCU가 멤버이면 4017 CLK on `SCK`도
+버스가 아니다. TMP100 `U1.6` on `BUS_A`와 25LC `SCK` on `FOO`는 핀 이름.
+PA5 on `FOO`는 Table 12. 헤더+풀업만 있는 `SDA`와 MCU가 아직 없는 `SCK`는
+라벨. 표 없는 ESP32 `SDA`는 라벨.
+
+### 심볼에 없는 핀이 넷 멤버로 남던 것
+
+017 C1은 Device:C인데 핀 1–4가 넷에 있었다 (SDA/SCL/I2C_VDD/GND).
+R1·R2도 Device:R 핀 3이 GND에 있었다. `resolve_unknown_symbols`는
+이미 카탈로그에 있는 lib_id는 핀을 다시 안 본다. 리페어 게이트
+`absent_pin`은 새 op만 막는다. 합성 IR의 유령 핀은 ERC `unknown_pin`과
+같은 사실(`SymbolDef.has_pin`)로 넷에서 지운다. 익명 헤더 토큰
+(`J1.SDA`)은 그 전에 숫자 접점이 되므로 지우지 않는다. NC에 있는 익명
+헤더 토큰도 같은 정의로 묶는다. 지우지 않는 것: C1.1은 SDA, C1.2는 SCL에
+남는다. 유령 핀을 지운 뒤에도 커패시터는 버스 두 선을 잇는다. 그건
+지지 회로이고 이 패스의 대상이 아니다.
+
+### 커패시터가 SDA와 SCL을 잇던 것
+
+유령 핀을 지운 017 C1은 Device:C 핀 1=SDA, 핀 2=SCL로 남았다. SBOS231I
+Figure 12 (pdf index 18)는 0.01 µF를 **Supply Bypass**로 V+–GND에 그린다.
+같은 페이지 §8.2.2는 열원 가까이 두라는 배치이지 바이패스 위치가 아니다.
+공급·접지 핀 가까이에 두라는 문장은 §9 / §10.1 (pdf index 20)이다.
+`decoupling-cap-per-ic`와 같다. 한 정의 `capacitors_across_i2c_lines`: prefix C가
+`i2c_member_role`(핀 이름 SDA/SCL 또는 기록된 AF)인 두 넷을 잇는가.
+`two_pin_bridges`와 같은 prefix C다(대소문자 무시) — 버스 양단 저항을 바이패스로 보지
+않는다. 심볼 핀 수가 아니라 연결된 넷이 둘인지만 본다. 풀업이 쓰는
+`is_i2c_net`의 넷 라벨 폴백은 쓰지 않는다 — 라벨만 SDA/SCL인 555 타이밍 C를
+옮기지 않기 위함이다. 옮기는 위치는 그 버스에 있는 IC에서 **가장 많이
+묶인** 비접지 PWRIN 넷과 접지 핀 넷이지, 심볼 목록 첫 PWRIN(STM32G474는
+VBAT)이나 목록 첫 gnd, 호출자가 넘긴 레일 이름이 아니다. 동점이면
+`UNAMBIGUOUS_SUPPLY_NAMES`(VDD/VCC/V+)가 있는 넷. 그래도 동점이면
+버스에서만 뗀다. VBAT 이름 특례는 없다. 핀 이름이 SDA/SCL인 소자가 AF만
+있는 MCU보다 앞선다. 이름 있는 소자가 둘인데 (공급, 접지) 쌍이 다르면
+넷 노드 순서로 고르지 않고 버스에서만 뗀다. 한 C가 두 레일의 바이패스가
+될 수 없다. 그 소자의 공급 핀이 아직 넷에 없으면 MCU 쪽 다수 레일로
+떨어진다. 세 번째 패드가 버스에 있어도 검사와 수정이 같다 — 두 핀은
+레일·GND, 나머지는 NC. SDA와 SCL 멤버 넷이 있으면 세 번째가 레일이어도
+버스를 가로지른 것으로 본다. 그 패드가 소자 공급·GND가 아닌 넷(+5V 등)에
+있으면 NC해서, 옮긴 뒤 연결 넷이 둘이 되게 한다. 노트와
+`two_pin_bridges` 디커플링이 같아야 한다. `two_pin_bridges`는 **연결된 넷이 둘**일
+때만이다. 미사용 패드는 세지 않고, 4핀 션트나 SDA까지 닿는 피드스루는
+2단자 풀업·디커플링이 아니다. 레일 쌍이 갈려 NC할 때 노트는 “공급 넷이
+없다”가 아니라 버스의 I2C 소자들이 한 쌍을 공유하지 않는다고 적는다.
+핀 이름이 SDA인 경우로 한정하지 않는다.
+SDA–GND 필터 캡과 이미 레일에 있는 디커플링은 그대로.
+TMP100 핀 번호 특례는 없다. 남는 것: 표 없는 ESP32만 있고 핀 이름도 SDA가
+아닌 보드에서 라벨만 SDA/SCL인 C는 이 패스가 옮기지 않는다. 풀업은 그
+라벨을 여전히 버스로 본다. prefix만 다른 2단자(C가 아닌 X)는 커패시터로
+보지 않는다.
+
 ## 제품 규칙
 
 - verified: `data/rules/ldo_linear_regulator.json` 하나
@@ -288,13 +386,8 @@ STM32G474RET6). `resistor`와 `connections_intent` 문장은 넣지 않는다.
 
 ## 다음 작업 (규칙 9)
 
-1. I2C 역할이 “MCU가 버스 넷에 있다”로 끝나면 GPIO도 `role_working`이 된다.
-   검사기가 수정기와 같은 AF 정의(`pinfunctions` / 기록된 SDA·SCL)를 써야 한다.
-   TMP100 ADD1 특례·PB6/PB7 리터럴 없음.
-2. 커넥터 핀 이름이 숫자로 안 풀리면 헤더가 죽는다 (017 J1). 6번 특례로
-   이름 목록을 만들지 않는다.
-3. 7번(W25Q32JVSS SPI)은 공유 검사기가 없다. 1–5번 연마 금지.
-4. SchGen 격리, QLoRA 없음.
+측정된 다음 회로 사실이 생기기 전에는 큐를 비운다. 1–5번 연마·SchGen
+승격·QLoRA·UART 8번을 “다음”으로 올리지 않는다.
 
 ## 데이터·학습
 

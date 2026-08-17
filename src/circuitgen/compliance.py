@@ -322,6 +322,14 @@ def _role_matches(
         query = str(part.get("search_query", "")).replace("__conceptual__", "")
         wanted = (_tokens(role) | _tokens(query)) - _GENERIC_ROLE_WORDS
         matches = [ref for ref, toks in comp_tokens.items() if _token_hit(wanted, toks)]
+        # Token overlap misses KiCad family wildcards: STM32G474RET6 is not
+        # a substring of STM32G474RETx. `part_present` already answers that
+        # for selected-parts; without it the MCU role is unverifiable and
+        # an I2C hub on GPIO never reaches role_jobs_done.
+        if query:
+            for ref, comp in physical.items():
+                if ref not in matches and part_present(query, comp.lib_id):
+                    matches.append(ref)
         offered = {h.get("lib_id") for h in candidates.get(role, []) if h.get("lib_id")}
         if not matches and offered:
             matches = [ref for ref, comp in physical.items() if comp.lib_id in offered]
@@ -383,21 +391,32 @@ def role_jobs_done(
     `dead` comes from `topology.analyze_conduction` — a per-component fact
     about the finished board, independent of this fuzzy role matching. A role
     counts as done when every component matched to it conducts.
+
+    Conduction is not enough for an I2C or SPI hub: MCU GPIO on SDA or
+    SCK still conducts. `erc.i2c_hub_af_failures` / `spi_hub_af_failures`
+    are the same recorded-AF tests the join pass uses.
     """
+    from .erc import i2c_hub_af_failures, spi_hub_af_failures
+    from .normalize import hub_ref
+
     dead = dead or {}
     judged = 0
     done = 0
     broken: list[str] = []
+    hub = hub_ref(ir, symbols)
+    af_fail = i2c_hub_af_failures(ir, symbols) + spi_hub_af_failures(ir, symbols)
     for part, matches in _role_matches(spec, ir, symbols, candidates):
         if not matches:
             continue  # absent or unverifiable — role_fulfilment's business
         judged += 1
+        reasons: list[str] = []
         stuck = [ref for ref in matches if ref in dead]
         if stuck:
-            broken.append(
-                f"{part.get('role', '')}: "
-                + "; ".join(f"{ref} {dead[ref]}" for ref in sorted(stuck))
-            )
+            reasons.append("; ".join(f"{ref} {dead[ref]}" for ref in sorted(stuck)))
+        if hub in matches and af_fail:
+            reasons.extend(msg for _path, msg in af_fail)
+        if reasons:
+            broken.append(f"{part.get('role', '')}: " + "; ".join(reasons))
         else:
             done += 1
     return judged, done, broken
@@ -1071,6 +1090,16 @@ def check_compliance(
     role_judged, role_working, role_broken = role_jobs_done(
         spec or {}, ir, symbols, candidates, conduction.dead
     )
+    from .erc import i2c_hub_af_failures, spi_hub_af_failures
+
+    i2c_af_issues = [
+        _issue("i2c_hub_pin_not_recorded", "error", path, message)
+        for path, message in i2c_hub_af_failures(ir, symbols)
+    ]
+    spi_af_issues = [
+        _issue("spi_hub_pin_not_recorded", "error", path, message)
+        for path, message in spi_hub_af_failures(ir, symbols)
+    ]
     dead_issues = [
         _issue(
             "component_does_no_work", "error", ref,
@@ -1086,7 +1115,8 @@ def check_compliance(
 
     return ComplianceReport(
         issues=(req_issues + pwr_issues + rail_issues + binding_issues + role_issues
-                + package_issues + conceptual_issues + dead_issues + geometry_issues),
+                + package_issues + conceptual_issues + dead_issues + geometry_issues
+                + i2c_af_issues + spi_af_issues),
         requested_parts=requested,
         satisfied_parts=satisfied,
         missing_parts=missing,

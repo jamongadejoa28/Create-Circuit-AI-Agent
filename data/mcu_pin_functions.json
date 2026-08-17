@@ -7,7 +7,7 @@
     "file": "data/datasheets/stm32g474xB-xC-xE_DS12288_rev6.pdf",
     "table": "Table 12, pin descriptions",
     "pdf_pages": [
-     60,
+     56,
      71
     ],
     "method": "table cell bounding boxes, words inside each cell"
@@ -24,6 +24,41 @@
     ]
    },
    "pins": {
+    "PA0": {
+     "functions": [
+      "COMP1_OUT",
+      "EVENTOUT",
+      "TIM2_CH1",
+      "TIM2_ETR",
+      "TIM5_CH1",
+      "TIM8_BKIN",
+      "TIM8_ETR",
+      "USART2_CTS"
+     ],
+     "additional": [
+      "ADC12_IN1",
+      "COMP1_INM",
+      "COMP3_INP",
+      "UP1"
+     ]
+    },
+    "PA1": {
+     "functions": [
+      "EVENTOUT",
+      "RTC_REFIN",
+      "TIM15_CH1N",
+      "TIM2_CH2",
+      "TIM5_CH2",
+      "USART2_RTS_DE"
+     ],
+     "additional": [
+      "ADC12_IN2",
+      "COMP1_INP",
+      "OPAMP1_VINP",
+      "OPAMP3_VINP",
+      "OPAMP6_VINM"
+     ]
+    },
     "PA10": {
      "functions": [
       "COMP6_OUT",
@@ -120,6 +155,109 @@
       "USART2_RX"
      ],
      "additional": []
+    },
+    "PA2": {
+     "functions": [
+      "COMP2_OUT",
+      "EVENTOUT",
+      "LPUART1_TX",
+      "QUADSPI1_BK1_NCS",
+      "TIM15_CH1",
+      "TIM2_CH3",
+      "TIM5_CH3",
+      "UCPD1_FRSTX",
+      "USART2_TX"
+     ],
+     "additional": [
+      "ADC1_IN3",
+      "COMP2_INM",
+      "OPAMP1_VOUT"
+     ]
+    },
+    "PA3": {
+     "functions": [
+      "EVENTOUT",
+      "LPUART1_RX",
+      "QUADSPI1_CLK",
+      "SAI1_CK1",
+      "SAI1_MCLK_A",
+      "TIM15_CH2",
+      "TIM2_CH4",
+      "TIM5_CH4",
+      "USART2_RX"
+     ],
+     "additional": [
+      "ADC1_IN4",
+      "COMP2_INP",
+      "OPAMP",
+      "OPAMP5_VINM"
+     ]
+    },
+    "PA4": {
+     "functions": [
+      "EVENTOUT",
+      "SAI1_FS_B",
+      "SPI1_NSS",
+      "TIM3_CH2",
+      "USART2_CK"
+     ],
+     "additional": [
+      "ADC2_IN17",
+      "COMP1_INM",
+      "DAC1_OUT1"
+     ]
+    },
+    "PA5": {
+     "functions": [
+      "EVENTOUT",
+      "SPI1_SCK",
+      "TIM2_CH1",
+      "TIM2_ETR",
+      "UCPD1_FRSTX"
+     ],
+     "additional": [
+      "ADC2_IN13",
+      "COMP2_INM",
+      "DAC1_OUT2",
+      "OPAMP2_VINM"
+     ]
+    },
+    "PA6": {
+     "functions": [
+      "COMP1_OUT",
+      "EVENTOUT",
+      "LPUART1_CTS",
+      "QUADSPI1_BK1_IO3",
+      "SPI1_MISO",
+      "TIM16_CH1",
+      "TIM1_BKIN",
+      "TIM3_CH1",
+      "TIM8_BKIN"
+     ],
+     "additional": [
+      "ADC2_IN3",
+      "DAC2_OUT1",
+      "OPAMP2_VOUT"
+     ]
+    },
+    "PA7": {
+     "functions": [
+      "COMP2_OUT",
+      "EVENTOUT",
+      "QUADSPI1_BK1_IO2",
+      "SPI1_MOSI",
+      "TIM17_CH1",
+      "TIM1_CH1N",
+      "TIM3_CH2",
+      "TIM8_CH1N",
+      "UCPD1_FRSTX"
+     ],
+     "additional": [
+      "ADC2_IN4",
+      "COMP2_INP",
+      "OPAMP1_VINP",
+      "OPAMP2_VINP"
+     ]
     },
     "PA8": {
      "functions": [
@@ -425,6 +563,32 @@
      ],
      "additional": []
     },
+    "PC0": {
+     "functions": [
+      "EVENTOUT",
+      "LPTIM1_IN1",
+      "LPUART1_RX",
+      "TIM1_CH1"
+     ],
+     "additional": [
+      "ADC12_IN6",
+      "COMP3_INM"
+     ]
+    },
+    "PC1": {
+     "functions": [
+      "EVENTOUT",
+      "LPTIM1_OUT",
+      "LPUART1_TX",
+      "QUADSPI1_BK2_IO0",
+      "SAI1_SD_A",
+      "TIM1_CH2"
+     ],
+     "additional": [
+      "ADC12_IN7",
+      "COMP3_INP"
+     ]
+    },
     "PC10": {
      "functions": [
       "EVENTOUT",
@@ -458,6 +622,60 @@
       "USART3_CK"
      ],
      "additional": []
+    },
+    "PC13": {
+     "functions": [
+      "EVENTOUT",
+      "TIM1_BKIN",
+      "TIM1_CH1N",
+      "TIM8_CH4N"
+     ],
+     "additional": [
+      "RTC_OUT1",
+      "RTC_TAMP1",
+      "RTC_TS",
+      "WKUP2"
+     ]
+    },
+    "PC2": {
+     "functions": [
+      "COMP3_OUT",
+      "EVENTOUT",
+      "LPTIM1_IN2",
+      "QUADSPI1_BK2_IO1",
+      "TIM1_CH3",
+      "TIM20_CH2"
+     ],
+     "additional": [
+      "ADC12_IN8"
+     ]
+    },
+    "PC3": {
+     "functions": [
+      "EVENTOUT",
+      "LPTIM1_ETR",
+      "QUADSPI1_BK2_IO2",
+      "SAI1_D1",
+      "SAI1_SD_A",
+      "TIM1_BKIN2",
+      "TIM1_CH4"
+     ],
+     "additional": [
+      "ADC12_IN9",
+      "OPAMP5_VINP"
+     ]
+    },
+    "PC4": {
+     "functions": [
+      "EVENTOUT",
+      "I2C2_SCL",
+      "QUADSPI1_BK2_IO3",
+      "TIM1_ETR",
+      "USART1_TX"
+     ],
+     "additional": [
+      "ADC2_IN5"
+     ]
     },
     "PC5": {
      "functions": [
@@ -793,6 +1011,72 @@
       "ADC4_IN2"
      ]
     },
+    "PE2": {
+     "functions": [
+      "EVENTOUT",
+      "FMC_A23",
+      "SAI1_CK1",
+      "SAI1_MCLK_A",
+      "SPI4_SCK",
+      "TIM20_CH1",
+      "TIM3_CH1",
+      "TRACECK"
+     ],
+     "additional": []
+    },
+    "PE3": {
+     "functions": [
+      "EVENTOUT",
+      "FMC_A19",
+      "SAI1_SD_B",
+      "SPI4_NSS",
+      "TIM20_CH2",
+      "TIM3_CH2",
+      "TRACED0"
+     ],
+     "additional": []
+    },
+    "PE4": {
+     "functions": [
+      "EVENTOUT",
+      "FMC_A20",
+      "SAI1_D2",
+      "SAI1_FS_A",
+      "SPI4_NSS",
+      "TIM20_CH1N",
+      "TIM3_CH3",
+      "TRACED1"
+     ],
+     "additional": []
+    },
+    "PE5": {
+     "functions": [
+      "EVENTOUT",
+      "FMC_A21",
+      "SAI1_CK2",
+      "SAI1_SCK_A",
+      "SPI4_MISO",
+      "TIM20_CH2N",
+      "TIM3_CH4",
+      "TRACED2"
+     ],
+     "additional": []
+    },
+    "PE6": {
+     "functions": [
+      "EVENTOUT",
+      "FMC_A22",
+      "SAI1_D1",
+      "SAI1_SD_A",
+      "SPI4_MOSI",
+      "TIM20_CH3N",
+      "TRACED3"
+     ],
+     "additional": [
+      "RTC_TAMP3",
+      "WKUP3"
+     ]
+    },
     "PE7": {
      "functions": [
       "EVENTOUT",
@@ -829,6 +1113,18 @@
      "additional": [
       "ADC3_IN2"
      ]
+    },
+    "PF10": {
+     "functions": [
+      "EVENTOUT",
+      "FMC_A0",
+      "QUADSPI1_CLK",
+      "SAI1_D3",
+      "SPI2_SCK",
+      "TIM15_CH2",
+      "TIM20_BKIN2"
+     ],
+     "additional": []
     },
     "PF11": {
      "functions": [
@@ -873,6 +1169,42 @@
      ],
      "additional": []
     },
+    "PF2": {
+     "functions": [
+      "EVENTOUT",
+      "FMC_A2",
+      "I2C2_SMBA",
+      "TIM20_CH3"
+     ],
+     "additional": []
+    },
+    "PF3": {
+     "functions": [
+      "EVENTOUT",
+      "FMC_A3",
+      "I2C3_SCL",
+      "TIM20_CH4"
+     ],
+     "additional": []
+    },
+    "PF4": {
+     "functions": [
+      "COMP1_OUT",
+      "EVENTOUT",
+      "FMC_A4",
+      "I2C3_SDA",
+      "TIM20_CH1N"
+     ],
+     "additional": []
+    },
+    "PF5": {
+     "functions": [
+      "EVENTOUT",
+      "FMC_A5",
+      "TIM20_CH2N"
+     ],
+     "additional": []
+    },
     "PF6": {
      "functions": [
       "EVENTOUT",
@@ -883,6 +1215,41 @@
       "TIM5_CH1",
       "TIM5_ETR",
       "USART3_RTS"
+     ],
+     "additional": []
+    },
+    "PF7": {
+     "functions": [
+      "EVENTOUT",
+      "FMC_A1",
+      "QUADSPI1_BK1_IO2",
+      "SAI1_MCLK_B",
+      "TIM20_BKIN",
+      "TIM5_CH2"
+     ],
+     "additional": []
+    },
+    "PF8": {
+     "functions": [
+      "EVENTOUT",
+      "FMC_A24",
+      "QUADSPI1_BK1_IO0",
+      "SAI1_SCK_B",
+      "TIM20_BKIN2",
+      "TIM5_CH3"
+     ],
+     "additional": []
+    },
+    "PF9": {
+     "functions": [
+      "EVENTOUT",
+      "FMC_A25",
+      "QUADSPI1_BK1_IO1",
+      "SAI1_FS_B",
+      "SPI2_SCK",
+      "TIM15_CH1",
+      "TIM20_BKIN",
+      "TIM5_CH4"
      ],
      "additional": []
     },

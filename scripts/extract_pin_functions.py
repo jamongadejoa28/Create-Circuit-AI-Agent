@@ -48,7 +48,10 @@ DEVICES = [
         "match": "STM32G474",
         "file": "data/datasheets/stm32g474xB-xC-xE_DS12288_rev6.pdf",
         "document": "STM32G474xB/xC/xE datasheet, DS12288 Rev 6",
-        "pin_table_pages": list(range(60, 72)),
+        # Table 12 starts at pdf index 56 (printed p.57). Starting at 60
+        # dropped PA0–PA7, so SPI1_SCK on PA5 was unrecorded and a correct
+        # SPI pin would have looked like GPIO.
+        "pin_table_pages": list(range(56, 72)),
     },
 ]
 

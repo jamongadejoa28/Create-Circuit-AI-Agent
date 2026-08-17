@@ -47,9 +47,9 @@ def test_a_function_on_several_pins_prefers_one_that_is_free():
     parts = PartIndex()
     lib = "MCU_ST_STM32G4:STM32G474RETx"
     sym = parts.load_symbols([lib])[lib]
-    # the datasheet lists it on four port pins; PE0 and PG9 exist only on
-    # bigger packages and the symbol filters them out
-    assert pins_for_function(lib, "USART1_TX") == ["PA9", "PB6", "PE0", "PG9"]
+    # Table 12 lists USART1_TX on several ports; this package has PA9 and PB6
+    ports = pins_for_function(lib, "USART1_TX")
+    assert "PA9" in ports and "PB6" in ports
     assert resolve_function_pin(lib, sym, "USART1_TX")[0] == "43"          # PA9
     assert resolve_function_pin(lib, sym, "USART1_TX", {"43"})[0] == "59"  # PB6
 
@@ -77,6 +77,26 @@ def test_an_i2c_line_resolves_to_a_recorded_instance_not_a_gpio():
     assert "DS12288" in sda[1] and "I2C1_SDA" in sda[1]
     assert resolve_function_ending(lib, sym, "SDA", {sda[0]})[0] != sda[0]
     assert resolve_function_ending(lib, sym, "NOT_A_BUS") is None
+
+
+def test_pin_carries_function_ending_matches_the_recorded_port():
+    from circuitgen.pinfunctions import pin_carries_function_ending, resolve_function_pin
+
+    parts = PartIndex()
+    lib = "MCU_ST_STM32G4:STM32G474RETx"
+    sym = parts.load_symbols([lib])[lib]
+    sda = resolve_function_pin(lib, sym, "I2C1_SDA")[0]
+    assert pin_carries_function_ending(lib, sym, sda, "SDA")
+    assert not pin_carries_function_ending(lib, sym, "2", "SDA")  # PC13
+    assert pin_carries_function_ending(lib, sym, "19", "SCK")  # PA5 SPI1_SCK
+    assert pin_carries_function_ending(lib, sym, "21", "MOSI")  # PA7
+    assert pin_carries_function_ending(lib, sym, "20", "MISO")  # PA6
+    assert not pin_carries_function_ending(
+        "RF_Module:ESP32-WROOM-32",
+        parts.load_symbols(["RF_Module:ESP32-WROOM-32"])["RF_Module:ESP32-WROOM-32"],
+        "21",
+        "SDA",
+    )
 
 
 def test_the_agent_rewrites_a_function_token_into_a_pin_number():

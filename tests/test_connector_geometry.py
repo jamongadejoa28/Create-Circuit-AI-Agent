@@ -196,3 +196,38 @@ def test_two_terminal_resistor_is_not_a_header():
     issues, records = check_connector_geometry(ir, symbols, spec)
     assert records[0]["match"] is False
     assert records[0]["symbol_pins"] is None
+
+
+def test_anonymous_header_rewrite_uses_free_numbers_not_a_pinout():
+    from circuitgen.normalize import rewrite_anonymous_header_contacts
+
+    lib = "Connector_Generic:Conn_01x04"
+    ir, symbols = _board(lib, 4)
+    ir.connect("SDA", ("J1", "SDA"))
+    ir.connect("SCL", ("J1", "SCL"))
+    notes = rewrite_anonymous_header_contacts(ir, symbols)
+    pins = {p for n in ir.nets for r, p in n.nodes if r == "J1"}
+    assert pins == {"1", "2"}
+    assert any("anonymous header contact" in n for n in notes)
+    again = rewrite_anonymous_header_contacts(ir, symbols)
+    assert again == []
+    assert {p for n in ir.nets for r, p in n.nodes if r == "J1"} == pins
+
+
+def test_named_contact_symbol_is_not_anonymous():
+    lib = "Connector:USB_C"
+    ir = CircuitIR("usb")
+    ir.add(Component("J1", lib, "", "Connector_USB:USB_C"))
+    symbols = {
+        lib: SymbolDef(
+            lib, '(symbol "USB_C")',
+            [PinDef("A1", "GND", PinType.PASSIVE, 0, 0, 0, 2.54),
+             PinDef("A5", "CC1", PinType.PASSIVE, 0, 0, 0, 2.54)],
+            reference_prefix="J",
+        )
+    }
+    assert not symbols[lib].contacts_are_anonymous()
+    ir.connect("SDA", ("J1", "SDA"))
+    from circuitgen.normalize import rewrite_anonymous_header_contacts
+    rewrite_anonymous_header_contacts(ir, symbols)
+    assert ("J1", "SDA") in ir.nets[0].nodes

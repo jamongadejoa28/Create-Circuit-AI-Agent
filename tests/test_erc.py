@@ -190,6 +190,46 @@ def test_i2c_pullup_missing_then_satisfied():
     assert ("i2c_pullup_missing", "warning") not in rules(issues)
 
 
+def test_capacitor_across_sda_and_scl_is_a_warning():
+    ir = _mcu_base()
+    ir.add(Component("C1", "test:C", "0.01uF", footprint="F:F"))
+    ir.connect("SDA", ("U1", "3"), ("C1", "1"))
+    ir.connect("SCL", ("U1", "4"), ("C1", "2"))
+    issues = check_circuit(ir, SYMS)
+    cap = [i for i in issues if i.rule == "capacitor_across_i2c"]
+    assert [i.path for i in cap] == ["C1"]
+
+
+def test_a_capacitor_on_nets_named_sda_scl_without_sda_pins_is_not_a_bus_bypass():
+    """Pull-ups may still treat the labels as I2C; the bypass checker must not.
+
+    Electrically this is a 555 timing C. The nets are called SDA/SCL and
+    no member pin is named SDA/SCL and no AF table records them.
+    """
+    from circuitgen.erc import capacitors_across_i2c_lines, is_i2c_net
+
+    symbols = {
+        **SYMS,
+        "test:555": sym(
+            "test:555",
+            [
+                ("1", "GND", PinType.PWRIN),
+                ("6", "THRES", PinType.INPUT),
+                ("7", "DISCH", PinType.OUTPUT),
+                ("8", "VCC", PinType.PWRIN),
+            ],
+        ),
+    }
+    ir = mk([("U1", "test:555"), ("C1", "test:C")])
+    ir.connect("SDA", ("U1", "7"), ("C1", "1"))
+    ir.connect("SCL", ("U1", "6"), ("C1", "2"))
+    assert capacitors_across_i2c_lines(ir, symbols) == []
+    sda = next(n for n in ir.nets if n.name == "SDA")
+    scl = next(n for n in ir.nets if n.name == "SCL")
+    assert is_i2c_net(ir, symbols, sda) and is_i2c_net(ir, symbols, scl)
+    assert not any(i.rule == "capacitor_across_i2c" for i in check_circuit(ir, symbols))
+
+
 def test_power_rails_shorted():
     ir = mk([("#PWR01", "power:VCC"), ("#PWR02", "power:GND"), ("R1", "test:R")])
     ir.components["#PWR01"].value = "VCC"
