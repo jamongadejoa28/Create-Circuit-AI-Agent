@@ -436,6 +436,230 @@ def is_spi_net(ir: CircuitIR, symbols: dict[str, SymbolDef], net) -> bool:
     return spi_line_role(ir, symbols, net) is not None
 
 
+def pin_name_is_chip_select(pin_name: str) -> bool:
+    """Whether a symbol pin is named /CS (~{CS}).
+
+    Not folded into `_SPI_TOKEN_TO_AF`: AD8231 and other parts also use
+    a CS token. Serial-flash /CS pull-up uses lib_id plus this name.
+    """
+    return "CS" in _spi_name_tokens(pin_name)
+
+
+def pin_name_is_write_protect(pin_name: str) -> bool:
+    """Whether a Memory_Flash pin is /WP (~{WP})."""
+    return "WP" in _spi_name_tokens(pin_name)
+
+
+def pin_name_is_hold(pin_name: str) -> bool:
+    """Whether a Memory_Flash pin is /HOLD (~{HOLD})."""
+    return "HOLD" in _spi_name_tokens(pin_name)
+
+
+def flash_cs_connections(
+    ir: CircuitIR, symbols: dict[str, SymbolDef]
+) -> list[tuple[str, str, str]]:
+    """Each Memory_Flash /CS pin: (flash_ref, pin_no, net_name).
+
+    MCU NSS GPIO or net labels alone do not count — only the flash symbol's
+    /CS pin on a Memory_Flash: lib_id.
+    """
+    pin_net = {
+        (r, str(p)): n.name for n in ir.nets for r, p in n.nodes
+    }
+    out: list[tuple[str, str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for ref, comp in ir.components.items():
+        if not comp.lib_id.startswith("Memory_Flash:"):
+            continue
+        sym = symbols.get(comp.lib_id)
+        if sym is None:
+            continue
+        for p in sym.pins:
+            if not pin_name_is_chip_select(p.name or ""):
+                continue
+            pin = str(p.number)
+            net = pin_net.get((ref, pin))
+            if net and (ref, pin) not in seen:
+                seen.add((ref, pin))
+                out.append((ref, pin, net))
+    return out
+
+
+def flash_wp_hold_connections(
+    ir: CircuitIR, symbols: dict[str, SymbolDef]
+) -> list[tuple[str, str, str, str]]:
+    """Each Memory_Flash /WP or /HOLD pin: (flash_ref, pin_no, net_name, kind).
+
+    kind is ``WP`` or ``HOLD``. Same lib_id gate as ``flash_cs_connections``.
+    """
+    pin_net = {
+        (r, str(p)): n.name for n in ir.nets for r, p in n.nodes
+    }
+    out: list[tuple[str, str, str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for ref, comp in ir.components.items():
+        if not comp.lib_id.startswith("Memory_Flash:"):
+            continue
+        sym = symbols.get(comp.lib_id)
+        if sym is None:
+            continue
+        for p in sym.pins:
+            name = p.name or ""
+            if pin_name_is_write_protect(name):
+                kind = "WP"
+            elif pin_name_is_hold(name):
+                kind = "HOLD"
+            else:
+                continue
+            pin = str(p.number)
+            net = pin_net.get((ref, pin))
+            if net and (ref, pin) not in seen:
+                seen.add((ref, pin))
+                out.append((ref, pin, net, kind))
+    return out
+
+
+def flash_supply_net(
+    ir: CircuitIR, symbols: dict[str, SymbolDef], flash_ref: str
+) -> str | None:
+    """The board supply net the flash VCC (PWRIN) pin sits on."""
+    pin_net = {
+        (r, str(p)): n.name for n in ir.nets for r, p in n.nodes
+    }
+    comp = ir.components.get(flash_ref)
+    sym = symbols.get(comp.lib_id) if comp else None
+    if sym is None:
+        return None
+    for p in sym.pins:
+        if p.etype != PinType.PWRIN:
+            continue
+        name = (p.name or "").upper()
+        from .netnames import is_ground_pin
+        if is_ground_pin(name):
+            continue
+        net_name = pin_net.get((flash_ref, str(p.number)))
+        if not net_name:
+            continue
+        net = next((n for n in ir.nets if n.name == net_name), None)
+        if net and net_kind(ir, symbols, net) == "power":
+            return net_name
+    return None
+
+
+def flash_return_net(
+    ir: CircuitIR, symbols: dict[str, SymbolDef], flash_ref: str
+) -> str | None:
+    """The net the flash VSS/GND pin sits on — name-independent."""
+    from .netnames import is_ground_pin
+
+    pin_net = {
+        (r, str(p)): n.name for n in ir.nets for r, p in n.nodes
+    }
+    comp = ir.components.get(flash_ref)
+    sym = symbols.get(comp.lib_id) if comp else None
+    if sym is None:
+        return None
+    for p in sym.pins:
+        if not is_ground_pin(p.name or ""):
+            continue
+        net_name = pin_net.get((flash_ref, str(p.number)))
+        if net_name:
+            return net_name
+    return None
+
+
+def flash_cs_on_return(
+    ir: CircuitIR, symbols: dict[str, SymbolDef], flash_ref: str, cs_net: str
+) -> bool:
+    """True when /CS is asserted low against the flash return.
+
+    Same net as the flash VSS pin, or a net `net_kind` classifies as
+    ground. An R from that net to VCC is a rail load, not a CS pull-up.
+    """
+    if not cs_net:
+        return False
+    ret = flash_return_net(ir, symbols, flash_ref)
+    if ret and cs_net == ret:
+        return True
+    net = next((n for n in ir.nets if n.name == cs_net), None)
+    return net is not None and net_kind(ir, symbols, net) == "gnd"
+
+
+def flash_cs_bus_net(
+    ir: CircuitIR, symbols: dict[str, SymbolDef], flash_ref: str
+) -> str | None:
+    """A net that can drive /CS, other than the flash rails.
+
+    Prefer a net that already has an R to the flash VCC (a pull-up already
+    placed). Else a net whose members are SPI NSS/CS by `spi_line_role`.
+    """
+    supply = flash_supply_net(ir, symbols, flash_ref)
+    ret = flash_return_net(ir, symbols, flash_ref)
+    skip = {n for n in (supply, ret) if n}
+    for net in ir.nets:
+        if net.name in skip:
+            continue
+        if supply and supply in two_pin_bridges(ir, symbols, "R", net.name):
+            return net.name
+    for net in ir.nets:
+        if net.name in skip:
+            continue
+        if spi_line_role(ir, symbols, net) == "NSS":
+            return net.name
+        if pin_name_is_chip_select(net.name):
+            return net.name
+    return None
+
+
+def spi_flash_cs_tracks_vcc(
+    ir: CircuitIR, symbols: dict[str, SymbolDef], flash_ref: str, cs_net: str
+) -> bool:
+    """Whether /CS already tracks that flash's VCC (§4.1, pdf index 9).
+
+    Direct tie: /CS net is the same net as the flash VCC pin. Otherwise an
+    R must bridge /CS to that same VCC net — not an arbitrary supply rail.
+    The flash return (VSS net or a ground net) is never tracking VCC:
+    /CS is active-low, so that net means selected. An R from there to VCC
+    is a rail load.
+    """
+    if flash_cs_on_return(ir, symbols, flash_ref, cs_net):
+        return False
+    supply = flash_supply_net(ir, symbols, flash_ref)
+    if not supply:
+        return False
+    if cs_net == supply:
+        return True
+    return supply in two_pin_bridges(ir, symbols, "R", cs_net)
+
+
+def shorted_bypass_capacitors(
+    ir: CircuitIR, symbols: dict[str, SymbolDef]
+) -> list[tuple[str, str]]:
+    """Each 2-pin C with both pins on one net: (ref, that net).
+
+    Shared by the normalize repair pass and tests. A bypass cap must bridge
+    two potentials (knowledge: decoupling-cap-per-ic).
+    """
+    pin_net = {
+        (r, str(p)): n.name for n in ir.nets for r, p in n.nodes
+    }
+    out: list[tuple[str, str]] = []
+    for ref, comp in ir.components.items():
+        if comp.lib_id != "Device:C":
+            continue
+        sym = symbols.get(comp.lib_id)
+        if sym is None or len(sym.pins) != 2:
+            continue
+        nets = {
+            pin_net.get((ref, str(p.number)))
+            for p in sym.pins
+            if (ref, str(p.number)) not in ir.nc_pins
+        } - {None}
+        if len(nets) == 1:
+            out.append((ref, next(iter(nets))))
+    return out
+
+
 def spi_hub_af_failures(
     ir: CircuitIR, symbols: dict[str, SymbolDef]
 ) -> list[tuple[str, str]]:
@@ -603,6 +827,26 @@ def _check_extended(
             issues.append(
                 _issue("i2c_pullup_missing", "warning", f"net:{net.name}", f"I2C net {net.name} (SDA/SCL pins) has no pull-up resistor to a power rail (typ. 10k — knowledge: pullup-resistor-sizing)")
             )
+
+    seen_cs: set[tuple[str, str]] = set()
+    for flash_ref, _pin, cs_net in flash_cs_connections(ir, symbols):
+        key = (flash_ref, cs_net)
+        if key in seen_cs:
+            continue
+        seen_cs.add(key)
+        if spi_flash_cs_tracks_vcc(ir, symbols, flash_ref, cs_net):
+            continue
+        supply = flash_supply_net(ir, symbols, flash_ref) or "?"
+        issues.append(
+            _issue(
+                "spi_flash_cs_pullup_missing",
+                "warning",
+                f"net:{cs_net}",
+                f"flash /CS net {cs_net} does not track the device VCC net "
+                f"{supply} at power-up (knowledge: w25q32jv-cs-tracks-vcc; "
+                f"pdf index 9)",
+            )
+        )
 
     for ref, a, b in capacitors_across_i2c_lines(ir, symbols):
         issues.append(

@@ -248,3 +248,23 @@ def test_footprint_missing_warns_for_real_parts_only():
     ensure_pwr_flags(ir, SYMS)
     fp = [i for i in check_circuit(ir, SYMS) if i.rule == "footprint_missing"]
     assert [i.path for i in fp] == ["R1"]
+
+
+def test_spi_flash_cs_pullup_missing():
+    from circuitgen.symbols import load_symbols
+    from tests.test_blocks import _w25q_pin
+
+    flash = "Memory_Flash:W25Q32JVSS"
+    symbols = load_symbols([flash, "power:+3V3", "power:GND"])
+    ir = CircuitIR("cs-erc")
+    ir.add(Component("U2", flash, "W25Q32JVSS", footprint="F:F"))
+    ir.add(Component("#PWR01", "power:+3V3", "+3V3"))
+    ir.add(Component("#PWR02", "power:GND", "GND"))
+    cs = _w25q_pin(symbols, "CS")
+    ir.connect("+3V3", ("#PWR01", "1"), ("U2", "8"))
+    ir.connect("GND", ("#PWR02", "1"), ("U2", "4"))
+    ir.connect("CS", ("U2", cs))
+    ensure_pwr_flags(ir, symbols)
+
+    issues = check_circuit(ir, symbols)
+    assert any(i.rule == "spi_flash_cs_pullup_missing" for i in issues)

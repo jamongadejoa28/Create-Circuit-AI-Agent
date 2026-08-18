@@ -8,7 +8,7 @@ PyMuPDF로 읽어 확인할 수 있어야 합니다. 검증 불가능한 인용�
 이 환경에서 타임아웃되므로, ST 문서는 유통사(Farnell)나 기존에 공개된 동일 문서
 사본에서 받았고, 1페이지 문서번호·개정판으로 제조사 문서임을 확인했습니다.
 받은 날짜: ESP32·G4는 **2026-08-11**, 나머지(555/LM386/MCP6001/TMP100/AMS1117/F103/H743/AN2867)는
-**2026-08-17**. 전부 PyMuPDF로 열리는 것을 확인했습니다.
+**2026-08-17**, W25Q32JV는 **2026-08-18**. 전부 PyMuPDF로 열리는 것을 확인했습니다.
 
 ## 코드에서 인용하는 법
 
@@ -44,6 +44,7 @@ PyMuPDF로 읽어 확인할 수 있어야 합니다. 검증 불가능한 인용�
 | `stm32f103x8_DS5319.pdf` | DS5319 Rev 18 | 116 | [st.com](https://www.st.com/resource/en/datasheet/stm32f103c8.pdf) — bytes via [Farnell 3770728](https://www.farnell.com/datasheets/3770728.pdf) |
 | `stm32h743_DS12110.pdf` | DS12110 Rev 10 | 357 | [st.com](https://www.st.com/resource/en/datasheet/stm32h743vi.pdf) — bytes via [Farnell 4001001](https://www.farnell.com/datasheets/4001001.pdf) |
 | `an2867_oscillator.pdf` | AN2867 DocID15287 Rev 9 | 41 | [st.com](https://www.st.com/resource/en/application_note/an2867-oscillator-design-guide-for-stm8afals-stm32-mcus-and-mpus-stmicroelectronics.pdf) — bytes via public ST copy at [hands.com](https://hands.com/~lkcl/eoma/laptop_15in/CD00221665.pdf). Latest on st.com is Rev 24; CL formula is cited from this Rev 9 copy. |
+| `w25q32jv_revG.pdf` | W25Q32JV Revision G | 80 | [winbond.com](https://www.winbond.com/hq/support/documentation/downloadV2022.jsp?__locale=en_TW&xmlPath=/support/resources/.content/item/DA00-W25Q32JV.html&level=1) — 제조사 페이지는 로그인. bytes via [Octopart 113071625](https://datasheet.octopart.com/W25Q32JVSSIQ-Winbond-datasheet-113071625.pdf). 1페이지 Publication Release Date March 27, 2018 / Revision G. |
 
 칩 데이터시트와 **모듈** 데이터시트를 모두 둔 이유: 실제로 보드에 올라가는 것은 모듈인 경우가
 많고, 모듈의 전원·안테나·스트래핑 핀 요구사항은 칩 문서에 없습니다.

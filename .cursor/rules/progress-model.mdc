@@ -1,0 +1,12 @@
+---
+description: Cursor 진행 모델 — Composer 2.5로 통일
+alwaysApply: true
+---
+
+# 진행 모델
+
+이 저장소의 Cursor 에이전트·서브에이전트 작업 모델은 **Composer 2.5** (`composer-2.5-fast`)로 통일한다.
+
+- `Task`로 서브에이전트를 띄울 때 `model: "composer-2.5-fast"`를 쓴다(사용자가 다른 모델을 명시한 경우만 예외).
+- `.claude/agents/` 정의의 `model:` 필드도 `composer-2.5-fast`와 맞춘다.
+- 회로 생성·캠페인의 **로컬 LLM**(llama-server `Qwen2.5-Coder-7B` 등)과 혼동하지 않는다 — 그쪽은 제품 런타임 모델이다.

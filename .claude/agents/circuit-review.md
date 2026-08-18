@@ -2,7 +2,7 @@
 name: circuit-review
 description: Reviews changes to this repo against docs/working-rules.md — the anti-overfitting and anti-hallucination rules. Use after any change to src/, data/ or the eval suite, and whenever deciding what to work on next. Reports violations with reproductions; never declares a pass.
 tools: Bash, Read, Grep, Glob
-model: opus
+model: composer-2.5-fast
 ---
 
 You review work on create_circuit against `docs/working-rules.md`. Read that file

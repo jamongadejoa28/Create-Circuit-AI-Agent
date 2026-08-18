@@ -3,7 +3,8 @@
 > 다른 `docs/*.md`는 역사 기록이다. 새 계획 파일을 만들지 않는다.
 > 판정 기준: [`working-rules.md`](working-rules.md).
 
-갱신: 2026-08-17 · I2C 버스 가로지르는 C는 그 소자의 V+/GND로.
+갱신: 2026-08-18 · /CS는 리턴에서 CS 버스로. VCC 직결 안 함.
+
 
 ## 제품
 
@@ -16,7 +17,7 @@ PCB 배치·동박·DRC와 QLoRA는 하지 않는다.
 고정 입력: `tests/eval/sequential_campaign_v1.json`.
 실행기: `tests/benchmarks/run_sequential_campaign.py`.
 
-최신 측정: `ko-step-017-i2c-af-s2` (6번까지, seed 2). 직전: `ko-step-016-i2c-hub-s2`.
+최신 측정: `ko-step-019-spi-s2` (7번까지, seed 2). 직전: `ko-step-018-i2c-cap-s2`.
 
 ### 리페어 루프가 아무것도 배선하지 않고 있었다
 
@@ -377,24 +378,195 @@ TMP100 핀 번호 특례는 없다. 남는 것: 표 없는 ESP32만 있고 핀 �
 라벨을 여전히 버스로 본다. prefix만 다른 2단자(C가 아닌 X)는 커패시터로
 보지 않는다.
 
+### 018 seed 2 6번 회로 사실 (`ko-step-018-i2c-cap-s2`)
+
+실행기 exit 3은 2번(LDO) compliance·레일도달 카운트와, 6번
+`role_working` 5→4다. 1–5번을 고치러 가지 않는다. 6번 5→4는 역할
+집합이 017의 7개(센서 누락 + J1 숫자 핀 비어 있음)와 018의 4개가
+달라서 생긴 실행기 비교이지, 커패시터 패스의 실패가 아니다.
+
+- 선정 부품 있음: U1 `STM32G474RETx`, U2 `TMP100`. C는 Device:C.
+- C1 `100nF` 핀 1=+3V3, 핀 2=GND. SDA/SCL에 없다. 유령 핀 3·4 없음.
+  런 로그에 `moved C1 off I2C`가 없다 — 이 생성은 017처럼 버스를
+  가로지르지 않았고, 패스가 이 보드에서 발동했다고 주장하지 않는다.
+- SDA: U2.6, J1.2, U1.50, R3.1. SCL: U2.1, J1.3, R4.1, U1.49.
+  로그 `wired U1.50 … I2C1_SDA -> PA14`, `wired U1.49 … I2C1_SCL -> PA13`.
+- U2.4 V+=+3V3, U2.2 GND. ADD0(U2.5)·ADD1(U2.3)=GND.
+- J1 숫자 접점 1=+3V3 / 2=SDA / 3=SCL / 4=GND. R3·R4 10k 버스 풀업.
+  R1·R2 4.7k는 또 +3V3–GND만 (R1.2가 SDA와 GND에 같이 있어 GND만 남김).
+- stage=`done`. 지식 주입 tmp100 세 개.
+
+017 최종 IR을 지금 패스 순서(헤더 바인드 → 유령 핀 삭제 → C 이동)로
+다시 돌리면 C1은 SDA/SCL에서 +3V3/GND로 옮겨진다. 그 보드는 018
+생성이 아니다.
+
+### 019 seed 2 7번 회로 사실 (`ko-step-019-spi-s2`)
+
+실행기 exit 3은 4번 `wired_ratio` 0.857→0.0. 1–5번을 고치러 가지 않는다.
+
+- 선정 부품 W25Q32JVSS가 U2로 있다. 캠페인 `selected_parts`는 플래시뿐.
+  모델이 MCU로 `CPU_NXP_68000:MC68332`(132핀)를 넣었다. DS12288 표가
+  없어 조인은 침묵. U1.45 SCK, U1.44 MOSI, U1.43 MISO, U1.112 CS.
+- U2.8 VCC=+3V3, U2.4 GND. U2.6 CLK=SCK, U2.5 DI=MOSI, U2.2 DO=MISO,
+  U2.1 /CS=CS. C1 100nF·C2 1µF는 +3V3–GND.
+- U2.7 `/HOLD`는 HOLD 넷의 유일한 노드 — compliance
+  `spi_flash: U2 pin 7 is the only thing on its net`.
+- U2.3 `/WP`는 WP 넷. 같은 넷에 부품 목록에 없는 `GND.1`.
+  로그 `removed impossible GND.1 from HOLD: kept WP`.
+- CS 넷에 유령 `R1.1`. 리페어 `connect references missing component R1`
+  거부. 실제 Device:R 풀업 없음. SPI 헤더(J) 없음.
+- 지식 토픽 W25Q32JVSS·MC68332. 주입은 `button-input-pullup-debounce`,
+  `adc-input-divider-zener-protection` — 플래시 항목이 그때 인덱스에
+  없었다. 지금은 Rev G를 `data/datasheets/w25q32jv_revG.pdf`에 두고
+  `w25q32jv-cs-tracks-vcc`, `w25q32jv-wp-hold-active-low`를 넣었다.
+  019 보드가 그 지식을 썼다고 주장하지 않는다.
+- stage=`repair-2`. self-ERC 98 / kicad 157은 주로 MC68332 미연결 핀.
+
+### 021 seed 2 7번 회로 사실 (`ko-step-021-spi-cs-s2`, CS 패스 후 재측정)
+
+020은 검토 전 `spi_flash_cs_has_pullup` 정의로 돌아가 무효. 수정 후
+`spi_flash_cs_tracks_vcc`로 재측정. exit 3은 baseline 대비 회귀 5건
+(2·4·5·6·7번). 6번은 선정 부품 STM32G474RET6·TMP100 둘 다
+`selected_parts_missing`. 7번 `role_working` 2→0, C1·C2 단락·HOLD
+단독 넷은 그대로.
+
+- 019와 동일 보드 토폴로지: U1 `MC68332`, U2 `W25Q32JVSS`, C1/C2는 여전히
+  +3V3–+3V3(단락). SPI 헤더(J) 없음. stage=`repair-3`.
+- CS 넷: U1.46, U2.1 `/CS`, **R1 `Device:R` 10k** — R1.1→CS, R1.2→+3V3.
+  유령 `R1.1` 없음. 로그 `added R1 10k pull-up … CS to +3V3`
+  (`w25q32jv-cs-tracks-vcc`).
+- U2.3 `/WP`는 리페어로 GND에 연결됨(`connected U2.3 to GND`).
+- U2.7 `/HOLD`는 HOLD 넷의 유일한 노드 — 019와 같음.
+- 지식 주입: `w25q32jv-cs-tracks-vcc`, `w25q32jv-wp-hold-active-low`.
+  HOLD/WP 하이 묶음 패스는 하지 않았다.
+
+### 022 seed 2 7번 회로 사실 (`ko-step-022-spi-fixes-s2`, WP/HOLD·C 재측정)
+
+021 뒤에 넣은 세 패스(`ensure_spi_flash_wp_hold_released`,
+`repair_shorted_bypass_capacitors`, 기존 `/CS`)를 캠페인으로 다시 쟀다. exit 3은
+baseline 대비 회귀가 남지만, 7번 보드 자체는 **`role_working` 0→3**으로 회복됐다.
+
+- U2 `W25Q32JVSS`는 살아 있다. C1 100nF·C2 1µF는 이제 **+3V3–GND**다.
+  로그: `moved C1.2 from +3V3 to GND`, `moved C2.2 from +3V3 to GND`.
+- /CS: R1 10k가 CS–+3V3. 021과 동일하게 유령 `R1.1`은 없다.
+- /WP: R2 10k가 WP–+3V3. 이어서 `connected U2.3 (WP) to +3V3`.
+- /HOLD: R3 10k가 HOLD–+3V3. HOLD 단독 넷은 해소됐다.
+- `role_not_working`은 이제 **U1 `MC68332` 미연결 핀만** 남는다. `dead_components`
+  도 U1 하나뿐이다.
+- SPI 헤더(J)는 여전히 없다. 모델이 MCU로 `MC68332`를 고른 것도 그대로다.
+
+### hub 미연결 NC + SPI 헤더 (`mark_hub_unused_pins_nc`, `ensure_hub_signal_connectors`)
+
+022 7번 IR을 새 패스만 재생(캠페인 아님 — llama-server 꺼짐):
+
+- `mark_hub_unused_pins_nc`: 132핀 hub에서 SPI·전원 이외 미연결 GPIO를 NC.
+  로그 `U1: marked 86 unused visible pin(s) NC`. `dead_components`에서 U1 제거.
+- `ensure_hub_signal_connectors`: spec `signals` 중 hub에 닿고 헤더 없는
+  SCLK/MOSI/MISO/CS → `J1` `Conn_01x05`(4신호+GND). WP/HOLD는 hub 미연결이라 제외.
+- 재생 compliance: **ok**, `role_not_working`=[], `dead_components`={}.
+  (저장 IR 재정규화라 `role_judged` 2/2 — decoupling 역할 매칭은 캠페인으로 다시 잰다.)
+
+### 023 seed 2 7번 회로 사실 (`ko-step-023-hub-spi-s2`)
+
+hub NC·헤더 패스 뒤 step 7 재측정. exit 3. 1–6번 숫자 변동은 시드·추출 분산으로
+두고 **7번 보드만** 적는다. `role_working` 3→4는 증거가 아니다.
+
+추출된 spec이 022와 다르다. MCU 역할이 없고 `connector`+`spi_flash_memory`(U1)+
+풀업·캡. 그 결과 hub 패스는 **발동하지 않았다**(16핀 이상 hub 없음).
+
+- MCU 없음. 플래시만 `U1` `W25Q32JVSS`.
+- J1은 `Connector:LEMO4`(풋프린트 없음). SCLK/MISO/MOSI는 J1.1–3에 있고
+  CS 넷은 J1.4·R3.1뿐 — 플래시 `/CS`는 그 넷에 없다.
+- **U1.1 `/CS`가 GND.** 칩이 항상 셀렉트. 패스가
+  `added R1 10k pull-up on flash /CS net GND to VCC` — GND–VCC 10k 부하.
+- VCC 넷 ≠ +3V3. C1만 +3V3–GND. 플래시 VCC(U1.8)는 VCC.
+  `supply_rail_reach` mismatch 1건이 022 대비 회귀 항목.
+- /HOLD(U1.7)는 VCC(released). /WP(U1.3)는 NC.
+- U3 SparkFun 20k가 SCLK–MISO를 잇는다.
+
+### /CS on GND (`ensure_spi_flash_cs_pullups` + `spi_flash_cs_tracks_vcc`)
+
+WP/HOLD는 GND면 핀을 VCC로 옮긴다. /CS는 같은 상황에서 R을 GND–VCC에 넣었다.
+§4.1 “track VCC at power-up”의 반대(액티브 로우로 선택됨).
+
+원인: 검사 `spi_flash_cs_tracks_vcc`가 GND–VCC R을 풀업으로 인정해서 수정기가
+스킵했다. 공유 정의 `flash_cs_on_return`: 플래시 VSS와 같은 넷(이름 무관).
+그 넷은 tracking이 아니다. 수정기는 VCC 직결하지 않는다(버스 단절) — 기존
+CS 버스(이미 VCC 풀업이 있거나 NSS/`CS` 넷)로 옮기고, 없으면 풀업 넷을 만든다.
+
+023 IR 재생: `moved U1.1 (/CS) off return net GND onto CS` — CS 넷에 J1.4·R3·U1.1.
+저장된 R1 GND–VCC는 이전 패스 잔여물.
+
+### 024 seed 2 7번 회로 사실 (`ko-step-024-cs-gnd-s2`)
+
+CS-on-GND 정의 수정 뒤 재측정. exit 3(2번·4번 숫자). 7번만 적는다.
+
+- `/CS`(U1.1)는 **CS 넷**: U1.1, J1.4, R1.1. R1.2→VCC(U1.8). GND에 없음.
+  로그 `added R1 10k pull-up on flash /CS net CS to VCC`. GND–VCC 10k 없음.
+- /HOLD(U1.7)는 VCC. /WP(U1.3)는 **NC** — 패스가 넷 있는 핀만 본다.
+- MCU 없음, J1 `LEMO4`, U3 20k가 SCLK–MISO. C1은 +3V3–GND, 플래시 VCC는
+  넷 이름 `VCC` — `not_requested_rail` 1건. spec 역할은 023과 같다.
+
+### 디커플링 C 단락 (`sanitize` + `repair_shorted_bypass_capacitors`)
+
+021 7번: 로그 `removed impossible C1.2 from GND: one-net-per-pin; kept +3V3`.
+핀 2가 +3V3·GND에 동시에 있을 때 sanitize가 GND를 떨구며 C1/C2가
++3V3–+3V3으로 남았다.
+
+- `sanitize_known_device_nets`: 2핀 `Device:C`에서 power+gnd 중복이면 다른
+  핀이 이미 power(또는 gnd)일 때 bypass로 핀을 나눈다.
+- `erc.shorted_bypass_capacitors` + `repair_shorted_bypass_capacitors`:
+  두 핀이 같은 rail 넷이면 한 핀을 GND로 (`decoupling-cap-per-ic`).
+- 021 IR 재생(duplicate 상태): C1/C2 → +3V3–GND, `analyze_conduction`
+  dead에서 제외.
+
+### Memory_Flash /WP·/HOLD released (Rev G §4.3–§4.4, pdf index 9)
+
+§4.4: “When /HOLD is brought high, device operation can resume.” §4.3:
+/WP active low. 지식 `w25q32jv-wp-hold-active-low`에 released=high 문구
+추가.
+
+- `erc.flash_wp_hold_connections` + `spi_flash_cs_tracks_vcc`와 같은
+  released 정의(VCC 넷 또는 R이 그 VCC 넷으로).
+- `ensure_spi_flash_wp_hold_released`: GND에 묶인 핀은 VCC로, 단독 넷은
+  10k 풀업(`pullup-resistor-sizing`).
+- 021 IR 재생: U2.3 WP GND→+3V3, U2.7 HOLD에 R2 10k, U2·C1·C2 dead 해소.
+  U1 MC68332 미연결 핀은 그대로.
+
+### Memory_Flash /CS 풀업 (Rev G §4.1, pdf index 9)
+
+019 7번: `/CS` 풀업이 유령 `R1.1`뿐이었다. §4.1은 파워업에서 VCC를
+따라가게 `/CS` 풀업을 쓸 수 있다고만 한다. `/HOLD`·`/WP`는 §4.3·§4.4가
+액티브 로우만 말하지 하이 묶음은 말하지 않는다 — 이번 패스 대상 아님.
+
+한 정의 `erc.flash_cs_connections` + `erc.spi_flash_cs_tracks_vcc`: prefix
+`Memory_Flash:` 심볼의 `/CS` 핀. /CS 넷이 그 플래시 VCC 넷과 같으면
+이미 VCC를 따른다(§4.1). 아니면 R이 /CS–그 VCC 넷만 잇는지 본다.
+수정 `ensure_spi_flash_cs_pullups`는 같은 정의. 유령 ref 노드는 실제 R
+추가 전에 제거.
+
 ## 제품 규칙
 
 - verified: `data/rules/ldo_linear_regulator.json` 하나
 - draft: I2C 풀업, USB-C sink CC — 승격 금지
-- 지식: `data/knowledge/manufacturer-datasheets.json` (provenance `datasheet`, pdf 페이지 인덱스 필수)
+- 지식: `data/knowledge/manufacturer-datasheets.json` (provenance `datasheet`, pdf 페이지 인덱스 필수). 추가: `w25q32jv-cs-tracks-vcc`, `w25q32jv-wp-hold-active-low` (Rev G pdf index 9)
 - 전압 한도: `data/device_limits.json` — STM32G474, TMP100 (SBOS231I)
 
 ## 다음 작업 (규칙 9)
 
-측정된 다음 회로 사실이 생기기 전에는 큐를 비운다. 1–5번 연마·SchGen
-승격·QLoRA·UART 8번을 “다음”으로 올리지 않는다.
+024 7번: `/CS`는 헤더 CS 넷+VCC 풀업이다. 남은 플래시 사실은 **/WP가 NC**
+(released 패스가 넷 있는 핀만 봄)와 플래시 VCC 넷이 요청 레일 `+3V3`이 아닌
+것이다. MCU 없음·LEMO4는 추출. 1–5번을 큐로 되돌리지 않는다.
+열린 항목: `Memory_Flash:` lib_id 게이트.
 
 ## 데이터·학습
 
 제조사 PDF는 `data/datasheets/` (2026-08-17 추가: NE555 SLFS022K, LM386 SNAS545D,
 MCP6001 DS20001733L, TMP100 SBOS231I, AMS1117 ds1117, STM32F103 DS5319 Rev 18,
-STM32H743 DS12110 Rev 10, AN2867 Rev 9). st.com 직접 수신은 타임아웃이라
-Farnell/동일 ST 문서 사본. Keil 995쪽 파일은 RM0008이라 버렸다.
+STM32H743 DS12110 Rev 10, AN2867 Rev 9. 2026-08-18: W25Q32JV Revision G).
+st.com 직접 수신은 타임아웃이라 Farnell/동일 ST 문서 사본. Winbond 데이터시트는
+로그인 벽이라 Octopart 사본(1페이지 Revision G, 2018-03-27). Keil 995쪽 파일은
+RM0008이라 버렸다.
 
 QLoRA 없음. SchGen accepted **0**, 승격 금지.
 

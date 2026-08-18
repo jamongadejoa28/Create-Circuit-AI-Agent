@@ -236,6 +236,48 @@ def test_documented_nc_pins_are_forcibly_disconnected():
     assert any(n.name == "SDA" for n in ir.nets)  # untouched
 
 
+def test_cap_power_gnd_duplicate_on_one_pin_splits_bypass():
+    from circuitgen.normalize import sanitize_known_device_nets
+    from circuitgen.symbols import load_symbols
+
+    symbols = load_symbols(["Device:C", "power:+3V3", "power:GND"])
+    ir = CircuitIR("cap-dup")
+    ir.add(Component("C1", "Device:C", "100nF"))
+    ir.add(Component("#PWR01", "power:+3V3", "+3V3"))
+    ir.add(Component("#PWR02", "power:GND", "GND"))
+    # 021 measured: pin 1 on +3V3, pin 2 claimed on +3V3 and GND
+    ir.connect("+3V3", ("#PWR01", "1"), ("C1", "1"), ("C1", "2"))
+    ir.connect("GND", ("#PWR02", "1"), ("C1", "2"))
+
+    notes = sanitize_known_device_nets(ir, symbols)
+    assert any("split power/GND" in n for n in notes), notes
+    c1_nets = {
+        pin: next(n.name for n in ir.nets if ("C1", pin) in n.nodes)
+        for pin in ("1", "2")
+    }
+    assert c1_nets == {"1": "+3V3", "2": "GND"}
+
+
+def test_shorted_bypass_capacitor_gets_a_ground_pin():
+    from circuitgen.normalize import repair_shorted_bypass_capacitors
+    from circuitgen.topology import analyze_conduction
+    from circuitgen.symbols import load_symbols
+
+    symbols = load_symbols(["Device:C", "power:+3V3", "power:GND"])
+    ir = CircuitIR("cap-shorted")
+    ir.add(Component("C1", "Device:C", "100nF"))
+    ir.add(Component("#PWR01", "power:+3V3", "+3V3"))
+    ir.add(Component("#PWR02", "power:GND", "GND"))
+    ir.connect("+3V3", ("#PWR01", "1"), ("C1", "1"), ("C1", "2"))
+    ir.connect("GND", ("#PWR02", "1"))
+
+    notes = repair_shorted_bypass_capacitors(ir, symbols, "+3V3")
+    assert notes
+    assert "decoupling-cap-per-ic" in notes[0]
+    rep = analyze_conduction(ir, symbols)
+    assert "C1" not in rep.dead
+
+
 def test_duplicate_pin_membership_moves_to_free_pin_of_two_pin_passive():
     from circuitgen.normalize import sanitize_known_device_nets
 
@@ -1341,3 +1383,487 @@ def test_a_capacitor_from_sda_to_gnd_is_not_across_the_bus():
     assert capacitors_across_i2c_lines(ir, symbols) == []
     assert detach_capacitors_across_i2c_lines(ir, symbols, "+3V3") == []
     assert ("C1", "1") in next(n for n in ir.nets if n.name == "SDA").nodes
+
+
+def test_flash_cs_without_a_pullup_gets_one_on_its_vcc_net():
+    from circuitgen.erc import (
+        flash_cs_connections,
+        spi_flash_cs_tracks_vcc,
+    )
+    from circuitgen.normalize import ensure_spi_flash_cs_pullups
+    from circuitgen.symbols import load_symbols
+    from tests.test_blocks import _w25q_pin
+
+    flash = "Memory_Flash:W25Q32JVSS"
+    symbols = load_symbols([flash, "Device:R", "power:+3V3", "power:GND"])
+    ir = CircuitIR("spi-cs")
+    ir.add(Component("U2", flash, "W25Q32JVSS"))
+    ir.add(Component("#PWR01", "power:+3V3", "+3V3"))
+    ir.add(Component("#PWR02", "power:GND", "GND"))
+    cs = _w25q_pin(symbols, "CS")
+    ir.connect("+3V3", ("#PWR01", "1"), ("U2", "8"))
+    ir.connect("GND", ("#PWR02", "1"), ("U2", "4"))
+    ir.connect("CS", ("U2", cs), ("U1", "1"))  # orphan U1 node ok
+
+    assert flash_cs_connections(ir, symbols) == [("U2", cs, "CS")]
+    assert not spi_flash_cs_tracks_vcc(ir, symbols, "U2", "CS")
+
+    notes = ensure_spi_flash_cs_pullups(ir, symbols, "+3V3")
+    assert spi_flash_cs_tracks_vcc(ir, symbols, "U2", "CS"), notes
+    r_nets = {
+        n.name
+        for n in ir.nets
+        if any(r == notes[0].split()[1] for r, _ in n.nodes)
+    }
+    assert r_nets == {"CS", "+3V3"}
+    assert "w25q32jv-cs-tracks-vcc" in notes[0]
+
+
+def test_an_existing_cs_pullup_is_not_duplicated():
+    from circuitgen.erc import spi_flash_cs_tracks_vcc
+    from circuitgen.normalize import ensure_spi_flash_cs_pullups
+    from circuitgen.symbols import load_symbols
+    from tests.test_blocks import _w25q_pin
+
+    flash = "Memory_Flash:W25Q32JVSS"
+    symbols = load_symbols([flash, "Device:R", "power:+3V3", "power:GND"])
+    ir = CircuitIR("spi-cs-ok")
+    ir.add(Component("U2", flash, "W25Q32JVSS"))
+    ir.add(Component("R1", "Device:R", "10k"))
+    ir.add(Component("#PWR01", "power:+3V3", "+3V3"))
+    ir.add(Component("#PWR02", "power:GND", "GND"))
+    cs = _w25q_pin(symbols, "CS")
+    ir.connect("+3V3", ("#PWR01", "1"), ("U2", "8"), ("R1", "2"))
+    ir.connect("GND", ("#PWR02", "1"), ("U2", "4"))
+    ir.connect("CS", ("U2", cs), ("R1", "1"))
+
+    assert spi_flash_cs_tracks_vcc(ir, symbols, "U2", "CS")
+    assert ensure_spi_flash_cs_pullups(ir, symbols, "+3V3") == []
+
+
+def test_orphan_cs_pullup_node_is_replaced_with_a_real_resistor():
+    from circuitgen.erc import spi_flash_cs_tracks_vcc
+    from circuitgen.normalize import ensure_spi_flash_cs_pullups
+    from circuitgen.symbols import load_symbols
+    from tests.test_blocks import _w25q_pin
+
+    flash = "Memory_Flash:W25Q32JVSS"
+    symbols = load_symbols([flash, "Device:R", "power:+3V3", "power:GND"])
+    ir = CircuitIR("ghost-r1")
+    ir.add(Component("U2", flash, "W25Q32JVSS"))
+    ir.add(Component("#PWR01", "power:+3V3", "+3V3"))
+    ir.add(Component("#PWR02", "power:GND", "GND"))
+    cs = _w25q_pin(symbols, "CS")
+    ir.connect("+3V3", ("#PWR01", "1"), ("U2", "8"))
+    ir.connect("GND", ("#PWR02", "1"), ("U2", "4"))
+    ir.connect("CS", ("U2", cs), ("R1", "1"))  # no R1 component
+
+    ensure_spi_flash_cs_pullups(ir, symbols, "+3V3")
+    cs_net = next(n for n in ir.nets if n.name == "CS")
+    assert cs_net.nodes.count(("R1", "1")) == 1
+    assert spi_flash_cs_tracks_vcc(ir, symbols, "U2", "CS")
+    assert "R1" in ir.components
+
+
+def test_cs_tied_to_flash_vcc_needs_no_resistor_and_is_idempotent():
+    from circuitgen.erc import flash_cs_connections, spi_flash_cs_tracks_vcc
+    from circuitgen.normalize import ensure_spi_flash_cs_pullups
+    from circuitgen.symbols import load_symbols
+    from tests.test_blocks import _w25q_pin
+
+    flash = "Memory_Flash:W25Q32JVSS"
+    symbols = load_symbols([flash, "Device:R", "power:+3V3", "power:GND"])
+    ir = CircuitIR("cs-on-vcc")
+    ir.add(Component("U2", flash, "W25Q32JVSS"))
+    ir.add(Component("#PWR01", "power:+3V3", "+3V3"))
+    cs = _w25q_pin(symbols, "CS")
+    ir.connect("+3V3", ("#PWR01", "1"), ("U2", "8"), ("U2", cs))
+
+    assert flash_cs_connections(ir, symbols) == [("U2", cs, "+3V3")]
+    assert spi_flash_cs_tracks_vcc(ir, symbols, "U2", "+3V3")
+    for _ in range(3):
+        assert ensure_spi_flash_cs_pullups(ir, symbols, "+3V3") == []
+    assert len([c for c in ir.components.values() if c.lib_id == "Device:R"]) == 0
+
+
+def test_cs_pullup_skipped_when_flash_vcc_is_not_on_a_power_net():
+    """No `or rail` fallback — checker and fixer share flash_supply_net only."""
+    from circuitgen.normalize import ensure_spi_flash_cs_pullups
+    from circuitgen.symbols import load_symbols
+    from tests.test_blocks import _w25q_pin
+
+    flash = "Memory_Flash:W25Q32JVSS"
+    symbols = load_symbols([flash, "Device:R", "power:+3V3", "power:GND"])
+    ir = CircuitIR("vcc-signal-net")
+    ir.add(Component("U2", flash, "W25Q32JVSS"))
+    ir.add(Component("#PWR01", "power:+3V3", "+3V3"))
+    cs = _w25q_pin(symbols, "CS")
+    ir.connect("VCC_FLASH", ("U2", "8"))
+    ir.connect("+3V3", ("#PWR01", "1"))
+    ir.connect("CS", ("U2", cs), ("J1", "1"))
+
+    for _ in range(3):
+        assert ensure_spi_flash_cs_pullups(ir, symbols, "+3V3") == []
+    assert len([c for c in ir.components.values() if c.lib_id == "Device:R"]) == 0
+
+
+def test_ghost_ref_on_unrelated_nets_is_not_cleared():
+    from circuitgen.normalize import ensure_spi_flash_cs_pullups
+    from circuitgen.symbols import load_symbols
+    from tests.test_blocks import _w25q_pin
+
+    flash = "Memory_Flash:W25Q32JVSS"
+    symbols = load_symbols([flash, "Device:R", "power:+3V3", "power:GND"])
+    ir = CircuitIR("ghost-divider")
+    ir.add(Component("U2", flash, "W25Q32JVSS"))
+    ir.add(Component("#PWR01", "power:+3V3", "+3V3"))
+    cs = _w25q_pin(symbols, "CS")
+    ir.connect("+3V3", ("#PWR01", "1"), ("U2", "8"))
+    ir.connect("CS", ("U2", cs))
+    ir.connect("VSENSE", ("R1", "1"))
+    ir.connect("AGND", ("R1", "2"))
+
+    ensure_spi_flash_cs_pullups(ir, symbols, "+3V3")
+    assert ("R1", "1") in next(n for n in ir.nets if n.name == "VSENSE").nodes
+    assert ("R1", "2") in next(n for n in ir.nets if n.name == "AGND").nodes
+
+
+def test_hold_alone_gets_pullup_to_flash_vcc():
+    from circuitgen.erc import flash_wp_hold_connections, spi_flash_cs_tracks_vcc
+    from circuitgen.normalize import ensure_spi_flash_wp_hold_released
+    from circuitgen.symbols import load_symbols
+    from tests.test_blocks import _w25q_pin
+
+    flash = "Memory_Flash:W25Q32JVSS"
+    symbols = load_symbols([flash, "Device:R", "power:+3V3", "power:GND"])
+    ir = CircuitIR("hold-alone")
+    ir.add(Component("U2", flash, "W25Q32JVSS"))
+    ir.add(Component("#PWR01", "power:+3V3", "+3V3"))
+    ir.add(Component("#PWR02", "power:GND", "GND"))
+    hold = _w25q_pin(symbols, "HOLD")
+    ir.connect("+3V3", ("#PWR01", "1"), ("U2", "8"))
+    ir.connect("GND", ("#PWR02", "1"), ("U2", "4"))
+    ir.connect("HOLD", ("U2", hold))
+
+    assert flash_wp_hold_connections(ir, symbols) == [("U2", hold, "HOLD", "HOLD")]
+
+    notes = ensure_spi_flash_wp_hold_released(ir, symbols, "+3V3")
+    assert notes
+    assert spi_flash_cs_tracks_vcc(ir, symbols, "U2", "HOLD")
+
+
+def test_wp_on_gnd_is_moved_to_flash_vcc():
+    from circuitgen.erc import spi_flash_cs_tracks_vcc
+    from circuitgen.normalize import ensure_spi_flash_wp_hold_released
+    from circuitgen.symbols import load_symbols
+    from tests.test_blocks import _w25q_pin
+
+    flash = "Memory_Flash:W25Q32JVSS"
+    symbols = load_symbols([flash, "Device:R", "power:+3V3", "power:GND"])
+    ir = CircuitIR("wp-gnd")
+    ir.add(Component("U2", flash, "W25Q32JVSS"))
+    ir.add(Component("#PWR01", "power:+3V3", "+3V3"))
+    ir.add(Component("#PWR02", "power:GND", "GND"))
+    wp = _w25q_pin(symbols, "WP")
+    ir.connect("+3V3", ("#PWR01", "1"), ("U2", "8"))
+    ir.connect("GND", ("#PWR02", "1"), ("U2", "4"), ("U2", wp))
+
+    notes = ensure_spi_flash_wp_hold_released(ir, symbols, "+3V3")
+    assert any("WP" in n and "+3V3" in n for n in notes), notes
+    assert spi_flash_cs_tracks_vcc(ir, symbols, "U2", "+3V3")
+    assert ("U2", wp) in next(n for n in ir.nets if n.name == "+3V3").nodes
+
+
+def test_cs_on_gnd_gets_a_pullup_net_not_a_vcc_hard_tie():
+    """/CS on the return is selected. §4.1 allows a pull-up, not VCC direct."""
+    from circuitgen.erc import spi_flash_cs_tracks_vcc
+    from circuitgen.normalize import ensure_spi_flash_cs_pullups
+    from circuitgen.symbols import load_symbols
+    from tests.test_blocks import _w25q_pin
+
+    flash = "Memory_Flash:W25Q32JVSS"
+    symbols = load_symbols([flash, "Device:R", "power:+3V3", "power:GND"])
+    ir = CircuitIR("cs-gnd")
+    ir.add(Component("U2", flash, "W25Q32JVSS"))
+    ir.add(Component("#PWR01", "power:+3V3", "+3V3"))
+    ir.add(Component("#PWR02", "power:GND", "GND"))
+    cs = _w25q_pin(symbols, "CS")
+    ir.connect("+3V3", ("#PWR01", "1"), ("U2", "8"))
+    ir.connect("GND", ("#PWR02", "1"), ("U2", "4"), ("U2", cs))
+
+    notes = ensure_spi_flash_cs_pullups(ir, symbols, "+3V3")
+    assert notes
+    assert ("U2", cs) not in next(n for n in ir.nets if n.name == "GND").nodes
+    assert ("U2", cs) not in next(n for n in ir.nets if n.name == "+3V3").nodes
+    cs_net = next(n.name for n in ir.nets if ("U2", cs) in n.nodes)
+    assert spi_flash_cs_tracks_vcc(ir, symbols, "U2", cs_net)
+    assert any(c.lib_id == "Device:R" for c in ir.components.values())
+    assert ensure_spi_flash_cs_pullups(ir, symbols, "+3V3") == []
+
+
+def test_resistor_from_gnd_to_vcc_is_not_a_cs_pullup():
+    """An R already across GND–VCC while /CS sits on GND is a rail load."""
+    from circuitgen.erc import spi_flash_cs_tracks_vcc
+    from circuitgen.normalize import ensure_spi_flash_cs_pullups
+    from circuitgen.symbols import load_symbols
+    from tests.test_blocks import _w25q_pin
+
+    flash = "Memory_Flash:W25Q32JVSS"
+    symbols = load_symbols([flash, "Device:R", "power:+3V3", "power:GND"])
+    ir = CircuitIR("cs-gnd-r")
+    ir.add(Component("U2", flash, "W25Q32JVSS"))
+    ir.add(Component("R1", "Device:R", "10k"))
+    ir.add(Component("#PWR01", "power:+3V3", "+3V3"))
+    ir.add(Component("#PWR02", "power:GND", "GND"))
+    cs = _w25q_pin(symbols, "CS")
+    ir.connect("+3V3", ("#PWR01", "1"), ("U2", "8"), ("R1", "2"))
+    ir.connect("GND", ("#PWR02", "1"), ("U2", "4"), ("U2", cs), ("R1", "1"))
+
+    assert not spi_flash_cs_tracks_vcc(ir, symbols, "U2", "GND")
+    notes = ensure_spi_flash_cs_pullups(ir, symbols, "+3V3")
+    assert notes
+    assert ("U2", cs) not in next(n for n in ir.nets if n.name == "GND").nodes
+    assert ("U2", cs) not in next(n for n in ir.nets if n.name == "+3V3").nodes
+    cs_net = next(n.name for n in ir.nets if ("U2", cs) in n.nodes)
+    assert spi_flash_cs_tracks_vcc(ir, symbols, "U2", cs_net)
+
+
+def test_cs_sharing_vss_on_an_unnamed_net_is_still_the_return():
+    """Same topology as GND, net labelled FOO — not a name test."""
+    from circuitgen.erc import flash_cs_on_return, spi_flash_cs_tracks_vcc
+    from circuitgen.normalize import ensure_spi_flash_cs_pullups
+    from circuitgen.symbols import load_symbols
+    from tests.test_blocks import _w25q_pin
+
+    flash = "Memory_Flash:W25Q32JVSS"
+    symbols = load_symbols([flash, "Device:R", "power:+3V3", "power:GND"])
+    ir = CircuitIR("cs-foo")
+    ir.add(Component("U2", flash, "W25Q32JVSS"))
+    ir.add(Component("#PWR01", "power:+3V3", "+3V3"))
+    cs = _w25q_pin(symbols, "CS")
+    ir.connect("+3V3", ("#PWR01", "1"), ("U2", "8"))
+    ir.connect("FOO", ("U2", "4"), ("U2", cs))
+
+    assert flash_cs_on_return(ir, symbols, "U2", "FOO")
+    assert not spi_flash_cs_tracks_vcc(ir, symbols, "U2", "FOO")
+    ensure_spi_flash_cs_pullups(ir, symbols, "+3V3")
+    assert ("U2", cs) not in next(n for n in ir.nets if n.name == "FOO").nodes
+    foo_nodes = next(n for n in ir.nets if n.name == "FOO").nodes
+    assert not any(r for r, _ in foo_nodes if ir.components[r].lib_id == "Device:R")
+
+
+def test_cs_on_return_joins_existing_bus_with_pullup_not_vcc():
+    from circuitgen.erc import spi_flash_cs_tracks_vcc
+    from circuitgen.normalize import ensure_spi_flash_cs_pullups
+    from circuitgen.symbols import load_symbols
+    from tests.test_blocks import _w25q_pin
+
+    flash = "Memory_Flash:W25Q32JVSS"
+    symbols = load_symbols([flash, "Device:R", "power:+3V3", "power:GND"])
+    ir = CircuitIR("cs-bus")
+    ir.add(Component("U2", flash, "W25Q32JVSS"))
+    ir.add(Component("R3", "Device:R", "10k"))
+    ir.add(Component("#PWR01", "power:+3V3", "+3V3"))
+    ir.add(Component("#PWR02", "power:GND", "GND"))
+    cs = _w25q_pin(symbols, "CS")
+    ir.connect("+3V3", ("#PWR01", "1"), ("U2", "8"), ("R3", "2"))
+    ir.connect("GND", ("#PWR02", "1"), ("U2", "4"), ("U2", cs))
+    ir.connect("CS", ("J1", "4"), ("R3", "1"))
+
+    notes = ensure_spi_flash_cs_pullups(ir, symbols, "+3V3")
+    assert any("onto CS" in n for n in notes), notes
+    assert ("U2", cs) in next(n for n in ir.nets if n.name == "CS").nodes
+    assert ("U2", cs) not in next(n for n in ir.nets if n.name == "+3V3").nodes
+    assert spi_flash_cs_tracks_vcc(ir, symbols, "U2", "CS")
+    assert len([c for c in ir.components.values() if c.lib_id == "Device:R"]) == 1
+
+
+def test_cs_on_return_joins_mcu_cs_net():
+    from circuitgen.normalize import ensure_spi_flash_cs_pullups
+    from circuitgen.symbols import load_symbols
+    from tests.test_blocks import _w25q_pin
+
+    flash = "Memory_Flash:W25Q32JVSS"
+    symbols = load_symbols([flash, "Device:R", "power:+3V3", "power:GND"])
+    ir = CircuitIR("cs-mcu")
+    ir.add(Component("U2", flash, "W25Q32JVSS"))
+    ir.add(Component("U1", "Vendor:MCU", "MCU"))
+    ir.add(Component("#PWR01", "power:+3V3", "+3V3"))
+    ir.add(Component("#PWR02", "power:GND", "GND"))
+    cs = _w25q_pin(symbols, "CS")
+    ir.connect("+3V3", ("#PWR01", "1"), ("U2", "8"))
+    ir.connect("GND", ("#PWR02", "1"), ("U2", "4"), ("U2", cs))
+    ir.connect("CS", ("U1", "10"))
+
+    ensure_spi_flash_cs_pullups(ir, symbols, "+3V3")
+    assert ("U2", cs) in next(n for n in ir.nets if n.name == "CS").nodes
+    assert ("U1", "10") in next(n for n in ir.nets if n.name == "CS").nodes
+    assert ("U2", cs) not in next(n for n in ir.nets if n.name == "+3V3").nodes
+
+
+def test_a_pullup_to_the_wrong_rail_does_not_satisfy_vcc_tracking():
+    from circuitgen.erc import spi_flash_cs_tracks_vcc
+    from circuitgen.normalize import ensure_spi_flash_cs_pullups
+    from circuitgen.symbols import load_symbols
+    from tests.test_blocks import _w25q_pin
+
+    flash = "Memory_Flash:W25Q32JVSS"
+    symbols = load_symbols([flash, "Device:R", "power:+3V3", "power:+5V", "power:GND"])
+    ir = CircuitIR("cs-wrong-rail")
+    ir.add(Component("U2", flash, "W25Q32JVSS"))
+    ir.add(Component("R9", "Device:R", "10k"))
+    ir.add(Component("#PWR01", "power:+3V3", "+3V3"))
+    ir.add(Component("#PWR02", "power:+5V", "+5V"))
+    cs = _w25q_pin(symbols, "CS")
+    ir.connect("+3V3", ("#PWR01", "1"), ("U2", "8"))
+    ir.connect("CS", ("U2", cs), ("R9", "1"))
+    ir.connect("+5V", ("#PWR02", "1"), ("R9", "2"))
+
+    assert not spi_flash_cs_tracks_vcc(ir, symbols, "U2", "CS")
+    notes = ensure_spi_flash_cs_pullups(ir, symbols, "+3V3")
+    assert notes
+    assert spi_flash_cs_tracks_vcc(ir, symbols, "U2", "CS")
+    r_on_cs = [c.ref for c in ir.components.values() if c.lib_id == "Device:R" and c.ref != "R9"]
+    assert len(r_on_cs) == 1
+
+
+def test_instrumentation_amp_cs_does_not_get_a_flash_pullup():
+    from circuitgen.normalize import ensure_spi_flash_cs_pullups
+    from circuitgen.symbols import load_symbols
+
+    amp = "Amplifier_Instrumentation:AD8231"
+    symbols = load_symbols([amp, "Device:R", "power:+3V3", "power:GND"])
+    ir = CircuitIR("amp-cs")
+    ir.add(Component("U1", amp, "AD8231"))
+    ir.add(Component("#PWR01", "power:+3V3", "+3V3"))
+    ir.connect("CS", ("U1", "13"))
+    ir.connect("+3V3", ("#PWR01", "1"), ("U1", "12"))
+
+    assert ensure_spi_flash_cs_pullups(ir, symbols, "+3V3") == []
+
+
+def _hub_sym(lib_id: str, count: int) -> SymbolDef:
+    pins: list[PinDef] = []
+    for i in range(1, count + 1):
+        if i == 1:
+            pins.append(PinDef("1", "VDD", PinType.PWRIN, 0, 0, 0, 2.54))
+        elif i == 2:
+            pins.append(PinDef("2", "VSS", PinType.PWRIN, 0, 0, 0, 2.54))
+        else:
+            pins.append(PinDef(str(i), f"P{i}", PinType.BIDIR, 0, 0, 0, 2.54))
+    return SymbolDef(lib_id, "U", pins)
+
+
+def test_mark_hub_unused_pins_nc_stops_conduction_dead_mcu():
+    from circuitgen.normalize import mark_hub_unused_pins_nc
+    from circuitgen.topology import analyze_conduction
+
+    lib = "Vendor:BIGMCU"
+    symbols = {
+        lib: _hub_sym(lib, 20),
+        "power:+3V3": _sym("power:+3V3", [(1, "+3V3", PinType.PWROUT)]),
+        "power:GND": _sym("power:GND", [(1, "GND", PinType.PWROUT)]),
+        "Memory_Flash:W25Q32JVSS": _sym(
+            "Memory_Flash:W25Q32JVSS",
+            [(1, "~{CS}", PinType.INPUT), (6, "SCK", PinType.INPUT)],
+        ),
+    }
+    ir = CircuitIR("hub-nc")
+    ir.add(Component("U1", lib, "MCU"))
+    ir.add(Component("#PWR01", "power:+3V3", "+3V3"))
+    ir.add(Component("#PWR02", "power:GND", "GND"))
+    ir.connect("+3V3", ("U1", "1"), ("#PWR01", "1"))
+    ir.connect("GND", ("U1", "2"), ("#PWR02", "1"))
+    ir.connect("SCK", ("U1", "3"), ("U2", "1"))
+    ir.add(Component("U2", "Memory_Flash:W25Q32JVSS", "flash"))
+
+    dead = analyze_conduction(ir, symbols).dead
+    assert "U1" in dead
+
+    notes = mark_hub_unused_pins_nc(ir, symbols)
+    assert any("marked" in n for n in notes)
+    assert "U1" not in analyze_conduction(ir, symbols).dead
+
+    again = mark_hub_unused_pins_nc(ir, symbols)
+    assert again == []
+
+
+def test_ensure_hub_signal_connectors_adds_one_header_for_spi():
+    from circuitgen.normalize import ensure_hub_signal_connectors
+
+    lib = "Vendor:BIGMCU"
+    symbols = {
+        lib: _hub_sym(lib, 20),
+        "Connector_Generic:Conn_01x05": _sym(
+            "Connector_Generic:Conn_01x05",
+            [(str(i), f"Pin_{i}", PinType.PASSIVE) for i in range(1, 6)],
+        ),
+    }
+    ir = CircuitIR("spi-hdr")
+    ir.add(Component("U1", lib, "MCU"))
+    ir.add(Component("U2", "Memory_Flash:W25Q32JVSS", "flash"))
+    ir.connect("+3V3", ("U1", "1"))
+    ir.connect("GND", ("U1", "2"))
+    for net, u1_pin, u2_pin in [
+        ("SCK", "4", "6"),
+        ("MOSI", "5", "5"),
+        ("MISO", "6", "2"),
+        ("CS", "7", "1"),
+    ]:
+        ir.connect(net, ("U1", u1_pin), ("U2", u2_pin))
+
+    spec = {
+        "power": {"rails": [{"name": "+3V3"}, {"name": "GND"}]},
+        "signals": [
+            {"name": "SCLK"},
+            {"name": "MOSI"},
+            {"name": "MISO"},
+            {"name": "CS"},
+            {"name": "WP"},
+        ],
+    }
+    notes = ensure_hub_signal_connectors(ir, symbols, spec)
+    assert any("added J1" in n for n in notes)
+    assert "J1" in ir.components
+    assert ir.components["J1"].lib_id == "Connector_Generic:Conn_01x05"
+    assert ("J1", "1") in next(n for n in ir.nets if n.name == "SCK").nodes
+    assert ("J1", "5") in next(n for n in ir.nets if n.name == "GND").nodes
+    assert ensure_hub_signal_connectors(ir, symbols, spec) == []
+
+
+def test_hub_signal_connector_finds_spi_by_topology_not_only_net_label():
+    from circuitgen.normalize import ensure_hub_signal_connectors
+
+    lib = "Vendor:BIGMCU"
+    flash = "Memory_Flash:W25Q32JVSS"
+    symbols = {
+        lib: _hub_sym(lib, 20),
+        flash: _sym(flash, [
+            (1, "~{CS}", PinType.INPUT),
+            (2, "MISO", PinType.OUTPUT),
+            (5, "MOSI", PinType.INPUT),
+            (6, "SCK", PinType.INPUT),
+        ]),
+        "Connector_Generic:Conn_01x05": _sym(
+            "Connector_Generic:Conn_01x05",
+            [(str(i), f"Pin_{i}", PinType.PASSIVE) for i in range(1, 6)],
+        ),
+        "power:GND": _sym("power:GND", [(1, "GND", PinType.PWROUT)]),
+    }
+    ir = CircuitIR("spi-topology")
+    ir.add(Component("U1", lib, "MCU"))
+    ir.add(Component("U2", flash, "flash"))
+    ir.add(Component("#PWR02", "power:GND", "GND"))
+    ir.connect("GND", ("U1", "2"), ("#PWR02", "1"))
+    ir.connect("BUS_LINE_7", ("U1", "4"), ("U2", "6"))
+    ir.connect("MOSI", ("U1", "5"), ("U2", "5"))
+    ir.connect("MISO", ("U1", "6"), ("U2", "2"))
+    ir.connect("CS", ("U1", "7"), ("U2", "1"))
+
+    spec = {
+        "power": {"rails": [{"name": "GND"}]},
+        "signals": [{"name": "SCLK"}, {"name": "MOSI"}, {"name": "MISO"}, {"name": "CS"}],
+    }
+    notes = ensure_hub_signal_connectors(ir, symbols, spec)
+    assert any("exposed SCLK" in n and "BUS_LINE_7" in n for n in notes)
+    assert ("J1", "1") in next(n for n in ir.nets if n.name == "BUS_LINE_7").nodes

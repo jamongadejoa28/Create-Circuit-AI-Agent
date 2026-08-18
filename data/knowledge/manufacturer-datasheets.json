@@ -258,5 +258,55 @@
       "tier": "A",
       "provenance": "datasheet"
     }
+  },
+  {
+    "id": "w25q32jv-cs-tracks-vcc",
+    "type": "device_rule",
+    "statement": "W25Q32JV /CS selects the device when low. After power-up, /CS must transition from high to low before a new instruction is accepted. The /CS input must track the VCC supply level at power-up and power-down; a pull-up resistor on the /CS pin can be used to accomplish this.",
+    "condition": "W25Q32JV (including W25Q32JVSS) on a standard SPI bus, not Quad I/O.",
+    "values": {
+      "CS": "active low, must track VCC; pull-up allowed"
+    },
+    "tags": [
+      "W25Q32JV",
+      "W25Q32JVSS",
+      "SPI",
+      "CS",
+      "pullup"
+    ],
+    "source": {
+      "book": "Winbond W25Q32JV 3V 32M-bit Serial Flash Memory with Dual, Quad SPI, Revision G",
+      "section": "4.1 Chip Select (/CS)",
+      "pdf_page_index": 9,
+      "file": "w25q32jv_revG.pdf",
+      "tier": "A",
+      "provenance": "datasheet"
+    }
+  },
+  {
+    "id": "w25q32jv-wp-hold-active-low",
+    "type": "device_rule",
+    "statement": "W25Q32JV /WP is active low and can prevent the Status Register from being written. /HOLD is active low; when /HOLD is brought low while /CS is low, DO is high-impedance and DI and CLK are ignored. When /HOLD is brought high, device operation can resume. Inactive (released) state for these active-low controls is therefore logic high. When the Quad Enable bit in Status Register-2 is set, /WP becomes IO2 and /HOLD becomes IO3.",
+    "condition": "W25Q32JV (including W25Q32JVSS) in standard or Dual SPI, QE not set.",
+    "values": {
+      "WP": "active low",
+      "HOLD": "active low"
+    },
+    "tags": [
+      "W25Q32JV",
+      "W25Q32JVSS",
+      "SPI",
+      "WP",
+      "HOLD",
+      "write-protect"
+    ],
+    "source": {
+      "book": "Winbond W25Q32JV 3V 32M-bit Serial Flash Memory with Dual, Quad SPI, Revision G",
+      "section": "4.3 Write Protect (/WP); 4.4 HOLD (/HOLD)",
+      "pdf_page_index": 9,
+      "file": "w25q32jv_revG.pdf",
+      "tier": "A",
+      "provenance": "datasheet"
+    }
   }
 ]

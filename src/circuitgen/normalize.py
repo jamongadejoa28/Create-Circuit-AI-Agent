@@ -582,6 +582,47 @@ def sanitize_known_device_nets(
             ground = 20 if "GND" in pname and upper == "GND" else 0
             return exact + rail + ground + len(pin_tokens & net_tokens), -unique.index(name)
 
+        if (
+            sym is not None
+            and len(sym.pins) == 2
+            and comp
+            and comp.lib_id == "Device:C"
+        ):
+            from .erc import net_kind
+
+            net_by_name = {n.name: n for n in ir.nets}
+
+            def _kind(name: str) -> str:
+                return net_kind(ir, symbols, net_by_name[name])
+
+            power = [n for n in unique if _kind(n) == "power"]
+            gnd = [n for n in unique if _kind(n) == "gnd"]
+            if power and gnd:
+                other = next(p.number for p in sym.pins if p.number != str(pin))
+                other_unique = list(dict.fromkeys(owners.get((ref, str(other)), [])))
+                if len(other_unique) == 1:
+                    ok = _kind(other_unique[0])
+                    if ok == "power":
+                        for name in unique:
+                            if name != gnd[0]:
+                                remove(
+                                    ref,
+                                    pin,
+                                    name,
+                                    "decoupling cap: split power/GND across pins",
+                                )
+                        continue
+                    if ok == "gnd":
+                        for name in unique:
+                            if name != power[0]:
+                                remove(
+                                    ref,
+                                    pin,
+                                    name,
+                                    "decoupling cap: split power/GND across pins",
+                                )
+                        continue
+
         keep = max(unique, key=score)
         # A 2-pin passive with BOTH nets piled on one pin and the other pin
         # dangling: the model meant the series connection — reassign the
@@ -726,6 +767,162 @@ def ensure_i2c_pullups(
         notes.append(
             f"added {ref} {I2C_PULLUP_VALUE} pull-up on I2C line {net.name} to "
             f"{rail}: the bus is open-drain and has no high-side driver"
+        )
+    return notes
+
+
+def _unused_cs_net_name(ir: CircuitIR, flash_ref: str) -> str:
+    for name in ("CS", f"{flash_ref}_CS"):
+        if not any(n.name == name for n in ir.nets):
+            return name
+    n = 2
+    while any(net.name == f"CS{n}" for net in ir.nets):
+        n += 1
+    return f"CS{n}"
+
+
+def ensure_spi_flash_cs_pullups(
+    ir: CircuitIR, symbols: dict[str, SymbolDef], rail: str | None = None
+) -> list[str]:
+    """Pull up each Memory_Flash /CS net toward that flash's VCC net.
+
+    Same test as `erc.spi_flash_cs_tracks_vcc`: /CS on the VCC net already
+    tracks VCC; otherwise add an R from /CS to that VCC net. Does not
+    touch /WP or /HOLD. Value 10k (knowledge: pullup-resistor-sizing).
+
+    /CS on the flash return is selected, not tracking. §4.1 allows a
+    pull-up — not a hard tie to VCC (that would leave MCU/header CS
+    disconnected) and not an R from the return to VCC (a rail load).
+    """
+    from .erc import (
+        flash_cs_bus_net,
+        flash_cs_connections,
+        flash_cs_on_return,
+        flash_supply_net,
+        spi_flash_cs_tracks_vcc,
+    )
+
+    refs = RefAllocator(ir)
+    notes: list[str] = []
+    for flash_ref, pin, cs_net in flash_cs_connections(ir, symbols):
+        supply = flash_supply_net(ir, symbols, flash_ref)
+        if not supply or not any(n.name == supply for n in ir.nets):
+            continue
+        if flash_cs_on_return(ir, symbols, flash_ref, cs_net):
+            dest = flash_cs_bus_net(ir, symbols, flash_ref) or _unused_cs_net_name(
+                ir, flash_ref
+            )
+            move_pin(ir, flash_ref, pin, dest)
+            notes.append(
+                f"moved {flash_ref}.{pin} (/CS) off return net {cs_net} onto "
+                f"{dest}: /CS on the flash VSS net is selected, not tracking "
+                f"VCC (knowledge: w25q32jv-cs-tracks-vcc; pdf index 9)"
+            )
+            cs_net = dest
+        if spi_flash_cs_tracks_vcc(ir, symbols, flash_ref, cs_net):
+            continue
+        if flash_cs_on_return(ir, symbols, flash_ref, cs_net):
+            continue
+        ref = refs.take("R")
+        for net in ir.nets:
+            if net.name in {cs_net, supply}:
+                net.nodes = [(r, p) for r, p in net.nodes if r != ref]
+        ir.add(Component(ref, "Device:R", I2C_PULLUP_VALUE))
+        ir.connect(cs_net, (ref, "1"))
+        ir.connect(supply, (ref, "2"))
+        notes.append(
+            f"added {ref} {I2C_PULLUP_VALUE} pull-up on flash /CS net {cs_net} "
+            f"to {supply}: /CS must track VCC at power-up "
+            f"(knowledge: w25q32jv-cs-tracks-vcc; pdf index 9)"
+        )
+    return notes
+
+
+def ensure_spi_flash_wp_hold_released(
+    ir: CircuitIR, symbols: dict[str, SymbolDef], rail: str | None = None
+) -> list[str]:
+    """Release Memory_Flash /WP and /HOLD (active low, Rev G §4.3–§4.4).
+
+    Same released test as ``spi_flash_cs_tracks_vcc``: the pin net equals
+    that flash's VCC net, or an R bridges the pin net to that VCC net.
+    A pin on GND asserts hold or write-protect and is tied to VCC.
+    Value 10k when a pull-up is added (knowledge: pullup-resistor-sizing).
+    """
+    from .erc import (
+        flash_supply_net,
+        flash_wp_hold_connections,
+        net_kind,
+        spi_flash_cs_tracks_vcc,
+    )
+
+    _ = rail
+    refs = RefAllocator(ir)
+    notes: list[str] = []
+    net_by_name = {n.name: n for n in ir.nets}
+    for flash_ref, pin, net, kind in flash_wp_hold_connections(ir, symbols):
+        supply = flash_supply_net(ir, symbols, flash_ref)
+        if not supply or not any(n.name == supply for n in ir.nets):
+            continue
+        if net in net_by_name and net_kind(ir, symbols, net_by_name[net]) == "gnd":
+            move_pin(ir, flash_ref, pin, supply)
+            notes.append(
+                f"connected {flash_ref}.{pin} ({kind}) to {supply}: active-low "
+                f"control released high (knowledge: w25q32jv-wp-hold-active-low; "
+                f"pdf index 9)"
+            )
+            continue
+        if spi_flash_cs_tracks_vcc(ir, symbols, flash_ref, net):
+            continue
+        ref = refs.take("R")
+        for n in ir.nets:
+            if n.name in {net, supply}:
+                n.nodes = [(r, p) for r, p in n.nodes if r != ref]
+        ir.add(Component(ref, "Device:R", I2C_PULLUP_VALUE))
+        ir.connect(net, (ref, "1"))
+        ir.connect(supply, (ref, "2"))
+        notes.append(
+            f"added {ref} {I2C_PULLUP_VALUE} pull-up on flash /{kind} net {net} "
+            f"to {supply}: active-low control released high "
+            f"(knowledge: w25q32jv-wp-hold-active-low; pdf index 9)"
+        )
+    return notes
+
+
+def repair_shorted_bypass_capacitors(
+    ir: CircuitIR, symbols: dict[str, SymbolDef], rail: str | None = None
+) -> list[str]:
+    """Move one pin of a shorted 2-pin C onto GND when both sit on a rail.
+
+    Same predicate as `erc.shorted_bypass_capacitors`. Measured on 021 7번:
+    sanitize dropped GND from a pin that also sat on +3V3, leaving C1/C2
+    shorted. The sanitize split above prevents that; this pass fixes caps
+    the model wired with both pins on one supply net from the start.
+    """
+    from .erc import net_kind, shorted_bypass_capacitors
+
+    _ = rail
+    notes: list[str] = []
+    gnd = next(
+        (n.name for n in ir.nets if net_kind(ir, symbols, n) == "gnd"),
+        None,
+    )
+    if not gnd:
+        return notes
+    pin_net = {
+        (r, str(p)): n.name for n in ir.nets for r, p in n.nodes
+    }
+    for ref, net_name in shorted_bypass_capacitors(ir, symbols):
+        net = next(n for n in ir.nets if n.name == net_name)
+        if net_kind(ir, symbols, net) != "power":
+            continue
+        sym = symbols.get(ir.components[ref].lib_id)
+        if sym is None:
+            continue
+        pins = [str(p.number) for p in sym.pins]
+        move_pin(ir, ref, pins[1], gnd)
+        notes.append(
+            f"moved {ref}.{pins[1]} from {net_name} to {gnd}: both cap pins "
+            f"were on one rail (knowledge: decoupling-cap-per-ic)"
         )
     return notes
 
@@ -1359,6 +1556,198 @@ def join_hub_to_i2c_buses(
             join_line(net, role, "SPI", move_wrong=True)
         elif role == "NSS":
             join_line(net, role, "SPI", move_wrong=False)
+    return notes
+
+
+_HUB_NC_ETYPES = {
+    PinType.INPUT,
+    PinType.OUTPUT,
+    PinType.BIDIR,
+    PinType.TRISTATE,
+    PinType.PASSIVE,
+    PinType.UNSPEC,
+    PinType.OPENCOLL,
+    PinType.OPENEMIT,
+}
+
+
+def mark_hub_unused_pins_nc(
+    ir: CircuitIR, symbols: dict[str, SymbolDef]
+) -> list[str]:
+    """Mark unconnected hub GPIO as NC so conduction does not flag the MCU dead.
+
+    Pattern synthesis closes unused hub pins the same way
+    (``allow_unbound_pins``). A 132-pin MC68332 with four SPI lines wired
+    still has dozens of GPIOs the request never named; leaving them visibly
+    open makes ``analyze_conduction`` report the whole MCU as dead.
+    """
+    hub = hub_ref(ir, symbols)
+    if hub is None:
+        return []
+    sym = symbols.get(ir.components[hub].lib_id)
+    if sym is None:
+        return []
+    connected = {p for net in ir.nets for r, p in net.nodes if r == hub}
+    existing = {(r, str(p)) for r, p in ir.nc_pins}
+    notes: list[str] = []
+    marked = 0
+    for pin in sym.pins:
+        if pin.hidden or pin.etype not in _HUB_NC_ETYPES:
+            continue
+        node = (hub, pin.number)
+        if node in connected or node in existing:
+            continue
+        ir.nc_pins.append(node)
+        existing.add(node)
+        marked += 1
+    if marked:
+        notes.append(
+            f"{hub}: marked {marked} unused visible pin(s) NC "
+            f"(hub has {len(sym.pins)} contacts)"
+        )
+    return notes
+
+
+def _signal_name_matches(spec_name: str, net_name: str) -> bool:
+    """Whether a declared signal name and a net label refer to the same bus."""
+    from .erc import _spi_name_tokens
+
+    def tokens(text: str) -> set[str]:
+        out = set(_spi_name_tokens(text))
+        if "SCLK" in out:
+            out.add("SCK")
+        if "NSS" in out:
+            out.add("CS")
+        return out
+
+    return bool(tokens(spec_name) & tokens(net_name))
+
+
+def _declared_signal_net(
+    ir: CircuitIR,
+    symbols: dict[str, SymbolDef],
+    spec_name: str,
+    hub: str,
+):
+    """Find the hub net for a declared signal by label, then by bus topology."""
+    from .erc import _spi_name_tokens, i2c_line_role, is_i2c_net, spi_line_role
+
+    hub_nets = [n for n in ir.nets if hub in {r for r, _ in n.nodes}]
+    for net in hub_nets:
+        if _signal_name_matches(spec_name, net.name):
+            return net
+
+    spec_tokens = set(_spi_name_tokens(spec_name))
+    if "SCLK" in spec_tokens or "SCK" in spec_tokens:
+        wanted_spi = "SCK"
+    elif "MOSI" in spec_tokens:
+        wanted_spi = "MOSI"
+    elif "MISO" in spec_tokens:
+        wanted_spi = "MISO"
+    elif spec_tokens & {"CS", "NSS"}:
+        wanted_spi = "NSS"
+    else:
+        wanted_spi = None
+    if wanted_spi:
+        for net in hub_nets:
+            if spi_line_role(ir, symbols, net) == wanted_spi:
+                return net
+
+    if "SDA" in spec_tokens:
+        wanted_i2c = "SDA"
+    elif "SCL" in spec_tokens:
+        wanted_i2c = "SCL"
+    else:
+        wanted_i2c = None
+    if wanted_i2c:
+        for net in hub_nets:
+            if not is_i2c_net(ir, symbols, net):
+                continue
+            if i2c_line_role(ir, symbols, net) == wanted_i2c:
+                return net
+    return None
+
+
+def _net_has_connector(
+    ir: CircuitIR, symbols: dict[str, SymbolDef], net
+) -> bool:
+    from .compliance import _header_like_component
+
+    for ref, _pin in net.nodes:
+        comp = ir.components.get(ref)
+        if comp and _header_like_component(comp, symbols):
+            return True
+    return False
+
+
+def ensure_hub_signal_connectors(
+    ir: CircuitIR, symbols: dict[str, SymbolDef], spec: dict | None
+) -> list[str]:
+    """Anchor declared interface signals that reach the hub but have no header.
+
+    The requirement's ``signals`` list names nets the board must expose.
+    Measured on SPI flash: SCK/MOSI/MISO/CS existed between MCU and flash
+    but no ``J`` ref reached those nets though the prompt asked for a
+    connector. One header per still-unanchored group; contacts are numbered
+    in spec order with GND on the last pin when a ground rail exists.
+    """
+    from .fp_checks import generic_header_lib_id
+
+    hub = hub_ref(ir, symbols)
+    if hub is None or not spec:
+        return []
+    signals = spec.get("signals") or []
+    if not signals:
+        return []
+
+    rails = {
+        str(r.get("name", "")).strip().upper()
+        for r in spec.get("power", {}).get("rails", [])
+        if r.get("name")
+    }
+    to_anchor: list[tuple[str, object]] = []
+    seen_nets: set[str] = set()
+    for sig in signals:
+        name = str(sig.get("name", "")).strip()
+        if not name or name.upper() in rails or is_ground(name) or is_supply(name):
+            continue
+        net = _declared_signal_net(ir, symbols, name, hub)
+        if net is None or net.name in seen_nets:
+            continue
+        if _net_has_connector(ir, symbols, net):
+            seen_nets.add(net.name)
+            continue
+        to_anchor.append((name, net))
+        seen_nets.add(net.name)
+    if not to_anchor:
+        return []
+
+    contacts = len(to_anchor)
+    gnd = "GND" if any(n.name == "GND" for n in ir.nets) else None
+    if gnd:
+        contacts += 1
+
+    jn = max(
+        (
+            int(ref[1:])
+            for ref in ir.components
+            if ref.startswith("J") and ref[1:].isdigit()
+        ),
+        default=0,
+    ) + 1
+    jref = f"J{jn}"
+    geometry = {"rows": 1, "columns": contacts, "contacts": contacts}
+    lib_id = generic_header_lib_id(geometry)
+    fp = f"Connector_PinHeader_2.54mm:PinHeader_1x{contacts:02d}_P2.54mm_Vertical"
+    ir.add(Component(jref, lib_id, "INTERFACE", fp, group="INTERFACE"))
+
+    notes: list[str] = []
+    for idx, (sig_name, net) in enumerate(to_anchor, start=1):
+        ir.connect(net.name, (jref, str(idx)))
+        notes.append(f"exposed {sig_name} on {jref}.{idx} (net {net.name})")
+    if gnd:
+        ir.connect(gnd, (jref, str(contacts)))
+    notes.append(f"added {jref} ({contacts} contacts) for hub signals")
     return notes
 
 

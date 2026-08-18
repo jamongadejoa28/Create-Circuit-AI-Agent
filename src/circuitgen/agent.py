@@ -2933,6 +2933,7 @@ class Agent:
         from .normalize import (
             ensure_dc_power_entry,
             ensure_i2c_pullups,
+            ensure_spi_flash_cs_pullups,
             enforce_requested_part_variants,
             normalize_common_symbol_aliases,
             sanitize_known_device_nets,
@@ -3475,7 +3476,11 @@ class Agent:
             detach_supply_pins_from_nonsupply_nets,
             ensure_dc_power_entry,
             ensure_i2c_pullups,
+            ensure_spi_flash_cs_pullups,
+            ensure_spi_flash_wp_hold_released,
+            ensure_hub_signal_connectors,
             ensure_relay_flyback,
+            mark_hub_unused_pins_nc,
             ensure_stm32g4_power_network,
             enforce_requested_part_variants,
             free_driver_pins_from_rails,
@@ -3487,6 +3492,7 @@ class Agent:
             unify_stacked_pins,
             join_hub_to_i2c_buses,
             detach_capacitors_across_i2c_lines,
+            repair_shorted_bypass_capacitors,
         )
 
         notes: list[str] = []
@@ -3554,8 +3560,13 @@ class Agent:
             logic = logic_rail(rails)
             if logic:
                 notes += ensure_i2c_pullups(ir, syms(), logic)
+            notes += ensure_spi_flash_cs_pullups(ir, syms(), logic)
+            notes += ensure_spi_flash_wp_hold_released(ir, syms(), logic)
+            notes += repair_shorted_bypass_capacitors(ir, syms(), logic)
             notes += detach_capacitors_across_i2c_lines(ir, syms(), logic)
             notes += join_hub_to_i2c_buses(ir, syms())
+            notes += mark_hub_unused_pins_nc(ir, syms())
+            notes += ensure_hub_signal_connectors(ir, syms(), spec)
         else:
             # In transcription mode, symbol-declared NOCONNECT pins must still be marked
             notes += mark_documented_no_connects(ir, syms())
