@@ -27,6 +27,9 @@ def check_circuit(
     issues += _check_pins(ir, symbols)
     issues += _check_nets(ir, symbols)
     issues += _check_extended(ir, symbols)
+    from .functional_pins import check_functional_pin_completeness
+
+    issues += check_functional_pin_completeness(ir, symbols)
     return issues
 
 
@@ -152,6 +155,44 @@ def pin_name_i2c_role(pin_name: str) -> str | None:
     for role in ("SDA", "SCL"):
         if name.endswith(("/" + role, "_" + role)):
             return role
+    return None
+
+
+def pin_name_spi_role(comp, pin_name: str) -> str | None:
+    """SCK, MOSI, or MISO from a symbol pin name.
+
+    Standard suffixes SCK/MOSI/MISO apply to any part. W25Q CLK/DI/DO apply
+    only when ``cited_w25q_flash`` — same gate as CS/WP rules; a 4017 CLK is
+    not SPI (``test_a_counter_clk_on_foo_is_not_spi``).
+    """
+    tokens = set(_spi_name_tokens(pin_name))
+    if "SCK" in tokens:
+        return "SCK"
+    if "MOSI" in tokens:
+        return "MOSI"
+    if "MISO" in tokens:
+        return "MISO"
+    if cited_w25q_flash(comp):
+        if "CLK" in tokens:
+            return "SCK"
+        if "DI" in tokens:
+            return "MOSI"
+        if "DO" in tokens:
+            return "MISO"
+    return None
+
+
+def pin_name_uart_role(pin_name: str) -> str | None:
+    """TX or RX from a symbol pin name."""
+    raw = (pin_name or "").upper().replace("~", "").replace("{", "").replace("}", "")
+    for role in ("TX", "RX"):
+        if raw == role or raw.endswith(f"_{role}") or raw.endswith(f"/{role}"):
+            return role
+    tokens = set(_spi_name_tokens(pin_name))
+    if "TXD" in tokens:
+        return "TX"
+    if "RXD" in tokens:
+        return "RX"
     return None
 
 

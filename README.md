@@ -145,4 +145,6 @@ Schematics는 `tests/datasets/`의 출처 manifest와 DatasetExample 스키마�
 `docs/working-rules.md`를 먼저 읽으세요. 테스트를 통과시키려고 코드를 쓰지 않기,
 점수 상승을 증거로 삼지 않기, 발견한 문제는 이월하지 않기 — 전부 이 저장소에서
 실제로 일어난 실패에서 나온 규칙입니다. 현재 상태와 다음 지표 공백은
-`docs/STATUS.md`에만 적습니다. 새 계획 파일을 만들지 않습니다.
+`docs/STATUS.md`에만 적습니다. 시스템 구조는 `docs/ARCHITECTURE.md` 하나로
+봅니다. 구 계획·캠페인 상세는 저장소 밖 `create_circuit-docs-archive/`에
+두었습니다. 새 계획 파일을 만들지 않습니다.

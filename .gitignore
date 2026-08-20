@@ -50,7 +50,8 @@ fp-info-cache
 /kicad-packages3D-source/
 /kicad-templates/
 
-# --- docs: only the operating rules and living status are versioned ---
+# --- docs: rules, living status, and architecture only ---
 docs/*
 !docs/working-rules.md
 !docs/STATUS.md
+!docs/ARCHITECTURE.md
