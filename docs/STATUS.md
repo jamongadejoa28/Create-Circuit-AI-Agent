@@ -5,7 +5,7 @@
 > 캠페인 상세·구 계획·핸드오버는 저장소 밖
 > [`create_circuit-docs-archive`](../../create_circuit-docs-archive/) — 에이전트는 참고하지 않는다.
 
-갱신: 2026-08-20 · 문서 통합 · functional pin gate
+갱신: 2026-08-20 · IR connectivity gate 완료
 
 ## 제품
 
@@ -32,7 +32,9 @@ PCB 배치·동박·DRC와 QLoRA는 하지 않는다.
 - **선정 부품 추가** — `enforce_requested_part_variants`: 가족 sibling 없으면 카탈로그 심볼을 새 ref로 추가.
 - **W25Q SPI** — `ensure_cited_w25q_spi_bus_nets`: 떠 있는 CLK/DI/DO/CS → SCK/MOSI/MISO/NSS 라벨 net.
 - **I2C SDA/SCL** — `ensure_named_i2c_pin_nets` + TMP100 ADD0/ADD1 float → NC.
-- **Functional pin gate** — `functional_pins.check_functional_pin_completeness` in `erc.check_circuit()`.
+- **IR connectivity gate** — `functional_pins.check_functional_pin_completeness`가
+  I2C/SPI/UART 이름 핀 미연결과 주변장치 net의 허브 미도달을 emission 전 error로 보고.
+  허브의 명시적 NC(미사용 인터페이스)는 허용하고 주변장치 기능 핀 NC는 거부.
 
 ## 연결 문제 3층 (A / B / C)
 
@@ -61,13 +63,12 @@ Visual QA(`visual.py`)는 semantic geometry만 검사 — stub+label은 오류�
 
 **우선순위 (사용자·코드 분석 합의):**
 
-1. **IR connectivity completeness (진행 중)** — `functional_pins` self-ERC. I2C/SPI/UART 이름 핀 미연결·허브 미도달 net은 emission 전 error. 후처리 normalize만 늘리지 않는다.
-2. **stubs ≠ 읽을 수 있는 성공** — `critical_stub_nets` 등 net-kind별 wired 지표; local functional net은 실선 요구.
-3. **route-aware placement + rip-up/reroute** — one-pass `routed_cells` 한계.
-4. **multi-terminal bus/trunk router** — `TREE_MAX_NODES=8` 초과 I2C/SPI.
-5. **benchmark debug overlay** — pin/wire/junction/route-mode SVG.
+1. **stubs ≠ 읽을 수 있는 성공** — `critical_stub_nets` 등 net-kind별 wired 지표; local functional net은 실선 요구.
+2. **route-aware placement + rip-up/reroute** — one-pass `routed_cells` 한계.
+3. **multi-terminal bus/trunk router** — `TREE_MAX_NODES=8` 초과 I2C/SPI.
+4. **benchmark debug overlay** — pin/wire/junction/route-mode SVG.
 
-7번만 반복하지 않는다. I2C/SPI별 normalize 규칙 추가는 1번 게이트·측정 없이 하지 않는다.
+7번만 반복하지 않는다. I2C/SPI별 normalize 규칙 추가는 IR connectivity gate·측정 없이 하지 않는다.
 
 ## 데이터·학습
 

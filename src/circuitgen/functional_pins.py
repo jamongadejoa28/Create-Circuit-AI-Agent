@@ -62,15 +62,17 @@ def _config_pin_may_float(comp, pin_name: str, node: tuple[str, str], ir: Circui
 def check_functional_pin_completeness(
     ir: CircuitIR, symbols: dict[str, SymbolDef]
 ) -> list[ValidationIssue]:
-    """Every interface-named pin is CONNECTED, EXPLICIT_NC, or allowed FLOAT.
+    """Every peripheral interface pin is connected or explicitly allowed.
 
     Uses the same pin-name facts as ``i2c_member_role`` and ``spi_line_role``,
     not a per-part denylist. A TMP100 SDA pin and a Si7051 SDA pin are the
-    same check.
+    same check. The controller may explicitly NC an unused interface; a
+    peripheral may not use NC to appear functionally complete.
     """
     issues: list[ValidationIssue] = []
     pin_net = _pin_net_map(ir)
     nc = {(r, str(p)) for r, p in ir.nc_pins}
+    hub = hub_ref(ir, symbols)
 
     for ref, comp in ir.components.items():
         sym = symbols.get(comp.lib_id)
@@ -102,6 +104,14 @@ def check_functional_pin_completeness(
             )
 
             if node in nc and (bus_role or uart_role):
+                # A controller can expose several optional hardware buses.
+                # Explicitly NC is a complete, intentional state for an
+                # unused controller interface (for example ESP32 module
+                # flash/SPI contacts).  A peripheral's named bus pin is part
+                # of the job that component exists to do and remains an
+                # error when marked NC.
+                if ref == hub:
+                    continue
                 issues.append(_issue(
                     "functional_pin_marked_nc",
                     "error",
@@ -120,17 +130,22 @@ def check_functional_pin_completeness(
                     f"{ref}.{pin.number} ({name}) is {role_label} but on no net",
                 ))
 
-    hub = hub_ref(ir, symbols)
     if hub is None:
         return issues
 
     for net in ir.nets:
-        if not is_i2c_net(ir, symbols, net) and not is_spi_net(ir, symbols, net):
-            continue
         members = {r for r, _ in net.nodes}
         if hub in members:
             continue
-        # Peripheral-only bus: at least one member carries the line role.
+
+        i2c = is_i2c_net(ir, symbols, net)
+        spi = is_spi_net(ir, symbols, net)
+        uart_role = None
+        # Peripheral-only interface: at least one non-hub member carries a
+        # line role in its symbol pin name.  UART has no shared bus detector
+        # or normalizer; it still needs this layer-A gate so a TX/RX pin on a
+        # peripheral-only net cannot look connected merely because it has a
+        # net label.
         has_peripheral = False
         for ref, pin_no in net.nodes:
             if ref == hub:
@@ -143,10 +158,10 @@ def check_functional_pin_completeness(
                 pname = sym.pin(str(pin_no)).name or ""
             except KeyError:
                 continue
-            if is_i2c_net(ir, symbols, net) and pin_name_i2c_role(pname):
+            if i2c and pin_name_i2c_role(pname):
                 has_peripheral = True
                 break
-            if is_spi_net(ir, symbols, net):
+            if spi:
                 role = spi_line_role(ir, symbols, net)
                 if role and role != "NSS" and pin_name_spi_role(comp, pname):
                     has_peripheral = True
@@ -154,10 +169,19 @@ def check_functional_pin_completeness(
                 if role == "NSS" and pin_name_is_chip_select(pname):
                     has_peripheral = True
                     break
+            uart_role = pin_name_uart_role(pname)
+            if uart_role:
+                has_peripheral = True
+                break
         if not has_peripheral:
             continue
-        kind = "I2C" if is_i2c_net(ir, symbols, net) else "SPI"
-        line = i2c_line_role(ir, symbols, net) or spi_line_role(ir, symbols, net) or "?"
+        kind = "I2C" if i2c else "SPI" if spi else "UART"
+        line = (
+            i2c_line_role(ir, symbols, net)
+            or spi_line_role(ir, symbols, net)
+            or uart_role
+            or "?"
+        )
         issues.append(_issue(
             "functional_bus_missing_hub",
             "error",
