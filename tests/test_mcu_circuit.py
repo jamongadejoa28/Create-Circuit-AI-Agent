@@ -30,6 +30,8 @@ MCU = "RF_Module:ESP32-WROOM-32"
 
 def esp32_minimal_ir() -> CircuitIR:
     ir = CircuitIR(name="esp32_minimal")
+    ir.controller_required = True
+    ir.controller_refs = ["U1"]
     ir.add(Component("U1", MCU, "ESP32-WROOM-32", "RF_Module:ESP32-WROOM-32"))
     ir.add(Component("C1", "Device:C", "0.1uF", "Capacitor_SMD:C_0603_1608Metric"))
     ir.add(Component("R1", "Device:R", "10k", "Resistor_SMD:R_0603_1608Metric"))  # EN pull-up

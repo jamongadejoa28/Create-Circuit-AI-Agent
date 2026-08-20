@@ -6,8 +6,8 @@ from pathlib import Path
 import pytest
 
 from circuitgen.blocks import instantiate_blocks, validate_plan
-from circuitgen.ir import CircuitIR, Component
-from circuitgen.ir_json import ir_from_json
+from circuitgen.ir import CircuitIR, Component, InterfaceContract
+from circuitgen.ir_json import ir_from_json, ir_to_json
 
 
 def _led_block_ir():
@@ -28,7 +28,10 @@ def _led_block_ir():
 
 PLAN = [
     {"id": "LEDBLK", "description": "indicator", "roles": ["led"], "count": 3,
-     "interface_nets": [{"name": "CTRL{n}", "purpose": "drive input"}]},
+     "interface_nets": [{
+         "name": "CTRL{n}", "purpose": "drive input", "peer": "controller",
+         "protocol": "generic_control", "required": True,
+     }]},
 ]
 
 
@@ -43,6 +46,27 @@ def test_instantiate_repeated_block():
     gnd = [n for n in ir.nets if n.name == "GND"]
     assert len(gnd) == 1 and len(gnd[0].nodes) == 3  # all cathodes on one rail net
     assert {c.group for c in ir.components.values()} == {"LEDBLK1", "LEDBLK2", "LEDBLK3"}
+    assert [(c.net, c.owner_group, c.peer, c.protocol) for c in ir.interface_contracts] == [
+        ("CTRL1", "LEDBLK1", "controller", "generic_control"),
+        ("CTRL2", "LEDBLK2", "controller", "generic_control"),
+        ("CTRL3", "LEDBLK3", "controller", "generic_control"),
+    ]
+
+
+def test_functional_metadata_survives_ir_json_round_trip():
+    ir = CircuitIR("metadata")
+    ir.add(Component("U1", "MCU_Test:Controller", "controller", group="MCU"))
+    ir.controller_required = True
+    ir.controller_refs = ["U1"]
+    ir.interface_contracts.append(InterfaceContract(
+        "PWM1", owner_group="DRIVER1", peer="controller",
+        protocol="generic_control", purpose="channel command",
+    ))
+
+    restored = ir_from_json(ir_to_json(ir))
+    assert restored.controller_required is True
+    assert restored.controller_refs == ["U1"]
+    assert restored.interface_contracts == ir.interface_contracts
 
 
 def test_single_instance_block_namespacing():
@@ -303,6 +327,7 @@ def test_an_interface_net_that_misses_the_hub_is_still_dangling():
 
     ir = CircuitIR("board")
     ir.add(Component("U1", "MCU_ST_STM32G4:STM32G474RETx", "MCU"))
+    ir.controller_refs = ["U1"]
     for n in range(2, 6):
         ir.add(Component(f"U{n}", "Driver_Motor:DRV8311H", "DRV"))
     ir.connect("MOTOR_PWM", *[(f"U{n}", "15") for n in range(2, 6)])
@@ -347,6 +372,7 @@ def test_a_package_too_small_for_the_board_is_grown_to_one_that_fits():
     ir = CircuitIR("too-small")
     hub_id = "MCU_ST_STM32G4:STM32G474CBTx"
     ir.add(Component("U1", hub_id, "STM32G474"))
+    ir.controller_refs = ["U1"]
     ir.add(Component("U2", "Driver_Motor:DRV8311H", "DRV"))
     sym = agent.parts.load_symbols([hub_id])[hub_id]
     io = [p for p in sym.pins if p.etype.name in ("BIDIR", "INPUT", "OUTPUT")]
@@ -377,6 +403,7 @@ def test_when_no_package_in_the_family_fits_it_says_what_to_decide():
     ir = CircuitIR("hopeless")
     hub_id = "MCU_ST_STM32G4:STM32G474CBTx"
     ir.add(Component("U1", hub_id, "STM32G474"))
+    ir.controller_refs = ["U1"]
     ir.add(Component("U2", "Driver_Motor:DRV8311H", "DRV"))
     catalog = [{"net": f"SIG{i}"} for i in range(400)]
     for c in catalog:
@@ -437,6 +464,7 @@ def test_the_nets_the_model_did_not_assign_are_wired_anyway():
 
     ir = CircuitIR("partial")
     ir.add(Component("U1", hub_id, "STM32G474"))
+    ir.controller_refs = ["U1"]
     ir.add(Component("U2", "Driver_Motor:DRV8311H", "DRV"))
     catalog = [{"net": f"SIG{i}"} for i in range(8)]
     for c in catalog:
@@ -474,6 +502,7 @@ def test_a_signal_pin_alone_on_its_net_is_offered_a_controller_pin():
 
     ir = CircuitIR("logic-side")
     ir.add(Component("U1", "MCU_ST_STM32G4:STM32G474RETx", "STM32G474"))
+    ir.controller_refs = ["U1"]
     ir.add(Component("U10", "Interface_CAN_LIN:TJA1051T", "TJA1051T"))
     ir.connect("CAN_TX", ("U10", "1"))          # TXD, INPUT, alone
     ir.connect("CAN_RX", ("U10", "4"))          # RXD, OUTPUT, alone

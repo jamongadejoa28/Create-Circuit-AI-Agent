@@ -151,12 +151,40 @@ class ValidationIssue:
     message: str
 
 
+@dataclass(frozen=True)
+class InterfaceContract:
+    """A required functional connection preserved from the block plan.
+
+    ``owner_group`` identifies the block instance that exposes ``net``;
+    ``peer`` says which kind of endpoint must share it.  This is deliberately
+    topology metadata rather than a pin-name guess: a motor driver's PWM line
+    and an I2C sensor's SDA line are both controller contracts even though
+    only one resembles a named protocol.
+    """
+
+    net: str
+    owner_group: str = ""
+    peer: str = "controller"  # controller | external | block
+    protocol: str = "other"  # i2c | spi | uart | can | generic_control | other
+    purpose: str = ""
+    required: bool = True
+
+
 @dataclass
 class CircuitIR:
     name: str
     components: dict[str, Component] = field(default_factory=dict)
     nets: list[Net] = field(default_factory=list)
     nc_pins: list[tuple[str, str]] = field(default_factory=list)  # explicit no-connects
+    # Controller identity and functional endpoint contracts are authored by
+    # the requirement/block stages and must survive every deterministic pass.
+    # Correctness checks must not rediscover the controller from pin count.
+    # None means legacy/untyped IR (the checker conservatively infers intent
+    # from functional pins). False is an explicit design/transcription fact:
+    # this circuit intentionally has no on-board controller.
+    controller_required: bool | None = None
+    controller_refs: list[str] = field(default_factory=list)
+    interface_contracts: list[InterfaceContract] = field(default_factory=list)
 
     def add(self, comp: Component) -> Component:
         if comp.ref in self.components:

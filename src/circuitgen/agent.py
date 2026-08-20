@@ -846,6 +846,8 @@ class Agent:
 
     def _spec_has_controller(self, spec: dict) -> bool:
         for part in spec.get("parts_needed", []):
+            if part.get("functional_kind") == "microcontroller":
+                return True
             if _generic_mcu_query(part):
                 return True
             if self._controller_catalog_hit(str(part.get("search_query") or "")):
@@ -853,6 +855,100 @@ class Agent:
             if self._controller_catalog_hit(str(part.get("value") or "")):
                 return True
         return False
+
+    def _controller_roles(self, spec: dict) -> list[str]:
+        """Requirement roles that explicitly denote a controller.
+
+        The typed ``functional_kind`` is authoritative.  The two fallbacks
+        retain compatibility with older extracted specs: an intentionally
+        generic MCU query, or a query that the component catalog resolves to
+        a controller library.  None of these depend on circuit pin count.
+        """
+        roles: list[str] = []
+        for part in spec.get("parts_needed", []):
+            if (
+                part.get("functional_kind") == "microcontroller"
+                or _generic_mcu_query(part)
+                or self._controller_catalog_hit(str(part.get("search_query") or ""))
+                or self._controller_catalog_hit(str(part.get("value") or ""))
+            ):
+                role = str(part.get("role") or "")
+                if role:
+                    roles.append(role)
+        return roles
+
+    def _annotate_functional_intent(
+        self,
+        ir: CircuitIR,
+        spec: dict,
+        candidates: dict[str, list[dict]],
+        plan: list[dict] | None = None,
+    ) -> None:
+        """Carry controller identity from requirements/catalog into the IR."""
+        roles = set(self._controller_roles(spec))
+        controller_ids = {
+            str(hit.get("lib_id"))
+            for role in roles
+            for hit in candidates.get(role, [])
+            if hit.get("lib_id")
+        }
+        # Transcription does not run the design candidate-gathering stage.
+        # Resolve only roles already typed as controllers so exact catalog
+        # identities such as RF_Module ESP32 modules still survive.
+        for part in spec.get("parts_needed", []):
+            role = str(part.get("role") or "")
+            if role not in roles or candidates.get(role):
+                continue
+            try:
+                controller_ids.update(
+                    str(hit["lib_id"])
+                    for hit in self.parts.search_parts(
+                        str(part.get("search_query") or part.get("value") or ""), 3
+                    )
+                    if hit.get("lib_id")
+                )
+            except Exception:
+                pass
+        controller_references = {
+            str(part.get("reference"))
+            for part in spec.get("parts_needed", [])
+            if str(part.get("role") or "") in roles and part.get("reference")
+        }
+        refs = {
+            ref
+            for ref, comp in ir.components.items()
+            if ref in controller_references
+            or comp.lib_id in controller_ids
+            or comp.lib_id.split(":", 1)[0].startswith(_CONTROLLER_LIB_PREFIXES)
+        }
+
+        # A conceptual controller has no KiCad catalog identity.  Its owning
+        # block is still typed by the plan, so preserve that exact instance
+        # instead of falling back to a largest-component heuristic.
+        if plan and roles:
+            controller_blocks = {
+                str(block.get("id"))
+                for block in plan
+                if roles & set(map(str, block.get("roles", [])))
+            }
+            refs.update(
+                ref for ref, comp in ir.components.items()
+                if any(
+                    comp.group == bid
+                    or (
+                        comp.group.startswith(bid)
+                        and comp.group[len(bid):].isdigit()
+                    )
+                    for bid in controller_blocks
+                )
+                and comp.lib_id.startswith("Conceptual:")
+            )
+
+        ir.controller_required = bool(roles) or any(
+            contract.required and contract.peer == "controller"
+            for contract in ir.interface_contracts
+        )
+        ir.controller_refs = sorted(refs)
 
     def _ensure_mcu_role(self, prompt: str, spec: dict) -> None:
         """Keep a microcontroller the request named as a host, not only a rail.
@@ -1633,6 +1729,15 @@ class Agent:
             "- interface_nets: ONLY nets another block must also connect to "
             "(signals to the MCU, shared buses, block outputs). Power rails "
             "are implicit and shared — never list them.\n"
+            "- Every interface_net must declare peer: controller when this "
+            "block's signal must reach the MCU/CPU, external when it leaves "
+            "the board through a connector, or block when another functional "
+            "block is the peer. Declare protocol as i2c/spi/uart/can, "
+            "generic_control for PWM/DIR/FAULT/interrupt/control lines, or "
+            "other. Set required=true unless the interface is optional. A CAN "
+            "transceiver's TXD/RXD are peer=controller protocol=can; CANH/CANL "
+            "are peer=external protocol=can. On the controller block itself, "
+            "a peripheral-facing signal uses peer=block, not peer=controller.\n"
             "- Repeated blocks: a net EVERY instance may receive at the same "
             "time is shared and keeps a plain name (a clock, a data line to "
             "slaves: SCK, MOSI, SDA, SCL). A net that addresses or commands "
@@ -1697,6 +1802,9 @@ class Agent:
                             "net": net["name"].replace("{n}", str(inst)),
                             "purpose": net.get("purpose", "")[:40],
                             "block": f"{b['id']}#{inst}",
+                            "peer": net.get("peer", "controller"),
+                            "protocol": net.get("protocol", "other"),
+                            "required": bool(net.get("required", True)),
                         }
                     )
         return catalog
@@ -1880,14 +1988,20 @@ class Agent:
         therefore passes extra_alone=False and a catalog from is_i2c_net.
         """
         symbols = self._resolve_symbols(ir)
-        from .normalize import hub_ref
-
-        hub = hub_ref(ir, symbols)
-        if hub is None:
+        # Controller identity is a requirement/plan fact.  The old
+        # largest-component heuristic could call a 20-pin connector the MCU
+        # and then certify a sensor wired only to that connector.
+        if not ir.controller_refs:
             return []
-        hub_pins = len(symbols[ir.components[hub].lib_id].pins)
+        hub = ir.controller_refs[0]
+        if hub not in ir.components or ir.components[hub].lib_id not in symbols:
+            return []
 
-        cat_names = {c["net"] for c in catalog}
+        cat_names = {
+            c["net"] for c in catalog
+            if c.get("peer", "controller") == "controller"
+            and c.get("required", True)
+        }
         net_sizes = {n.name: len(n.nodes) for n in ir.nets}
         # A no-connect is where a pass PARKED an unused pin so ERC would pass,
         # not a commitment. Counting them as spoken for is what made a
@@ -2847,6 +2961,7 @@ class Agent:
         if transcribed:
             res.stage = "transcription"
             ir, tnotes = self.transcribe(spec, name)
+            self._annotate_functional_intent(ir, spec, {})
             res.log.extend(tnotes)
             ctx = {"candidates": {}, "contracts": [], "transcribed": True}
             transcription_problems = self.verify_transcription(spec, ir)
@@ -3066,6 +3181,9 @@ class Agent:
             rails = [r["name"] for r in spec.get("power", {}).get("rails", [])]
             ir, mnotes = instantiate_blocks(name, plan, block_irs, rails)
             res.log.extend(mnotes)
+            self._annotate_functional_intent(
+                ir, spec, merged_candidates, plan=plan
+            )
             res.log.extend(self.wire_mcu_interfaces(ir, catalog))
             ctx = {"candidates": merged_candidates}
             if not ir.components:
@@ -3148,6 +3266,10 @@ class Agent:
                 rec.set("agent_log", res.log)
                 rec.save()
                 return res
+        if not ir.controller_refs:
+            self._annotate_functional_intent(
+                ir, spec, ctx.get("candidates", {}), plan=res.block_plan or None
+            )
         res.ir = ir
         rec.set("block_plan", res.block_plan)
         from .normalize import (
@@ -3167,6 +3289,9 @@ class Agent:
         synth_nc = nc_set(ir)
         res.log.extend(self._normalize(ir, spec, prompt))
         res.log.extend(self._limit_main_device_copies(ir, ctx.get("candidates", {}), spec))
+        self._annotate_functional_intent(
+            ir, spec, ctx.get("candidates", {}), plan=res.block_plan or None
+        )
         res.stage = "pipeline"
         pr = self._generate(ir, name)
         res.pipeline = pr
@@ -3272,6 +3397,9 @@ class Agent:
             # patches may use pin names, introduce new lib_ids, invalid
             # footprints, or rail nets that still need their supply symbol
             res.log.extend(self._normalize(ir, spec, prompt))
+            self._annotate_functional_intent(
+                ir, spec, ctx.get("candidates", {}), plan=res.block_plan or None
+            )
             pr = self._generate(ir, name)
             res.pipeline = pr
 
@@ -3320,6 +3448,11 @@ class Agent:
                 ),
                 "connectivity_ok": pr.connectivity_ok,
                 "visual_issues": len(pr.visual_issues),
+                "visual_issue_details": [
+                    {"rule": issue.rule, "message": issue.message}
+                    for issue in pr.visual_issues
+                ],
+                "wiring": pr.route_metrics,
                 "interfaces": pr.interface_metrics,
                 "schematic": str(pr.sch_path) if pr.sch_path else None,
             },

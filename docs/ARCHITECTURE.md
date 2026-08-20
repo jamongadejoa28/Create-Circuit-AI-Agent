@@ -84,10 +84,14 @@ LLM과 KiCad 사이의 중간 표현 (`ir.py`).
 CircuitIR
   ├─ components[ref] — lib_id, value, footprint, group
   ├─ nets[] — name, nodes[(ref, pin)]
-  └─ nc_pins[(ref, pin)]
+  ├─ nc_pins[(ref, pin)]
+  ├─ controller_required, controller_refs[]
+  └─ interface_contracts[] — net, owner_group, peer, protocol, required
 ```
 
 JSON 변환·repair patch: `ir_json.py`. 블록 계획 검증·인스턴스화: `blocks.py`.
+controller identity는 RequirementSpec/부품 catalog에서 내려오며 핀 수로 재추측하지 않는다.
+BlockPlan interface의 peer/protocol 계약은 인스턴스별 net 이름과 owner group으로 확장된다.
 
 ## RAG 지식 vs 결정론적 규칙
 
@@ -110,7 +114,12 @@ verified 규칙만 자동 적용; draft는 승격 금지.
 `data/parts.sqlite` — KiCad 심볼·핀·footprint·provenance.
 부품 ID와 핀 번호는 회로 정확성의 원천이므로 문서 RAG와 분리합니다.
 
-## Typed interface (배치 힌트)
+## Typed interface
+
+`CircuitIR.interface_contracts`는 계획 단계의 **정확성 계약**이다. 예를 들어
+`DRIVER2_PWM → peer=controller, protocol=generic_control`이면 해당 owner group과
+`controller_refs`의 endpoint가 같은 net에 있어야 한다. I2C/SPI/UART 이름 detector에
+없는 제어선도 이 경로로 검증한다.
 
 `interfaces.py` — 완성된 IR과 KiCad 핀 전기 타입에서 ground/power/signal,
 driver/consumer 역할을 **추론하지 않고** 파생합니다.
@@ -129,7 +138,8 @@ driver/consumer 역할을 **추론하지 않고** 파생합니다.
 | **C** | 전기적으로 연결 | stub+label, 선이 끊겨 보임 | `emit.py` |
 
 `connectivity_ok`와 KiCad ERC 0은 C까지 성공으로 본다.
-`route_metrics.wired_ratio`는 통계일 뿐 게이트가 아니다.
+`route_metrics.wired_ratio`는 통계일 뿐 게이트가 아니다. 필수 controller 계약 net은
+`critical_stub_nets` 이름 목록과 `critical_wired_ratio`, protocol별 수치로 따로 노출된다.
 
 `emit.build_emit_plan`: direct → L → tree(≤8 terminal) → stubs.
 one-pass `routed_cells`, rip-up 없음.
@@ -165,7 +175,7 @@ self-ERC error가 있어도 알려진 심볼만으로 draft 회로도를 낼 수
 | `agent.py` | 요구 추출, 검색, 합성, normalize, repair 오케스트레이션 |
 | `normalize.py` | rail, 풀업, 장치별 pin, hub join, 선정 부품 variant |
 | `erc.py` | self-ERC 규칙, `check_circuit()` |
-| `functional_pins.py` | I2C/SPI/UART functional pin completeness (층 A) |
+| `functional_pins.py` | typed peer 계약, I2C/SPI/serial pin, SPI CS, UART AF completeness (층 A) |
 | `emit.py` | 배선 계획, route_metrics |
 | `place.py` | 기능 그룹 배치, A2/A1 시트 |
 | `topology.py` | 전도·dead component 분석 |
@@ -176,6 +186,7 @@ self-ERC error가 있어도 알려진 심볼만으로 draft 회로도를 낼 수
 - `out/agent/<name>.kicad_sch`, `.kicad_pro`, `.net`, `.erc.json`
 - `out/agent/svg/<name>.svg`
 - `out/agent/run.json` — prompt, spec, IR, repair, commit·seed·model·지식 hash
+- `tests/fixtures/visual_regressions/` — 소수의 추적 SVG와 route metrics 기준선
 
 ## 벤치·캠페인
 

@@ -6,7 +6,7 @@ boundary where deterministic code takes over.
 
 from __future__ import annotations
 
-from .ir import CircuitIR, Component
+from .ir import CircuitIR, Component, InterfaceContract
 
 
 def ir_from_json(data: dict, notes: list[str] | None = None) -> CircuitIR:
@@ -44,6 +44,26 @@ def ir_from_json(data: dict, notes: list[str] | None = None) -> CircuitIR:
     for n in data.get("nets", []):
         ir.connect(n["name"], *[(nd["ref"], str(nd["pin"])) for nd in n["nodes"]])
     ir.nc_pins = [(nc["ref"], str(nc["pin"])) for nc in data.get("nc_pins", [])]
+    ir.controller_required = (
+        bool(data["controller_required"])
+        if "controller_required" in data and data["controller_required"] is not None
+        else None
+    )
+    ir.controller_refs = [
+        str(ref) for ref in data.get("controller_refs", []) if str(ref) in ir.components
+    ]
+    ir.interface_contracts = [
+        InterfaceContract(
+            net=str(item["net"]),
+            owner_group=str(item.get("owner_group", "")),
+            peer=str(item.get("peer", "controller")),
+            protocol=str(item.get("protocol", "other")),
+            purpose=str(item.get("purpose", "")),
+            required=bool(item.get("required", True)),
+        )
+        for item in data.get("interface_contracts", [])
+        if item.get("net")
+    ]
     return ir
 
 
@@ -61,6 +81,22 @@ def ir_to_json(ir: CircuitIR) -> dict:
             for n in ir.nets
         ],
         "nc_pins": [{"ref": r, "pin": p} for r, p in ir.nc_pins],
+        **(
+            {"controller_required": ir.controller_required}
+            if ir.controller_required is not None else {}
+        ),
+        **({"controller_refs": list(ir.controller_refs)} if ir.controller_refs else {}),
+        **({"interface_contracts": [
+            {
+                "net": contract.net,
+                "owner_group": contract.owner_group,
+                "peer": contract.peer,
+                "protocol": contract.protocol,
+                "purpose": contract.purpose,
+                "required": contract.required,
+            }
+            for contract in ir.interface_contracts
+        ]} if ir.interface_contracts else {}),
     }
 
 
@@ -96,6 +132,7 @@ def _apply_one(ir: CircuitIR, op: dict) -> str:
         return f"added {ref} ({op['lib_id']})"
     if kind == "remove_component":
         ir.components.pop(ref, None)
+        ir.controller_refs = [item for item in ir.controller_refs if item != ref]
         for net in ir.nets:
             net.nodes = [n for n in net.nodes if n[0] != ref]
         ir.nets = [n for n in ir.nets if n.nodes]

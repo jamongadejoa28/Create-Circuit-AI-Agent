@@ -72,6 +72,14 @@ def route_metrics(ir: CircuitIR, symbols: dict[str, SymbolDef], plan: EmitPlan) 
         )
     ]
     wired = [n for n in signal if plan.net_routes.get(n) in ("direct", "l", "tree")]
+    stubbed = sorted(set(signal) - set(wired))
+    critical_protocols: dict[str, set[str]] = {}
+    for contract in ir.interface_contracts:
+        if not contract.required or contract.peer != "controller":
+            continue
+        critical_protocols.setdefault(contract.net, set()).add(contract.protocol)
+    critical = sorted(set(signal) & set(critical_protocols))
+    critical_stubbed = sorted(set(critical) & set(stubbed))
     power = [
         net.name for net in ir.nets
         if len(net.nodes) >= 2 and any(
@@ -83,8 +91,35 @@ def route_metrics(ir: CircuitIR, symbols: dict[str, SymbolDef], plan: EmitPlan) 
     return {
         "signal_nets": len(signal),
         "wired_nets": len(wired),
-        "stub_nets": len(signal) - len(wired),
+        "stub_nets": len(stubbed),
+        "stub_net_names": stubbed,
         "wired_ratio": round(len(wired) / len(signal), 3) if signal else None,
+        # Required controller interfaces are the nets whose label fallback is
+        # most misleading to a reader: the IR is electrically complete, but
+        # the functional path looks cut. Expose their names so benchmark and
+        # visual review can target the router's real failures.
+        "critical_nets": len(critical),
+        "critical_net_names": critical,
+        "critical_stub_nets": critical_stubbed,
+        "critical_wired_ratio": (
+            round((len(critical) - len(critical_stubbed)) / len(critical), 3)
+            if critical else None
+        ),
+        "critical_by_protocol": {
+            protocol: {
+                "nets": len([
+                    name for name in critical
+                    if protocol in critical_protocols.get(name, set())
+                ]),
+                "stub_nets": len([
+                    name for name in critical_stubbed
+                    if protocol in critical_protocols.get(name, set())
+                ]),
+            }
+            for protocol in sorted({
+                item for values in critical_protocols.values() for item in values
+            })
+        },
         "junctions": len(plan.junctions),
         "by_kind": {
             kind: sum(1 for n in signal if plan.net_routes.get(n) == kind)

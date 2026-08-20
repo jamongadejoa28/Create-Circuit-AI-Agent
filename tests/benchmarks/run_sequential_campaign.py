@@ -60,6 +60,11 @@ def _snapshot(case: dict, result, seconds: float) -> dict:
         "kicad_violations": len(pipeline.kicad_erc.violations) if pipeline and pipeline.kicad_erc else None,
         "visual_issues": len(pipeline.visual_issues) if pipeline else None,
         "wired_ratio": (pipeline.route_metrics or {}).get("wired_ratio") if pipeline else None,
+        "critical_stub_nets": (
+            (pipeline.route_metrics or {}).get("critical_stub_nets", [])
+            if pipeline else []
+        ),
+        "wiring": (pipeline.route_metrics or {}) if pipeline else {},
         "compliance_errors": (
             sum(i.get("severity") == "error" for i in compliance.get("issues", []))
             if result.compliance else None

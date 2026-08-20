@@ -110,6 +110,9 @@ def generate(
         draft.nc_pins = [
             (r, p) for r, p in ir.nc_pins if r in known and pin_ok(r, p)
         ]
+        draft.controller_required = ir.controller_required
+        draft.controller_refs = [ref for ref in ir.controller_refs if ref in known]
+        draft.interface_contracts = list(ir.interface_contracts)
         ir = draft
         res.draft = True
 

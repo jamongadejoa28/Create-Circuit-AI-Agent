@@ -1169,6 +1169,27 @@ def test_catalog_connector_hits_are_not_replaced_with_generic_headers(agent_env)
     ), [h["lib_id"] for h in hits]
 
 
+def test_controller_identity_comes_from_typed_requirement_not_pin_count(agent_env):
+    parts, knowledge, tmp = agent_env
+    agent = Agent(MockLLM(), parts, knowledge, tmp / "controller-id")
+    spec = {
+        "parts_needed": [{
+            "role": "host", "functional_kind": "microcontroller",
+            "search_query": "ESP32-WROOM-32",
+        }],
+    }
+    ir = CircuitIR("typed-controller")
+    ir.add(Component("U1", "RF_Module:ESP32-WROOM-32", "ESP32-WROOM-32"))
+    ir.add(Component("J1", "Connector_Generic:Conn_02x20_Odd_Even", "40-pin header"))
+    candidates = {
+        "host": [{"lib_id": "RF_Module:ESP32-WROOM-32"}],
+    }
+
+    agent._annotate_functional_intent(ir, spec, candidates)
+    assert ir.controller_required is True
+    assert ir.controller_refs == ["U1"]
+
+
 def test_conceptual_device_injected_for_uncatalogued_role(agent_env):
     parts, knowledge, tmp = agent_env
     agent = Agent(MockLLM(), parts, knowledge, tmp / "concept")

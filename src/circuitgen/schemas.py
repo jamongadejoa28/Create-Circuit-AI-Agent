@@ -330,7 +330,7 @@ BLOCK_PLAN = {
                         "maxItems": 14,
                         "items": {
                             "type": "object",
-                            "required": ["name", "purpose"],
+                            "required": ["name", "purpose", "peer", "protocol", "required"],
                             "additionalProperties": False,
                             "properties": {
                                 "name": {
@@ -339,6 +339,20 @@ BLOCK_PLAN = {
                                     "description": "net shared with other blocks; use literal {n} for per-instance nets of repeated blocks, e.g. ENC{n}_CS",
                                 },
                                 "purpose": {"type": "string", "maxLength": 60},
+                                "peer": {
+                                    "type": "string",
+                                    "enum": ["controller", "external", "block"],
+                                    "description": "required endpoint at the other side of this block interface",
+                                },
+                                "protocol": {
+                                    "type": "string",
+                                    "enum": ["i2c", "spi", "uart", "can", "generic_control", "other"],
+                                    "description": "typed interface context; PWM/DIR/FAULT are generic_control",
+                                },
+                                "required": {
+                                    "type": "boolean",
+                                    "description": "whether the peer endpoint is required for this design",
+                                },
                             },
                         },
                     },

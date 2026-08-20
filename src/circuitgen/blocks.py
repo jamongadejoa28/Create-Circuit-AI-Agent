@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import re
 
-from .ir import CircuitIR, Component
+from .ir import CircuitIR, Component, InterfaceContract
 
 _REF_RE = re.compile(r"^(#?[A-Za-z]+)(\d+)$")
 
@@ -87,6 +87,7 @@ def instantiate_blocks(
 
         for inst in range(1, count + 1):
             ref_map: dict[str, str] = {}
+            owner_group = f"{bid}{inst if count > 1 else ''}"
 
             for old_ref, comp in src.components.items():
                 new_ref = next_ref(_ref_prefix(old_ref))
@@ -94,7 +95,8 @@ def instantiate_blocks(
                 merged.add(
                     Component(
                         new_ref, comp.lib_id, comp.value, comp.footprint,
-                        group=f"{bid}{inst if count > 1 else ''}",
+                        group=owner_group,
+                        binding_error=comp.binding_error,
                     )
                 )
 
@@ -118,10 +120,27 @@ def instantiate_blocks(
                 if r in ref_map:
                     merged.nc_pins.append((ref_map[r], p))
 
+            # Keep the planner's endpoint meaning next to the instantiated
+            # net.  A later correctness gate can now ask "does MOTOR2_PWM
+            # reach the declared controller?" without guessing from the pin
+            # name or from whichever component happens to have most pins.
+            for iface in block.get("interface_nets", []):
+                merged.interface_contracts.append(InterfaceContract(
+                    net=str(iface["name"]).replace("{n}", str(inst)),
+                    owner_group=owner_group,
+                    peer=str(iface.get("peer", "controller")),
+                    protocol=str(iface.get("protocol", "other")),
+                    purpose=str(iface.get("purpose", "")),
+                    required=bool(iface.get("required", True)),
+                ))
+
             notes.append(
                 f"block {bid}#{inst}: {len(src.components)} components as "
                 f"{sorted(ref_map.values())[:6]}{'...' if len(ref_map) > 6 else ''}"
             )
+    # Shared bus entries can be declared by more than one block. Preserve
+    # distinct owners, but remove literal duplicates produced by plan repair.
+    merged.interface_contracts = list(dict.fromkeys(merged.interface_contracts))
     return merged, notes
 
 

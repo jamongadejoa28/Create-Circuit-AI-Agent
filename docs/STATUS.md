@@ -5,7 +5,7 @@
 > 캠페인 상세·구 계획·핸드오버는 저장소 밖
 > [`create_circuit-docs-archive`](../../create_circuit-docs-archive/) — 에이전트는 참고하지 않는다.
 
-갱신: 2026-08-20 · IR connectivity gate 완료
+갱신: 2026-08-20 · typed IR connectivity gate + critical stub 계측 완료
 
 ## 제품
 
@@ -32,9 +32,19 @@ PCB 배치·동박·DRC와 QLoRA는 하지 않는다.
 - **선정 부품 추가** — `enforce_requested_part_variants`: 가족 sibling 없으면 카탈로그 심볼을 새 ref로 추가.
 - **W25Q SPI** — `ensure_cited_w25q_spi_bus_nets`: 떠 있는 CLK/DI/DO/CS → SCK/MOSI/MISO/NSS 라벨 net.
 - **I2C SDA/SCL** — `ensure_named_i2c_pin_nets` + TMP100 ADD0/ADD1 float → NC.
-- **IR connectivity gate** — `functional_pins.check_functional_pin_completeness`가
-  I2C/SPI/UART 이름 핀 미연결과 주변장치 net의 허브 미도달을 emission 전 error로 보고.
-  허브의 명시적 NC(미사용 인터페이스)는 허용하고 주변장치 기능 핀 NC는 거부.
+- **typed interface contract** — BlockPlan의 각 interface가 `peer`
+  (`controller|external|block`), `protocol`, `required`를 가지고
+  `CircuitIR.controller_refs`/`interface_contracts`까지 보존된다.
+- **IR connectivity gate** — 최대 핀 수 부품을 허브로 추측하지 않는다. controller 없음,
+  계약 net/owner/controller endpoint 누락, I2C/SPI/serial 주변장치의 controller 미도달을
+  emission 전 error로 보고한다. PWM/DIR/FAULT도 `generic_control` 계약으로 같은 검사를 받는다.
+- **SPI/UART 보강** — 활성 SCK/MOSI/MISO가 있는 주변장치의 CS/NSS NC를 거부한다.
+  UART controller pin은 기록된 datasheet AF를 확인한다. TXD/RXD는 계약/라이브러리 문맥이
+  있을 때만 UART/CAN으로 분류하고 그 외에는 SERIAL로 보고한다.
+- **C층 측정 기준선** — `route_metrics`가 `stub_net_names`,
+  `critical_stub_nets`, protocol별 critical 수치를 기록하고 design `run.json` 및 sequential
+  benchmark에도 보존한다. `tests/fixtures/visual_regressions/i2c_terminal_limit.svg`는
+  현재 `>8 terminal`의 SDA/SCL stub fallback을 Git에서 검토 가능한 기준선으로 고정한다.
 
 ## 연결 문제 3층 (A / B / C)
 
@@ -45,7 +55,8 @@ PCB 배치·동박·DRC와 QLoRA는 하지 않는다.
 | **C. Label fallback** | 전기적으로 연결 | **선이 끊겨 보임** | `emit` stub+동일 net label |
 
 현재 `connectivity_ok`와 KiCad ERC 0은 **C를 성공으로 취급**한다.
-`route_metrics.wired_ratio`는 통계일 뿐 게이트가 아니다.
+`route_metrics.wired_ratio`와 `critical_wired_ratio`는 통계일 뿐 게이트가 아니다.
+현재 추적 visual 기준선에서 `critical_stub_nets = [SCL, SDA]`다.
 
 `emit.build_emit_plan` 순서: direct → L → tree(≤8 terminal) → **stubs**.
 `routed_cells`로 선행 net이 후행 net 경로를 막고 rip-up 없음.
@@ -63,9 +74,10 @@ Visual QA(`visual.py`)는 semantic geometry만 검사 — stub+label은 오류�
 
 **우선순위 (사용자·코드 분석 합의):**
 
-1. **stubs ≠ 읽을 수 있는 성공** — `critical_stub_nets` 등 net-kind별 wired 지표; local functional net은 실선 요구.
-2. **route-aware placement + rip-up/reroute** — one-pass `routed_cells` 한계.
-3. **multi-terminal bus/trunk router** — `TREE_MAX_NODES=8` 초과 I2C/SPI.
+1. ~~**critical stub 측정**~~ — 이름·protocol별 지표와 추적 SVG 기준선 완료.
+2. **route-aware placement + rip-up/reroute** — one-pass `routed_cells` 한계 제거.
+3. **multi-terminal bus/trunk router** — 기준선의 SDA/SCL처럼 `TREE_MAX_NODES=8`을
+   초과한 공유 bus를 trunk+branch 실선으로 만든다.
 4. **benchmark debug overlay** — pin/wire/junction/route-mode SVG.
 
 7번만 반복하지 않는다. I2C/SPI별 normalize 규칙 추가는 IR connectivity gate·측정 없이 하지 않는다.

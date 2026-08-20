@@ -182,8 +182,8 @@ def pin_name_spi_role(comp, pin_name: str) -> str | None:
     return None
 
 
-def pin_name_uart_role(pin_name: str) -> str | None:
-    """TX or RX from a symbol pin name."""
+def pin_name_serial_role(pin_name: str) -> str | None:
+    """TX/RX direction from a symbol pin name, without assuming protocol."""
     raw = (pin_name or "").upper().replace("~", "").replace("{", "").replace("}", "")
     for role in ("TX", "RX"):
         if raw == role or raw.endswith(f"_{role}") or raw.endswith(f"/{role}"):
@@ -194,6 +194,11 @@ def pin_name_uart_role(pin_name: str) -> str | None:
     if "RXD" in tokens:
         return "RX"
     return None
+
+
+def pin_name_uart_role(pin_name: str) -> str | None:
+    """Backward-compatible alias; callers must supply UART context."""
+    return pin_name_serial_role(pin_name)
 
 
 def i2c_member_role(ir: CircuitIR, symbols: dict[str, SymbolDef], net) -> str | None:
@@ -500,6 +505,18 @@ def pin_name_is_chip_select(pin_name: str) -> bool:
     return "CS" in _spi_name_tokens(pin_name)
 
 
+def pin_name_is_spi_select(pin_name: str) -> bool:
+    """Whether a pin is a conventional SPI select (CS or hardware NSS).
+
+    This remains a name fact, not proof that the component uses SPI.  Callers
+    must first establish an active SCK/MOSI/MISO interface on that component;
+    that context prevents unrelated pins such as an analog IC's ``CS`` from
+    being promoted to SPI.
+    """
+    tokens = set(_spi_name_tokens(pin_name))
+    return "CS" in tokens or "NSS" in tokens
+
+
 def pin_name_is_write_protect(pin_name: str) -> bool:
     """Whether a flash control pin is /WP (~{WP})."""
     return "WP" in _spi_name_tokens(pin_name)
@@ -732,83 +749,85 @@ def shorted_bypass_capacitors(
     return out
 
 
+def _recorded_controller_refs(ir: CircuitIR) -> list[str]:
+    """Typed controller refs, with a datasheet-backed legacy fallback.
+
+    Old recorded IR predates ``controller_refs``.  It can still be checked
+    when its lib_id has a pin-function table; unlike the removed hub
+    heuristic this cannot promote a large connector or peripheral.
+    """
+    from .pinfunctions import device_for
+
+    explicit = [ref for ref in ir.controller_refs if ref in ir.components]
+    if explicit:
+        return explicit
+    return [
+        ref for ref, comp in ir.components.items()
+        if device_for(comp.lib_id) is not None
+    ]
+
+
 def spi_hub_af_failures(
     ir: CircuitIR, symbols: dict[str, SymbolDef]
 ) -> list[tuple[str, str]]:
-    """Hub membership on SCK/MOSI/MISO that is not a recorded SPI function.
+    """Controller membership on SCK/MOSI/MISO without a recorded SPI AF.
 
-    Same facts `join_hub_to_i2c_buses` uses for those roles: `spi_line_role`,
-    `hub_ref`, `pin_carries_function_ending`. NSS/CS is not in this list —
-    a GPIO chip-select is valid. No table means no verdict.
+    NSS/CS is not in this list — a GPIO chip-select is valid. No table means
+    no verdict. Controller identity comes from CircuitIR; legacy IR is only
+    eligible when a datasheet pin-function table identifies the component.
     """
-    from .normalize import hub_ref
     from .pinfunctions import device_for, pin_carries_function_ending
 
-    hub = hub_ref(ir, symbols)
-    if hub is None:
+    controllers = _recorded_controller_refs(ir)
+    if not controllers:
         return []
-    lib_id = ir.components[hub].lib_id
-    device = device_for(lib_id)
-    if device is None:
-        return []
-    sym = symbols.get(lib_id)
-    if sym is None:
-        return []
-    source = device.get("source") or {}
-    cited = (
-        f"{source.get('document', 'datasheet')}, "
-        f"{source.get('table', 'pin table')}"
-    )
     out: list[tuple[str, str]] = []
     for net in ir.nets:
         role = spi_line_role(ir, symbols, net)
         if role not in ("SCK", "MOSI", "MISO"):
             continue
-        on_hub = [p for r, p in net.nodes if r == hub]
-        if not on_hub:
+        on_controller = [(r, p) for r, p in net.nodes if r in controllers]
+        if not on_controller:
+            label = ", ".join(controllers)
             out.append((
-                f"{hub}:{net.name}",
-                f"{hub} is not on SPI {role} net {net.name}",
+                f"controller:{net.name}",
+                f"controller {label} is not on SPI {role} net {net.name}",
             ))
             continue
-        if any(pin_carries_function_ending(lib_id, sym, p, role) for p in on_hub):
-            continue
-        pin = on_hub[0]
-        out.append((
-            f"{hub}.{pin}",
-            f"{hub}.{pin} is on SPI {role} net {net.name} but is not a "
-            f"recorded {role} pin ({cited})",
-        ))
+        for ref, pin in on_controller:
+            lib_id = ir.components[ref].lib_id
+            device = device_for(lib_id)
+            sym = symbols.get(lib_id)
+            if device is None or sym is None:  # no table means no verdict
+                continue
+            if pin_carries_function_ending(lib_id, sym, pin, role):
+                continue
+            source = device.get("source") or {}
+            cited = (
+                f"{source.get('document', 'datasheet')}, "
+                f"{source.get('table', 'pin table')}"
+            )
+            out.append((
+                f"{ref}.{pin}",
+                f"{ref}.{pin} is on SPI {role} net {net.name} but is not a "
+                f"recorded {role} pin ({cited})",
+            ))
     return out
 
 
 def i2c_hub_af_failures(
     ir: CircuitIR, symbols: dict[str, SymbolDef]
 ) -> list[tuple[str, str]]:
-    """Hub membership on an I2C net that is not a recorded SDA/SCL function.
+    """Controller membership on I2C without a recorded SDA/SCL function.
 
-    Same four facts `join_hub_to_i2c_buses` uses: `is_i2c_net`,
-    `i2c_line_role`, `hub_ref`, `pin_carries_function_ending`. No recorded
-    table means no verdict — the fixer also refuses to invent a GPIO.
+    No recorded table means no verdict — the fixer also refuses to invent a
+    GPIO. See ``_recorded_controller_refs`` for legacy behavior.
     """
-    from .normalize import hub_ref
     from .pinfunctions import device_for, pin_carries_function_ending
 
-    hub = hub_ref(ir, symbols)
-    if hub is None:
+    controllers = _recorded_controller_refs(ir)
+    if not controllers:
         return []
-    lib_id = ir.components[hub].lib_id
-    device = device_for(lib_id)
-    if device is None:
-        return []
-    sym = symbols.get(lib_id)
-    if sym is None:
-        return []
-    source = device.get("source") or {}
-    cited = (
-        f"{source.get('document', 'datasheet')}, "
-        f"{source.get('table', 'pin table')}"
-    )
     out: list[tuple[str, str]] = []
     for net in ir.nets:
         if not is_i2c_net(ir, symbols, net):
@@ -816,21 +835,32 @@ def i2c_hub_af_failures(
         role = i2c_line_role(ir, symbols, net)
         if role is None:
             continue
-        on_hub = [p for r, p in net.nodes if r == hub]
-        if not on_hub:
+        on_controller = [(r, p) for r, p in net.nodes if r in controllers]
+        if not on_controller:
+            label = ", ".join(controllers)
             out.append((
-                f"{hub}:{net.name}",
-                f"{hub} is not on I2C {role} net {net.name}",
+                f"controller:{net.name}",
+                f"controller {label} is not on I2C {role} net {net.name}",
             ))
             continue
-        if any(pin_carries_function_ending(lib_id, sym, p, role) for p in on_hub):
-            continue
-        pin = on_hub[0]
-        out.append((
-            f"{hub}.{pin}",
-            f"{hub}.{pin} is on I2C {role} net {net.name} but is not a "
-            f"recorded {role} pin ({cited})",
-        ))
+        for ref, pin in on_controller:
+            lib_id = ir.components[ref].lib_id
+            device = device_for(lib_id)
+            sym = symbols.get(lib_id)
+            if device is None or sym is None:
+                continue
+            if pin_carries_function_ending(lib_id, sym, pin, role):
+                continue
+            source = device.get("source") or {}
+            cited = (
+                f"{source.get('document', 'datasheet')}, "
+                f"{source.get('table', 'pin table')}"
+            )
+            out.append((
+                f"{ref}.{pin}",
+                f"{ref}.{pin} is on I2C {role} net {net.name} but is not a "
+                f"recorded {role} pin ({cited})",
+            ))
     return out
 
 

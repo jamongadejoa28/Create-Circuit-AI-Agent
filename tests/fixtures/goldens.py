@@ -72,6 +72,8 @@ def golden3_mcu_i2c_ir() -> CircuitIR:
     no marker).
     """
     ir = CircuitIR(name="golden3_mcu_i2c")
+    ir.controller_required = True
+    ir.controller_refs = ["U1"]
     ir.add(Component("U1", "MCU_ST_STM32G4:STM32G474RETx", "STM32G474RETx",
                      "Package_QFP:LQFP-64_10x10mm_P0.5mm"))
     ir.add(Component("U2", "Sensor_Temperature:Si7050-A20", "Si7050-A20",
@@ -123,6 +125,8 @@ def golden3_mcu_i2c_ir() -> CircuitIR:
 
 def golden4_mcu_spi_ir() -> CircuitIR:
     ir = CircuitIR(name="golden4_mcu_spi")
+    ir.controller_required = True
+    ir.controller_refs = ["U1"]
     ir.add(Component("U1", "MCU_ST_STM32G4:STM32G474RETx", "STM32G474RETx",
                      "Package_QFP:LQFP-64_10x10mm_P0.5mm"))
     ir.add(Component("U2", "Memory_Flash:W25Q32JVSS", "W25Q32JVSS",
