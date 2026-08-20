@@ -149,15 +149,110 @@ def _with_retry(fn, tries: int = 2, pass_attempt: bool = False):
     send something SMALLER next time. A truncated completion is not transient:
     re-sending the identical request reproduces it, and the two recorded
     "attempts" on the unknown_module MCU block were four byte-identical
-    4096-token generations.
+    4096-token generations. Without `pass_attempt` the typed error is raised
+    immediately so a second identical generation is not billed as a retry.
     """
     last = None
     for attempt in range(tries):
         try:
             return fn(attempt) if pass_attempt else fn()
+        except TruncatedCompletionError as e:
+            last = e
+            if not pass_attempt:
+                raise
         except Exception as e:  # LlamaServerError, HTTP hiccups
             last = e
     raise last
+
+
+def _generic_mcu_query(need: dict) -> bool:
+    """True when the search is for a microcontroller type, not a part number.
+
+    Voltage tokens are stripped so '3.3V MCU' stays generic. A named device
+    (MC68332, STM32G474RET6) keeps its own catalogue identity.
+    """
+    text = str(need.get("search_query") or "")
+    text = re.sub(r"(?i)[\d.]+\s*v\b", " ", text)
+    tokens = [t for t in re.split(r"[^a-zA-Z가-힣]+", text.lower()) if t]
+    if not tokens:
+        return False
+    return set(tokens) <= {"mcu", "microcontroller", "마이크로컨트롤러"}
+
+
+def _generic_connector_query(need: dict) -> bool:
+    """True when the search is a connector type, not a named family.
+
+    Geometry (1x4, 6-pin) is stripped so a sized header stays generic.
+    USB-C, LEMO, SWD keep their own catalogue identity.
+    """
+    text = str(need.get("search_query") or "")
+    text = re.sub(r"(?i)\d+\s*[x×]\s*\d+", " ", text)
+    text = re.sub(r"(?i)\d+\s*(?:-?\s*pins?|핀)\b", " ", text)
+    tokens = [t for t in re.split(r"[^a-zA-Z가-힣]+", text.lower()) if t]
+    if not tokens:
+        return False
+    return set(tokens) <= {"connector", "header", "커넥터", "헤더", "pin", "pins"}
+
+
+def _generic_header_hits(hits: list[dict]) -> list[dict]:
+    """Pin-header rows from Connector_Generic. A 1-pin symbol is not a board jack."""
+    out = []
+    for hit in hits:
+        if not str(hit.get("lib_id") or "").startswith("Connector_Generic:"):
+            continue
+        if int(hit.get("pins") or 0) < 2:
+            continue
+        out.append(hit)
+    return out
+
+
+_CONTROLLER_LIB_PREFIXES = ("MCU_", "CPU_", "ESP_")
+
+
+_VOLTAGE_RANGE_IN_DESCRIPTION = re.compile(
+    r"(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)\s*V", re.I
+)
+
+
+def _description_covers_volts(text: str, volts: float) -> bool | None:
+    """Whether a KiCad description's '1.71-3.6V' range includes ``volts``.
+
+    None when the description has no range — unknown, not a contradiction.
+    """
+    m = _VOLTAGE_RANGE_IN_DESCRIPTION.search(text or "")
+    if not m:
+        return None
+    lo, hi = float(m.group(1)), float(m.group(2))
+    if lo > hi:
+        lo, hi = hi, lo
+    return lo <= volts <= hi
+
+
+def _rank_mcu_hits_for_rail(hits: list[dict], volts: float | None) -> list[dict]:
+    """Prefer MCU symbols whose own description covers the logic-rail voltage.
+
+    Bare 'MCU' FTS ranks keyword-only parts (ColdFire) above STM32 rows that
+    already print 1.71-3.6V in the bundled description.
+    """
+    if volts is None:
+        return list(hits)
+
+    def key(hit: dict) -> tuple[int, int]:
+        cover = _description_covers_volts(str(hit.get("description") or ""), volts)
+        band = 0 if cover is True else 1 if cover is None else 2
+        return (band, int(hit.get("pins") or 0))
+
+    return sorted(hits, key=key)
+
+
+def _requirements_token_budget(content: str) -> int:
+    """Reply tokens for RequirementSpec.
+
+    IR synthesis keeps a 4096 cap because a longer pin dump is not a better
+    circuit. Requirements JSON is the whole design contract: a 4096 cut with
+    slot room left produced no board (025). Use the remaining slot.
+    """
+    return output_budget(content, cap=SLOT_CONTEXT_TOKENS)
 
 
 @dataclass
@@ -198,7 +293,15 @@ _RAIL_ALIASES = {
 
 
 def _reconcile_rails(ir: "CircuitIR", spec: dict) -> list[str]:
-    """Rename alias-named nets to their spec rail names, deterministically."""
+    """Rename alias-named nets to their spec rail names, deterministically.
+
+    When the requested rail already exists, an alias net (VCC next to +3V3)
+    is folded into it. Measured: flash PWRIN on VCC while the decoupling C
+    sat on +3V3 — two power nets, one requested rail. Ground aliases are
+    not merged (AGND/VSS can be separate domains).
+    """
+    from .netnames import is_ground
+
     notes = []
     existing = {n.name: n for n in ir.nets}
     for rail in spec.get("power", {}).get("rails", []):
@@ -213,6 +316,28 @@ def _reconcile_rails(ir: "CircuitIR", spec: dict) -> list[str]:
             existing[name] = hit
         else:
             notes.append(f"rail {name}: no net found (blocks may not use this rail)")
+    for rail in spec.get("power", {}).get("rails", []):
+        name = rail["name"]
+        if is_ground(name):
+            continue
+        aliases = {a.upper() for a in _RAIL_ALIASES.get(name, set())}
+        if not aliases:
+            continue
+        target = next((n for n in ir.nets if n.name == name), None)
+        if target is None:
+            continue
+        folded: list = []
+        for net in list(ir.nets):
+            if net is target or net.name.upper() not in aliases:
+                continue
+            for node in net.nodes:
+                if node not in target.nodes:
+                    target.nodes.append(node)
+            folded.append(net)
+            notes.append(f"rail {name}: merged alias net {net.name!r}")
+        if folded:
+            drop = {id(n) for n in folded}
+            ir.nets = [n for n in ir.nets if id(n) not in drop]
     return notes
 
 
@@ -331,55 +456,53 @@ class Agent:
 
     def extract_requirements(self, prompt: str) -> dict:
         mode = request_mode(prompt)
+        content = (
+            "Normalize this circuit request into a RequirementSpec. "
+            f"The structurally determined task mode is {mode!r}; copy it "
+            "to `mode`. Do not turn a design request into a net list. "
+            "Scope limits: max 24VDC / 3A, no AC mains, no isolation or "
+            "safety-critical circuits — set out_of_scope if exceeded.\n"
+            "Rail names use KiCad power conventions: +5V, +3V3, +12V, GND. "
+            "power.rails MUST include the ground rail (GND).\n"
+            "search_query must be a GENERIC part type ('LED', 'resistor', "
+            "'push button switch'); colors/specifics belong in value or "
+            "connections_intent, not in the query.\n"
+            "Power symbols and PWR_FLAGs are added automatically later; "
+            "do not list them as parts_needed.\n"
+            "For every physical part, set functional_kind to its typed "
+            "electrical job in this circuit. Distinguish voltage_regulator, "
+            "input_bypass_capacitor and output_bypass_capacitor; this field "
+            "selects cited design rules, so do not infer it from a benchmark "
+            "name or omit it.\n"
+            "A SIGNAL is a net, not a part to buy. TX, RX, SDA, SCL, CANH, "
+            "an interrupt line, a chip select: these go in `signals`, never "
+            "in parts_needed. parts_needed is only for physical devices "
+            "that appear in a bill of materials.\n\n"
+            "When the request names a part with a designator — '입력 "
+            "커넥터 (J1)', 'LDO 레귤레이터 (U1)', 'MCU (U1)' — put that "
+            "designator in `reference` on the matching parts_needed item. "
+            "Every designator that appears in the net list must have one "
+            "parts_needed item carrying it.\n"
+            "If the request already LISTS the connections — a net list "
+            "naming references and pins — transcribe it into `netlist` "
+            "exactly as written, every net and every node, and give each "
+            "parts_needed item the `reference` the request uses for it. "
+            "That list is the design; do not improve it, complete it or "
+            "reorder it. Leave `netlist` empty when the request describes "
+            "what the circuit should DO instead of how it is wired.\n\n"
+            "Every parts_needed item must include quantity. Preserve explicit "
+            "counts such as four motors AND four encoders; use quantity=1 when "
+            "no count is stated. Give every item a UNIQUE role id — protection "
+            "parts such as fuse, TVS and bulk capacitor are separate roles.\n\n"
+            f"REQUEST: {prompt}"
+        )
         spec = _with_retry(lambda: self.llm.complete_json(
             [
                 {"role": "system", "content": _SYSTEM},
-                {
-                    "role": "user",
-                    "content": (
-                        "Normalize this circuit request into a RequirementSpec. "
-                        f"The structurally determined task mode is {mode!r}; copy it "
-                        "to `mode`. Do not turn a design request into a net list. "
-                        "Scope limits: max 24VDC / 3A, no AC mains, no isolation or "
-                        "safety-critical circuits — set out_of_scope if exceeded.\n"
-                        "Rail names use KiCad power conventions: +5V, +3V3, +12V, GND. "
-                        "power.rails MUST include the ground rail (GND).\n"
-                        "search_query must be a GENERIC part type ('LED', 'resistor', "
-                        "'push button switch'); colors/specifics belong in value or "
-                        "connections_intent, not in the query.\n"
-                        "Power symbols and PWR_FLAGs are added automatically later; "
-                        "do not list them as parts_needed.\n"
-                        "For every physical part, set functional_kind to its typed "
-                        "electrical job in this circuit. Distinguish voltage_regulator, "
-                        "input_bypass_capacitor and output_bypass_capacitor; this field "
-                        "selects cited design rules, so do not infer it from a benchmark "
-                        "name or omit it.\n"
-                        "A SIGNAL is a net, not a part to buy. TX, RX, SDA, SCL, CANH, "
-                        "an interrupt line, a chip select: these go in `signals`, never "
-                        "in parts_needed. parts_needed is only for physical devices "
-                        "that appear in a bill of materials.\n\n"
-                        "When the request names a part with a designator — '입력 "
-                        "커넥터 (J1)', 'LDO 레귤레이터 (U1)', 'MCU (U1)' — put that "
-                        "designator in `reference` on the matching parts_needed item. "
-                        "Every designator that appears in the net list must have one "
-                        "parts_needed item carrying it.\n"
-                        "If the request already LISTS the connections — a net list "
-                        "naming references and pins — transcribe it into `netlist` "
-                        "exactly as written, every net and every node, and give each "
-                        "parts_needed item the `reference` the request uses for it. "
-                        "That list is the design; do not improve it, complete it or "
-                        "reorder it. Leave `netlist` empty when the request describes "
-                        "what the circuit should DO instead of how it is wired.\n\n"
-                        "Every parts_needed item must include quantity. Preserve explicit "
-                        "counts such as four motors AND four encoders; use quantity=1 when "
-                        "no count is stated. Give every item a UNIQUE role id — protection "
-                        "parts such as fuse, TVS and bulk capacitor are separate roles.\n\n"
-                        f"REQUEST: {prompt}"
-                    ),
-                },
+                {"role": "user", "content": content},
             ],
             schema=REQUIREMENT_SPEC,
-            max_tokens=4096,
+            max_tokens=_requirements_token_budget(content),
         ))
         # A request whose parts all carry designators is one that LISTED its
         # connections; if `netlist` came back empty anyway, the model answered
@@ -510,6 +633,7 @@ class Agent:
             self._preserve_explicit_conceptual_parts(prompt, spec)
             self._ensure_named_parts(prompt, spec)
             self._normalize_physical_roles(spec)
+            self._ensure_mcu_role(prompt, spec)
             self._ensure_logic_rail(spec)
         return spec
 
@@ -705,6 +829,53 @@ class Agent:
         )
         if needs_3v3 and not usable and not any(r.get("name") == "+3V3" for r in rails):
             rails.append({"name": "+3V3", "voltage": "3.3V"})
+
+    def _controller_catalog_hit(self, query: str) -> bool:
+        """Whether this search resolves to a KiCad MCU/CPU/ESP library."""
+        query = (query or "").strip()
+        if not query:
+            return False
+        try:
+            hits = self.parts.search_parts(query, 3)
+        except Exception:
+            return False
+        if not hits:
+            return False
+        nick = str(hits[0].get("lib_id") or "").split(":", 1)[0]
+        return nick.startswith(_CONTROLLER_LIB_PREFIXES)
+
+    def _spec_has_controller(self, spec: dict) -> bool:
+        for part in spec.get("parts_needed", []):
+            if _generic_mcu_query(part):
+                return True
+            if self._controller_catalog_hit(str(part.get("search_query") or "")):
+                return True
+            if self._controller_catalog_hit(str(part.get("value") or "")):
+                return True
+        return False
+
+    def _ensure_mcu_role(self, prompt: str, spec: dict) -> None:
+        """Keep a microcontroller the request named as a host, not only a rail.
+
+        Measured: '3.3V MCU에 W25Q32JVSS' extracted flash and a LEMO
+        connector, no controller. The word MCU in the request is the same
+        class of lexical fact as an explicit voltage rail.
+        """
+        if not re.search(
+            r"(?i)(?<![A-Za-z0-9])(?:MCU|microcontroller|마이크로컨트롤러)"
+            r"(?![A-Za-z0-9])",
+            prompt or "",
+        ):
+            return
+        if self._spec_has_controller(spec):
+            return
+        spec.setdefault("parts_needed", []).insert(
+            0, {"role": "mcu", "search_query": "MCU", "quantity": 1}
+        )
+        spec.setdefault("connections_intent", []).append(
+            "MCU is named in the request and must appear as a physical part"
+        )
+        self._normalize_part_roles(spec)
 
     @staticmethod
     def _normalize_part_roles(spec: dict) -> None:
@@ -948,7 +1119,34 @@ class Agent:
             if chosen:
                 candidates[need["role"]] = chosen[:CANDIDATES_PER_QUERY]
                 continue
+            if _generic_mcu_query(need):
+                # bm25 on the two-token keyword "MCU 32 bit" ranked a CPU_
+                # 132-pin part first. Widen, mix in a rail-voltage search
+                # (KiCad descriptions print ranges like 1.71-3.6V), then
+                # taxonomy-filter and rank.
+                hits = self.parts.search_parts(query, 12)
+                rail_names = [
+                    str(r.get("name", ""))
+                    for r in spec.get("power", {}).get("rails", [])
+                ]
+                volts = supply_voltage(logic_rail(rail_names) or "")
+                if volts:
+                    extra = self.parts.search_parts(
+                        f"{volts:g}V microcontroller", 12
+                    )
+                    seen = {h["lib_id"] for h in hits}
+                    for hit in extra:
+                        if hit["lib_id"] not in seen:
+                            hits.append(hit)
+                            seen.add(hit["lib_id"])
             hits = self._filter_incompatible_candidates(need, hits)
+            if _generic_mcu_query(need):
+                rail_names = [
+                    str(r.get("name", ""))
+                    for r in spec.get("power", {}).get("rails", [])
+                ]
+                volts = supply_voltage(logic_rail(rail_names) or "")
+                hits = _rank_mcu_hits_for_rail(hits, volts)[:CANDIDATES_PER_QUERY]
             global_intent = " ".join(
                 [str(spec.get("summary", "")), *map(str, spec.get("connections_intent", []))]
             ).lower()
@@ -1013,6 +1211,17 @@ class Agent:
                         matching = []
                 if matching:
                     hits = matching[:CANDIDATES_PER_QUERY]
+            elif _generic_connector_query(need):
+                # Bare "connector" FTS ranks Connector:LEMO2 first because
+                # the description is the two tokens "2-pin LEMO connector".
+                # USB-C / LEMO / SWD named queries are not generic.
+                generic = _generic_header_hits(hits)
+                if not generic:
+                    generic = _generic_header_hits(
+                        self.parts.search_parts("Conn_01x", 20)
+                    )
+                if generic:
+                    hits = generic[:CANDIDATES_PER_QUERY]
             elif not hits and any(w in intent for w in ("header", "connector", "커넥터", "헤더")):
                 # No hits and no requested geometry: do not invent a pin count
                 # and do not throw away a catalog part the search already
@@ -1154,6 +1363,17 @@ class Agent:
                 if not str(hit.get("lib_id", "")).startswith("Reference_Voltage:")
                 and "shunt regulator" not in str(hit.get("description", "")).lower()
             ]
+        # KiCad puts microcontrollers in MCU_* and CPUs in CPU_*. A generic
+        # "MCU" query ranked CPU_NXP_68000:MC68332 first because its keywords
+        # are "MCU 32 bit". A named query still resolves via exact identity
+        # before this filter.
+        if _generic_mcu_query(need):
+            in_mcu_lib = [
+                hit for hit in hits
+                if str(hit.get("lib_id", "")).startswith("MCU_")
+            ]
+            if in_mcu_lib:
+                hits = in_mcu_lib
         if not any(k in intent for k in ("bldc", "brushless", "3-phase", "three phase")):
             return hits
         accepted = []
@@ -3476,8 +3696,10 @@ class Agent:
             detach_supply_pins_from_nonsupply_nets,
             ensure_dc_power_entry,
             ensure_i2c_pullups,
+            ensure_named_i2c_pin_nets,
             ensure_spi_flash_cs_pullups,
             ensure_spi_flash_wp_hold_released,
+            ensure_cited_w25q_spi_bus_nets,
             ensure_hub_signal_connectors,
             ensure_relay_flyback,
             mark_hub_unused_pins_nc,
@@ -3557,9 +3779,11 @@ class Agent:
                 notes += ensure_stm32g4_power_network(ir, syms(), "+3V3")
             notes += mark_documented_no_connects(ir, syms())
             notes += ensure_relay_flyback(ir, syms())
+            notes += ensure_named_i2c_pin_nets(ir, syms())
             logic = logic_rail(rails)
             if logic:
                 notes += ensure_i2c_pullups(ir, syms(), logic)
+            notes += ensure_cited_w25q_spi_bus_nets(ir, syms())
             notes += ensure_spi_flash_cs_pullups(ir, syms(), logic)
             notes += ensure_spi_flash_wp_hold_released(ir, syms(), logic)
             notes += repair_shorted_bypass_capacitors(ir, syms(), logic)

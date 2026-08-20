@@ -429,7 +429,9 @@ def enforce_requested_part_variants(
 
     A component is only migrated onto the requested symbol when it comes from
     the SAME library and shares a family-length prefix with it, so the swap
-    stays inside one part family and never rewires unrelated devices.
+    stays inside one part family and never rewires unrelated devices. If no
+    such sibling is on the board, the catalog symbol is added as a new
+    component; synthesis owned that add and often skipped it.
     """
     from .compliance import part_present, requested_part_numbers
 
@@ -451,6 +453,8 @@ def enforce_requested_part_variants(
         except Exception:
             notes.append(f"requested {token}: {target_id} could not be loaded")
             continue
+        if target.is_power:
+            continue
 
         library = target_id.split(":")[0]
         target_name = target_id.split(":")[-1].upper()
@@ -462,7 +466,18 @@ def enforce_requested_part_variants(
             if shared >= _VARIANT_PREFIX and shared > best_shared:
                 best, best_shared = ref, shared
         if best is None:
-            continue  # no same-family part to migrate; synthesis owns adding one
+            # No in-family part to retarget. Synthesis was supposed to add
+            # the named catalog part and often did not — selected_parts then
+            # stayed a spec fact. Putting the symbol on the board is the
+            # product promise; later passes attach supplies by pin type.
+            prefix = (target.reference_prefix or "U").strip() or "U"
+            ref = RefAllocator(ir).take(prefix)
+            ir.add(Component(ref, target_id, token))
+            symbols[target_id] = target
+            notes.append(
+                f"added {ref} {target_id}: requested {token} was not on the board"
+            )
+            continue
         old = symbols.get(ir.components[best].lib_id)
         if old is None:
             continue
@@ -726,6 +741,51 @@ def ensure_dc_power_entry(ir: CircuitIR, output_rail: str = "+12V") -> list[str]
 I2C_PULLUP_VALUE = "10k"
 
 
+def ensure_named_i2c_pin_nets(
+    ir: CircuitIR, symbols: dict[str, SymbolDef]
+) -> list[str]:
+    """Put dangling SDA/SCL-named pins on those nets so join and pull-ups see a bus.
+
+    Measured: adding TMP100 left SCL pin 1 and SDA pin 6 on no net.
+    SBOS231I §5 names those pins Serial clock / Serial data. ``join_hub`` and
+    ``ensure_i2c_pullups`` share ``i2c_line_role``, which needs membership.
+    The pin name is the same fact ``pin_name_i2c_role`` already uses — not a
+    TMP100 special case. STM32 pins are port names, so this does not invent
+    MCU GPIO. Address pins (ADD0/ADD1) are not SDA/SCL and stay untouched.
+    """
+    from .erc import i2c_line_role, pin_name_i2c_role
+
+    pin_net = {(r, str(p)): n.name for n in ir.nets for r, p in n.nodes}
+    notes: list[str] = []
+
+    def net_for_role(role: str) -> str:
+        for net in ir.nets:
+            if i2c_line_role(ir, symbols, net) == role:
+                return net.name
+        return role
+
+    for ref, comp in ir.components.items():
+        sym = symbols.get(comp.lib_id)
+        if sym is None or sym.is_power:
+            continue
+        for pin in sym.pins:
+            if pin.hidden or pin.etype == PinType.NOCONNECT:
+                continue
+            role = pin_name_i2c_role(pin.name or "")
+            if role is None:
+                continue
+            number = str(pin.number)
+            if (ref, number) in pin_net:
+                continue
+            dest = net_for_role(role)
+            move_pin(ir, ref, number, dest)
+            pin_net[(ref, number)] = dest
+            notes.append(
+                f"connected {ref}.{number} to {dest}: pin {pin.name} is the "
+                f"{role} wire; join and pull-ups already consume that bus"
+            )
+    return notes
+
 
 def ensure_i2c_pullups(
     ir: CircuitIR, symbols: dict[str, SymbolDef], rail: str
@@ -781,10 +841,82 @@ def _unused_cs_net_name(ir: CircuitIR, flash_ref: str) -> str:
     return f"CS{n}"
 
 
+def _cited_w25q_spi_bus_role(pin_name: str) -> str | None:
+    """Table 12 role for a W25Q32JV SPI pin name (CLK/DI/DO/CS).
+
+    KiCad ``Memory_Flash:W25Q32JVSS`` pins 6/5/2/1 are CLK, DI/IO0, DO/IO1,
+    /CS. Those tokens are not in ``_SPI_TOKEN_TO_AF`` because CLK is also
+    a 4017 clock and CS is also an AD8231 select — see
+    ``test_a_counter_clk_on_foo_is_not_spi``. The cited part's pin names
+    still name the standard SPI wires (Rev G; knowledge condition is
+    standard SPI, not Quad I/O). Join consumes nets labelled SCK/MOSI/
+    MISO/NSS — the same labels
+    ``test_hub_joins_spi_from_named_bus_lines_when_flash_is_already_on_them``
+    already uses. Those labels are this pipeline's bus names, not a
+    Table 12 net-name table.
+    """
+    from .erc import _spi_name_tokens, pin_name_is_chip_select
+
+    tokens = set(_spi_name_tokens(pin_name))
+    if "CLK" in tokens:
+        return "SCK"
+    if "DI" in tokens:
+        return "MOSI"
+    if "DO" in tokens:
+        return "MISO"
+    if pin_name_is_chip_select(pin_name):
+        return "NSS"
+    return None
+
+
+def ensure_cited_w25q_spi_bus_nets(
+    ir: CircuitIR, symbols: dict[str, SymbolDef]
+) -> list[str]:
+    """Put dangling cited-W25Q SPI pins on the labelled nets join_hub uses.
+
+    Synthesis often left CLK/DI/DO/CS on no net. CS pull-up and hub join
+    both require membership. Does not invent MCU GPIO: a 4017 CLK and a
+    non-cited Memory_Flash part are untouched.
+    """
+    from .erc import cited_w25q_flash, spi_line_role
+
+    pin_net = {(r, str(p)): n.name for n in ir.nets for r, p in n.nodes}
+    notes: list[str] = []
+
+    def net_for_role(role: str) -> str:
+        for net in ir.nets:
+            if spi_line_role(ir, symbols, net) == role:
+                return net.name
+        return role
+
+    for ref, comp in ir.components.items():
+        if not cited_w25q_flash(comp):
+            continue
+        sym = symbols.get(comp.lib_id)
+        if sym is None:
+            continue
+        for pin in sym.pins:
+            role = _cited_w25q_spi_bus_role(pin.name or "")
+            if role is None:
+                continue
+            number = str(pin.number)
+            if (ref, number) in pin_net:
+                continue
+            dest = net_for_role(role)
+            move_pin(ir, ref, number, dest)
+            pin_net[(ref, number)] = dest
+            notes.append(
+                f"connected {ref}.{number} to {dest}: W25Q32JV {pin.name} is "
+                f"the {role} wire on standard SPI (Rev G pin names; join "
+                f"already consumes a net labelled {dest})"
+            )
+    return notes
+
+
 def ensure_spi_flash_cs_pullups(
     ir: CircuitIR, symbols: dict[str, SymbolDef], rail: str | None = None
 ) -> list[str]:
-    """Pull up each Memory_Flash /CS net toward that flash's VCC net.
+    """Pull up each cited W25Q /CS net toward that flash's VCC net.
 
     Same test as `erc.spi_flash_cs_tracks_vcc`: /CS on the VCC net already
     tracks VCC; otherwise add an R from /CS to that VCC net. Does not
@@ -841,7 +973,7 @@ def ensure_spi_flash_cs_pullups(
 def ensure_spi_flash_wp_hold_released(
     ir: CircuitIR, symbols: dict[str, SymbolDef], rail: str | None = None
 ) -> list[str]:
-    """Release Memory_Flash /WP and /HOLD (active low, Rev G §4.3–§4.4).
+    """Release cited W25Q /WP and /HOLD (active low, Rev G §4.3–§4.4).
 
     Same released test as ``spi_flash_cs_tracks_vcc``: the pin net equals
     that flash's VCC net, or an R bridges the pin net to that VCC net.
@@ -849,6 +981,7 @@ def ensure_spi_flash_wp_hold_released(
     Value 10k when a pull-up is added (knowledge: pullup-resistor-sizing).
     """
     from .erc import (
+        flash_cs_on_return,
         flash_supply_net,
         flash_wp_hold_connections,
         net_kind,
@@ -863,7 +996,11 @@ def ensure_spi_flash_wp_hold_released(
         supply = flash_supply_net(ir, symbols, flash_ref)
         if not supply or not any(n.name == supply for n in ir.nets):
             continue
-        if net in net_by_name and net_kind(ir, symbols, net_by_name[net]) == "gnd":
+        on_return = (not net) or flash_cs_on_return(ir, symbols, flash_ref, net)
+        on_gnd = (
+            net in net_by_name and net_kind(ir, symbols, net_by_name[net]) == "gnd"
+        )
+        if on_return or on_gnd:
             move_pin(ir, flash_ref, pin, supply)
             notes.append(
                 f"connected {flash_ref}.{pin} ({kind}) to {supply}: active-low "
@@ -1203,6 +1340,13 @@ def complete_known_device_pins(
                 elif name in {"VDD5V", "VDD3V3"}:
                     wire(ref, pin.number, logic)
                 elif name in {"MAGINC", "MAGDEC", "A", "B", "I", "PWM", "NC"}:
+                    nc(ref, pin.number)
+            elif "TMP100" in lid or "TMP101" in lid:
+                # SBOS231I Table 2: ADD0/ADD1 are GND, V+, or float. A
+                # dangling pin is the float state — not a missing wire.
+                # Tying them to GND here would pick address 1001000 without
+                # a request. `nc` only if still unconnected.
+                if name in {"ADD0", "ADD1"}:
                     nc(ref, pin.number)
             elif "TJA1051" in lid:
                 if name == "GND":
@@ -1680,26 +1824,70 @@ def _net_has_connector(
     return False
 
 
+def _unanchored_hub_bus_nets(
+    ir: CircuitIR, symbols: dict[str, SymbolDef], hub: str
+) -> list[tuple[str, object]]:
+    """SPI/I2C nets on the hub that have no header, in a stable role order.
+
+    Used when the extractor left ``signals`` empty. Membership is
+    ``spi_line_role`` / ``i2c_line_role`` (pin names or recorded AF), not
+    net labels.
+    """
+    from .erc import flash_cs_connections, i2c_line_role, spi_line_role
+    from .netnames import is_ground, is_supply
+
+    role_name = {
+        "SCK": "SCK", "MOSI": "MOSI", "MISO": "MISO", "NSS": "CS",
+        "SDA": "SDA", "SCL": "SCL",
+    }
+    found: dict[str, object] = {}
+    for net in ir.nets:
+        if hub not in {r for r, _ in net.nodes}:
+            continue
+        if is_ground(net.name) or is_supply(net.name):
+            continue
+        if _net_has_connector(ir, symbols, net):
+            continue
+        role = spi_line_role(ir, symbols, net) or i2c_line_role(ir, symbols, net)
+        if role and role not in found:
+            found[role] = net
+    if "NSS" not in found:
+        # /CS is not SPI*_NSS in Table 12; it is still a bus line to expose
+        # when a cited W25Q /CS pin shares the hub net.
+        for _ref, _pin, net_name in flash_cs_connections(ir, symbols):
+            net = next((n for n in ir.nets if n.name == net_name), None)
+            if net is None or hub not in {r for r, _ in net.nodes}:
+                continue
+            if _net_has_connector(ir, symbols, net):
+                continue
+            found["NSS"] = net
+            break
+    return [
+        (role_name[role], found[role])
+        for role in ("SCK", "MOSI", "MISO", "NSS", "SDA", "SCL")
+        if role in found
+    ]
+
+
 def ensure_hub_signal_connectors(
     ir: CircuitIR, symbols: dict[str, SymbolDef], spec: dict | None
 ) -> list[str]:
-    """Anchor declared interface signals that reach the hub but have no header.
+    """Anchor interface signals that reach the hub but have no header.
 
     The requirement's ``signals`` list names nets the board must expose.
-    Measured on SPI flash: SCK/MOSI/MISO/CS existed between MCU and flash
-    but no ``J`` ref reached those nets though the prompt asked for a
-    connector. One header per still-unanchored group; contacts are numbered
-    in spec order with GND on the last pin when a ground rail exists.
+    When that list is empty, SPI/I2C nets already on the hub (pin name or
+    recorded AF) are the same job. One header per still-unanchored group;
+    contacts follow spec order, or SCK/MOSI/MISO/CS/SDA/SCL, with GND last
+    when a ground net exists.
     """
     from .fp_checks import generic_header_lib_id
+    from .netnames import is_ground, is_supply
 
     hub = hub_ref(ir, symbols)
-    if hub is None or not spec:
+    if hub is None:
         return []
+    spec = spec or {}
     signals = spec.get("signals") or []
-    if not signals:
-        return []
-
     rails = {
         str(r.get("name", "")).strip().upper()
         for r in spec.get("power", {}).get("rails", [])
@@ -1707,18 +1895,22 @@ def ensure_hub_signal_connectors(
     }
     to_anchor: list[tuple[str, object]] = []
     seen_nets: set[str] = set()
-    for sig in signals:
-        name = str(sig.get("name", "")).strip()
-        if not name or name.upper() in rails or is_ground(name) or is_supply(name):
-            continue
-        net = _declared_signal_net(ir, symbols, name, hub)
-        if net is None or net.name in seen_nets:
-            continue
-        if _net_has_connector(ir, symbols, net):
+    if signals:
+        for sig in signals:
+            name = str(sig.get("name", "")).strip()
+            if not name or name.upper() in rails or is_ground(name) or is_supply(name):
+                continue
+            net = _declared_signal_net(ir, symbols, name, hub)
+            if net is None or net.name in seen_nets:
+                continue
+            if _net_has_connector(ir, symbols, net):
+                seen_nets.add(net.name)
+                continue
+            to_anchor.append((name, net))
             seen_nets.add(net.name)
-            continue
-        to_anchor.append((name, net))
-        seen_nets.add(net.name)
+    else:
+        to_anchor = _unanchored_hub_bus_nets(ir, symbols, hub)
+
     if not to_anchor:
         return []
 

@@ -774,6 +774,135 @@ def test_hub_joins_spi_from_named_bus_lines_when_flash_is_already_on_them():
     assert agent._join_hub_to_i2c_buses(ir) == []
 
 
+def test_dangling_w25q_spi_pins_get_labelled_nets_then_the_hub_joins():
+    """CLK/DI/DO/CS on no net are not a bus. Labelling them SCK/MOSI/MISO/NSS
+    is the membership the join pass already consumes."""
+    from circuitgen.agent import Agent
+    from circuitgen.ir import CircuitIR, Component
+    from circuitgen.normalize import ensure_cited_w25q_spi_bus_nets
+    from circuitgen.partindex import PartIndex
+    from circuitgen.pinfunctions import resolve_function_ending
+
+    agent = object.__new__(Agent)
+    agent.parts = PartIndex()
+    mcu = "MCU_ST_STM32G4:STM32G474RETx"
+    flash = "Memory_Flash:W25Q32JVSS"
+    ir = CircuitIR("spi-dangle")
+    ir.add(Component("U1", mcu, "STM32G474RET6"))
+    ir.add(Component("U2", flash, "W25Q32JVSS"))
+    symbols = agent._resolve_symbols(ir)
+    notes = ensure_cited_w25q_spi_bus_nets(ir, symbols)
+    by = {n.name: {r: p for r, p in n.nodes} for n in ir.nets}
+    clk = _w25q_pin(symbols, "CLK")
+    di = _w25q_pin(symbols, "DI")
+    do = _w25q_pin(symbols, "DO")
+    cs = _w25q_pin(symbols, "CS")
+    assert by["SCK"]["U2"] == clk, notes
+    assert by["MOSI"]["U2"] == di, notes
+    assert by["MISO"]["U2"] == do, notes
+    assert by["NSS"]["U2"] == cs, notes
+    assert "U1" not in by["SCK"]
+    assert ensure_cited_w25q_spi_bus_nets(ir, symbols) == []
+    join = agent._join_hub_to_i2c_buses(ir)
+    sck = resolve_function_ending(mcu, symbols[mcu], "SCK")[0]
+    mosi = resolve_function_ending(mcu, symbols[mcu], "MOSI")[0]
+    miso = resolve_function_ending(mcu, symbols[mcu], "MISO")[0]
+    nss = resolve_function_ending(mcu, symbols[mcu], "NSS")[0]
+    by = {n.name: {r: p for r, p in n.nodes} for n in ir.nets}
+    assert by["SCK"].get("U1") == sck, join
+    assert by["MOSI"].get("U1") == mosi, join
+    assert by["MISO"].get("U1") == miso, join
+    assert by["NSS"].get("U1") == nss, join
+    assert agent._join_hub_to_i2c_buses(ir) == []
+
+
+def test_a_4017_clk_pin_is_not_given_an_sck_net():
+    from circuitgen.agent import Agent
+    from circuitgen.ir import CircuitIR, Component
+    from circuitgen.normalize import ensure_cited_w25q_spi_bus_nets
+    from circuitgen.partindex import PartIndex
+
+    agent = object.__new__(Agent)
+    agent.parts = PartIndex()
+    ir = CircuitIR("4017-dangle")
+    ir.add(Component("U1", "MCU_ST_STM32G4:STM32G474RETx", "STM32G474RET6"))
+    ir.add(Component("U2", "4xxx:4017", "4017"))
+    symbols = agent._resolve_symbols(ir)
+    assert ensure_cited_w25q_spi_bus_nets(ir, symbols) == []
+    assert ir.nets == []
+
+
+def test_dangling_sda_scl_named_pins_get_nets_then_the_hub_joins():
+    """SDA/SCL on no net are not a bus. Membership is the pin name
+    ``i2c_member_role`` already uses; join consumes that net."""
+    from circuitgen.agent import Agent
+    from circuitgen.ir import CircuitIR, Component
+    from circuitgen.normalize import ensure_named_i2c_pin_nets
+    from circuitgen.partindex import PartIndex
+    from circuitgen.pinfunctions import resolve_function_ending
+
+    agent = object.__new__(Agent)
+    agent.parts = PartIndex()
+    mcu = "MCU_ST_STM32G4:STM32G474RETx"
+    sensor = "Sensor_Temperature:TMP100"
+    ir = CircuitIR("i2c-dangle")
+    ir.add(Component("U1", mcu, "STM32G474RET6"))
+    ir.add(Component("U2", sensor, "TMP100"))
+    symbols = agent._resolve_symbols(ir)
+    notes = ensure_named_i2c_pin_nets(ir, symbols)
+    by = {n.name: {r: p for r, p in n.nodes} for n in ir.nets}
+    assert by["SCL"]["U2"] == "1", notes
+    assert by["SDA"]["U2"] == "6", notes
+    assert "U1" not in by["SDA"]
+    pin_net = {(r, str(p)): n.name for n in ir.nets for r, p in n.nodes}
+    assert pin_net.get(("U2", "3")) is None
+    assert pin_net.get(("U2", "5")) is None
+    assert ensure_named_i2c_pin_nets(ir, symbols) == []
+    join = agent._join_hub_to_i2c_buses(ir)
+    sda = resolve_function_ending(mcu, symbols[mcu], "SDA")[0]
+    scl = resolve_function_ending(mcu, symbols[mcu], "SCL")[0]
+    by = {n.name: {r: p for r, p in n.nodes} for n in ir.nets}
+    assert by["SDA"].get("U1") == sda, join
+    assert by["SCL"].get("U1") == scl, join
+    assert agent._join_hub_to_i2c_buses(ir) == []
+
+
+def test_two_sensors_with_sda_scl_pins_share_the_same_bus_nets():
+    """The pin name is the fact, not TMP100."""
+    from circuitgen.agent import Agent
+    from circuitgen.ir import CircuitIR, Component
+    from circuitgen.normalize import ensure_named_i2c_pin_nets
+    from circuitgen.partindex import PartIndex
+
+    agent = object.__new__(Agent)
+    agent.parts = PartIndex()
+    ir = CircuitIR("two-i2c")
+    ir.add(Component("U1", "Sensor_Temperature:TMP100", "TMP100"))
+    ir.add(Component("U2", "Sensor_Temperature:Si7051-A20", "Si7051"))
+    symbols = agent._resolve_symbols(ir)
+    notes = ensure_named_i2c_pin_nets(ir, symbols)
+    by = {n.name: set(n.nodes) for n in ir.nets}
+    assert {("U1", "6"), ("U2", "1")} <= by["SDA"], notes
+    assert {("U1", "1"), ("U2", "6")} <= by["SCL"], notes
+    assert ensure_named_i2c_pin_nets(ir, symbols) == []
+
+
+def test_a_555_does_not_get_i2c_nets():
+    from circuitgen.agent import Agent
+    from circuitgen.ir import CircuitIR, Component
+    from circuitgen.normalize import ensure_named_i2c_pin_nets
+    from circuitgen.partindex import PartIndex
+
+    agent = object.__new__(Agent)
+    agent.parts = PartIndex()
+    ir = CircuitIR("555-dangle")
+    ir.add(Component("U1", "MCU_ST_STM32G4:STM32G474RETx", "STM32G474RET6"))
+    ir.add(Component("U2", "Timer:NE555D", "NE555D"))
+    symbols = agent._resolve_symbols(ir)
+    assert ensure_named_i2c_pin_nets(ir, symbols) == []
+    assert ir.nets == []
+
+
 def test_hub_gpio_on_spi_clock_is_moved_to_a_recorded_af_pin():
     """25LC names the clock SCK — Table 12's suffix, not a CLK alias."""
     from circuitgen.agent import Agent

@@ -79,6 +79,63 @@ def test_exact_symbol_includes_unit0_power_pin_timers():
     assert full and full[0]["lib_id"] == "Switch:SW_Push"
 
 
+def test_generic_mcu_search_does_not_lead_with_cpu_library():
+    """FTS ranks CPU_NXP_68000:MC68332 first for query MCU (keywords 'MCU 32 bit')."""
+    from circuitgen.agent import Agent
+    from circuitgen.partindex import PartIndex
+
+    idx = PartIndex()
+    raw = idx.search_parts("MCU", 12)
+    kept = Agent._filter_incompatible_candidates(
+        {"role": "mcu", "search_query": "MCU"}, raw
+    )
+    assert kept
+    assert all(h["lib_id"].startswith("MCU_") for h in kept)
+    assert not any(h["lib_id"].startswith("CPU_") for h in kept)
+    named = idx.search_parts("MC68332", 3)
+    assert named and named[0]["lib_id"] == "CPU_NXP_68000:MC68332"
+
+
+def test_generic_mcu_with_3v3_rail_does_not_lead_with_keyword_only_coldfire():
+    from circuitgen.agent import Agent, _description_covers_volts, _rank_mcu_hits_for_rail
+    from circuitgen.partindex import PartIndex
+
+    idx = PartIndex()
+    hits = idx.search_parts("MCU", 12)
+    extra = idx.search_parts("3.3V microcontroller", 12)
+    seen = {h["lib_id"] for h in hits}
+    for hit in extra:
+        if hit["lib_id"] not in seen:
+            hits.append(hit)
+            seen.add(hit["lib_id"])
+    hits = Agent._filter_incompatible_candidates(
+        {"role": "mcu", "search_query": "MCU"}, hits
+    )
+    ranked = _rank_mcu_hits_for_rail(hits, 3.3)
+    assert ranked
+    top = ranked[0]
+    assert top["lib_id"].startswith("MCU_")
+    assert "ColdFire" not in top["lib_id"]
+    assert _description_covers_volts(top["description"], 3.3) is not False
+
+
+def test_generic_connector_search_does_not_lead_with_lemo():
+    """FTS ranks Connector:LEMO2 first for query connector."""
+    from circuitgen.agent import _generic_header_hits
+    from circuitgen.partindex import PartIndex
+
+    idx = PartIndex()
+    raw = idx.search_parts("connector", 8)
+    assert raw and raw[0]["lib_id"].startswith("Connector:LEMO")
+    generic = _generic_header_hits(raw)
+    if not generic:
+        generic = _generic_header_hits(idx.search_parts("Conn_01x", 20))
+    assert generic
+    assert all(h["lib_id"].startswith("Connector_Generic:") for h in generic)
+    named = idx.search_parts("LEMO4", 3)
+    assert named and named[0]["lib_id"] == "Connector:LEMO4"
+
+
 def test_exact_library_id_is_verified_without_fuzzy_search(small_part_index):
     assert small_part_index.exact_lib_id("Device:LED") == "Device:LED"
     assert small_part_index.exact_lib_id("device:led") == "Device:LED"

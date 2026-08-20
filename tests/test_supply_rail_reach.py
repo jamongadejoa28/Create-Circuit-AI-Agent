@@ -378,3 +378,69 @@ def test_check_compliance_includes_supply_rail_reach_in_as_dict():
     assert "supply_rail_reach" in payload
     assert payload["supply_rail_reach"]
     assert any(item["match"] is True for item in payload["supply_rail_reach"])
+
+
+def test_alias_vcc_net_merges_into_existing_requested_3v3():
+    """024: flash VCC and C on +3V3 were two power nets for one requested rail."""
+    from circuitgen.agent import _reconcile_rails
+    from circuitgen.compliance import check_requested_rail_reach
+
+    flash = "Memory_Flash:W25Q32JVSS"
+    lib_3v3, sym_3v3 = _rail("+3V3")
+    lib_gnd, sym_gnd = _rail("GND")
+    lib_vcc, sym_vcc = _rail("VCC")
+    symbols = {
+        flash: _sym(flash, [
+            ("8", "VCC", PinType.PWRIN),
+            ("4", "VSS", PinType.PWRIN),
+        ]),
+        "Device:C": _sym("Device:C", [
+            ("1", "1", PinType.PASSIVE),
+            ("2", "2", PinType.PASSIVE),
+        ]),
+        lib_3v3: sym_3v3,
+        lib_gnd: sym_gnd,
+        lib_vcc: sym_vcc,
+    }
+    ir = CircuitIR("vcc-alias")
+    ir.add(Component("U1", flash, "W25Q32JVSS"))
+    ir.add(Component("C1", "Device:C", "100nF"))
+    ir.add(Component("#PWR01", lib_3v3, "+3V3"))
+    ir.add(Component("#PWR02", lib_gnd, "GND"))
+    ir.add(Component("#PWR03", lib_vcc, "VCC"))
+    ir.connect("+3V3", ("C1", "1"), ("#PWR01", "1"))
+    ir.connect("GND", ("C1", "2"), ("U1", "4"), ("#PWR02", "1"))
+    ir.connect("VCC", ("U1", "8"), ("#PWR03", "1"))
+    spec = {"power": {"rails": [
+        {"name": "+3V3", "voltage": "3.3V"},
+        {"name": "GND", "voltage": "0V"},
+    ]}}
+
+    _issues, before = check_requested_rail_reach(ir, symbols, spec)
+    assert any(
+        r["reference"] == "U1" and r["reason"] == "not_requested_rail"
+        for r in before
+    )
+    notes = _reconcile_rails(ir, spec)
+    assert any("merged alias net 'VCC'" in n for n in notes), notes
+    assert not any(n.name == "VCC" for n in ir.nets)
+    assert ("U1", "8") in next(n for n in ir.nets if n.name == "+3V3").nodes
+    assert ("C1", "1") in next(n for n in ir.nets if n.name == "+3V3").nodes
+    _issues, after = check_requested_rail_reach(ir, symbols, spec)
+    assert all(
+        r["match"] for r in after if r["reference"] == "U1"
+    )
+    assert _reconcile_rails(ir, spec) == []
+
+
+def test_agnd_is_not_folded_into_gnd():
+    from circuitgen.agent import _reconcile_rails
+
+    ir = CircuitIR("agnd")
+    ir.add(Component("U1", "Vendor:CHIP", "x"))
+    ir.connect("GND", ("U1", "1"))
+    ir.connect("AGND", ("U1", "2"))
+    spec = {"power": {"rails": [{"name": "GND", "voltage": "0V"}]}}
+    notes = _reconcile_rails(ir, spec)
+    assert not any("merged" in n for n in notes)
+    assert {n.name for n in ir.nets} == {"GND", "AGND"}

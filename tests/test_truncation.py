@@ -12,7 +12,7 @@ import json
 
 import pytest
 
-from circuitgen.agent import _with_retry
+from circuitgen.agent import Agent, _requirements_token_budget, _with_retry
 from circuitgen.llm_client import (
     _CHARS_PER_TOKEN,
     LlamaClient,
@@ -105,6 +105,18 @@ def test_retry_without_the_flag_keeps_the_old_zero_argument_contract():
     assert len(calls) == 2
 
 
+def test_truncated_completion_is_not_retried_without_pass_attempt():
+    calls = []
+
+    def ask():
+        calls.append(1)
+        raise TruncatedCompletionError("truncated")
+
+    with pytest.raises(TruncatedCompletionError):
+        _with_retry(ask)
+    assert len(calls) == 1
+
+
 def test_exhausted_retries_raise_the_last_error():
     def ask(attempt):
         raise TruncatedCompletionError(f"truncated at level {attempt}")
@@ -137,3 +149,31 @@ def test_the_token_estimate_stays_conservative():
     """Real block prompts measured 1.87-2.57 chars/token, the low end on
     pin-dense tables. Estimating high lets the reply cap overrun the slot."""
     assert _CHARS_PER_TOKEN <= 2.0
+
+
+def test_requirements_budget_uses_remaining_slot_not_a_fixed_4096():
+    short = _requirements_token_budget("x" * 2000)
+    assert short > 4096
+    assert short + 2000 / _CHARS_PER_TOKEN + 64 < SLOT_CONTEXT_TOKENS
+
+
+def test_extract_requirements_asks_for_the_remaining_slot():
+    captured: dict = {}
+
+    class LLM:
+        def complete_json(self, messages, schema, **kw):
+            captured["max_tokens"] = kw["max_tokens"]
+            return {
+                "mode": "design",
+                "summary": "ok",
+                "power": {"rails": [{"name": "GND"}]},
+                "parts_needed": [],
+                "connections_intent": [],
+            }
+
+    agent = object.__new__(Agent)
+    agent.llm = LLM()
+    agent._ensure_named_parts = lambda *a, **k: None
+    spec = agent.extract_requirements("3.3V에서 LED를 켜는 회로")
+    assert spec["mode"] == "design"
+    assert captured["max_tokens"] > 4096

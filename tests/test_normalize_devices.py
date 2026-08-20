@@ -132,8 +132,9 @@ def test_the_same_rule_applies_to_a_part_it_was_never_written_for():
 
 
 def test_an_unrelated_part_is_never_migrated_onto_the_request():
-    """Same-library and a family-length shared prefix are what keep this from
-    rewiring a device that merely happens to be in the circuit."""
+    """Same-library and a family-length shared prefix keep this from
+    rewiring a device that merely happens to be in the circuit. The named
+    catalog part is added beside it, not onto it."""
     from circuitgen.partindex import PartIndex
 
     parts = PartIndex()
@@ -146,7 +147,51 @@ def test_an_unrelated_part_is_never_migrated_onto_the_request():
         ir, "STM32G474RET6 board", {other_id: other}, parts
     )
     assert ir.components["R1"].lib_id == other_id, notes
-    assert notes == []
+    assert ir.components["R1"].value == "10k"
+    stm = [c for c in ir.components.values() if "STM32G474" in c.lib_id]
+    assert len(stm) == 1, notes
+    assert stm[0].lib_id.endswith("STM32G474RETx")
+
+
+def test_a_requested_catalog_part_is_added_when_the_board_has_none():
+    from circuitgen.partindex import PartIndex
+
+    parts = PartIndex()
+    ir = CircuitIR("missing")
+    ir.add(Component("R1", "Device:R", "10k"))
+    symbols = {
+        "Device:R": _sym("Device:R", [(1, "", PinType.PASSIVE), (2, "", PinType.PASSIVE)])
+    }
+    notes = enforce_requested_part_variants(
+        ir, "TMP100 on 3.3V I2C", symbols, parts
+    )
+    tmp = [c for c in ir.components.values() if "TMP100" in c.lib_id]
+    assert tmp, notes
+    assert any("was not on the board" in n for n in notes)
+    assert enforce_requested_part_variants(
+        ir, "TMP100 on 3.3V I2C", symbols, parts
+    ) == []
+
+
+def test_two_requested_catalog_parts_are_both_added():
+    from circuitgen.partindex import PartIndex
+
+    parts = PartIndex()
+    ir = CircuitIR("two")
+    ir.add(Component("R1", "Device:R", "10k"))
+    symbols = {
+        "Device:R": _sym("Device:R", [(1, "", PinType.PASSIVE), (2, "", PinType.PASSIVE)])
+    }
+    notes = enforce_requested_part_variants(
+        ir, "STM32G474RET6 and TMP100 on 3.3V I2C", symbols, parts
+    )
+    lib_ids = {c.lib_id for c in ir.components.values()}
+    assert any("STM32G474" in lid for lid in lib_ids), notes
+    assert any("TMP100" in lid for lid in lib_ids), notes
+    assert ir.components["R1"].lib_id == "Device:R"
+    assert enforce_requested_part_variants(
+        ir, "STM32G474RET6 and TMP100 on 3.3V I2C", symbols, parts
+    ) == []
 
 
 def test_known_as5048_power_test_and_pwm_completion():
@@ -164,6 +209,36 @@ def test_known_as5048_power_test_and_pwm_completion():
     }
     assert ("U1", "5") in ir.nc_pins
     assert ("U1", "14") in ir.nc_pins
+
+
+def test_tmp100_dangling_address_pins_are_the_float_state_not_gnd():
+    """SBOS231I Table 2: ADD0/ADD1 may be GND, V+, or float. Unconnected is
+    float. The pass must not pick address 1001000 by tying them to GND."""
+    lid = "Sensor_Temperature:TMP100"
+    symbols = {lid: _sym(lid, [
+        (1, "SCL", PinType.BIDIR), (2, "GND", PinType.PWRIN),
+        (3, "ADD1", PinType.INPUT), (4, "V+", PinType.PWRIN),
+        (5, "ADD0", PinType.INPUT), (6, "SDA", PinType.BIDIR),
+    ])}
+    ir = CircuitIR("tmp-addr")
+    ir.add(Component("U1", lid, "TMP100"))
+    ir.connect("SDA", ("U1", "6"))
+    ir.connect("SCL", ("U1", "1"))
+    ir.connect("+3V3", ("U1", "4"))
+    ir.connect("GND", ("U1", "2"))
+    complete_known_device_pins(ir, symbols, ["+3V3", "GND"])
+    assert ("U1", "3") in ir.nc_pins
+    assert ("U1", "5") in ir.nc_pins
+    gnd = next(n for n in ir.nets if n.name == "GND")
+    assert ("U1", "3") not in gnd.nodes
+    assert ("U1", "5") not in gnd.nodes
+    ir2 = CircuitIR("tmp-gnd")
+    ir2.add(Component("U1", lid, "TMP100"))
+    ir2.connect("GND", ("U1", "2"), ("U1", "3"), ("U1", "5"))
+    complete_known_device_pins(ir2, symbols, ["+3V3", "GND"])
+    assert ("U1", "3") not in ir2.nc_pins
+    gnd2 = next(n for n in ir2.nets if n.name == "GND")
+    assert ("U1", "3") in gnd2.nodes
 
 
 def test_stm32g4_power_network_adds_per_vdd_and_analog_decoupling():
@@ -1545,7 +1620,7 @@ def test_hold_alone_gets_pullup_to_flash_vcc():
     ir.connect("GND", ("#PWR02", "1"), ("U2", "4"))
     ir.connect("HOLD", ("U2", hold))
 
-    assert flash_wp_hold_connections(ir, symbols) == [("U2", hold, "HOLD", "HOLD")]
+    assert ("U2", hold, "HOLD", "HOLD") in flash_wp_hold_connections(ir, symbols)
 
     notes = ensure_spi_flash_wp_hold_released(ir, symbols, "+3V3")
     assert notes
@@ -1572,6 +1647,62 @@ def test_wp_on_gnd_is_moved_to_flash_vcc():
     assert any("WP" in n and "+3V3" in n for n in notes), notes
     assert spi_flash_cs_tracks_vcc(ir, symbols, "U2", "+3V3")
     assert ("U2", wp) in next(n for n in ir.nets if n.name == "+3V3").nodes
+
+
+def test_wp_nc_or_unwired_is_released_to_flash_vcc():
+    from circuitgen.erc import check_circuit, flash_wp_hold_connections
+    from circuitgen.normalize import ensure_pwr_flags, ensure_spi_flash_wp_hold_released
+    from circuitgen.symbols import load_symbols
+    from tests.test_blocks import _w25q_pin
+
+    flash = "Memory_Flash:W25Q32JVSS"
+    symbols = load_symbols([flash, "Device:R", "power:+3V3", "power:GND"])
+    wp = _w25q_pin(symbols, "WP")
+    hold = _w25q_pin(symbols, "HOLD")
+
+    ir = CircuitIR("wp-nc")
+    ir.add(Component("U2", flash, "W25Q32JVSS", footprint="F:F"))
+    ir.add(Component("#PWR01", "power:+3V3", "+3V3"))
+    ir.add(Component("#PWR02", "power:GND", "GND"))
+    ir.connect("+3V3", ("#PWR01", "1"), ("U2", "8"))
+    ir.connect("GND", ("#PWR02", "1"), ("U2", "4"))
+    ir.connect("+3V3", ("U2", hold))
+    ir.nc_pins.append(("U2", wp))
+    ensure_pwr_flags(ir, symbols)
+
+    assert ("U2", wp, "", "WP") in flash_wp_hold_connections(ir, symbols)
+    assert any(i.rule == "spi_flash_wp_hold_not_released" for i in check_circuit(ir, symbols))
+
+    notes = ensure_spi_flash_wp_hold_released(ir, symbols, "+3V3")
+    assert any("WP" in n and "+3V3" in n for n in notes), notes
+    assert ("U2", wp) in next(n for n in ir.nets if n.name == "+3V3").nodes
+    assert ("U2", wp) not in ir.nc_pins
+    assert ensure_spi_flash_wp_hold_released(ir, symbols, "+3V3") == []
+    assert not any(i.rule == "spi_flash_wp_hold_not_released" for i in check_circuit(ir, symbols))
+
+
+def test_wp_on_vcc_is_released_even_with_a_stale_nc_marker():
+    from circuitgen.erc import check_circuit, flash_wp_hold_connections
+    from circuitgen.normalize import ensure_pwr_flags, ensure_spi_flash_wp_hold_released
+    from circuitgen.symbols import load_symbols
+    from tests.test_blocks import _w25q_pin
+
+    flash = "Memory_Flash:W25Q32JVSS"
+    symbols = load_symbols([flash, "power:+3V3", "power:GND"])
+    wp = _w25q_pin(symbols, "WP")
+    hold = _w25q_pin(symbols, "HOLD")
+    ir = CircuitIR("wp-stale-nc")
+    ir.add(Component("U2", flash, "W25Q32JVSS", footprint="F:F"))
+    ir.add(Component("#PWR01", "power:+3V3", "+3V3"))
+    ir.add(Component("#PWR02", "power:GND", "GND"))
+    ir.connect("+3V3", ("#PWR01", "1"), ("U2", "8"), ("U2", wp), ("U2", hold))
+    ir.connect("GND", ("#PWR02", "1"), ("U2", "4"))
+    ir.nc_pins.append(("U2", wp))
+    ensure_pwr_flags(ir, symbols)
+
+    assert ("U2", wp, "+3V3", "WP") in flash_wp_hold_connections(ir, symbols)
+    assert not any(i.rule == "spi_flash_wp_hold_not_released" for i in check_circuit(ir, symbols))
+    assert ensure_spi_flash_wp_hold_released(ir, symbols, "+3V3") == []
 
 
 def test_cs_on_gnd_gets_a_pullup_net_not_a_vcc_hard_tie():
@@ -1742,6 +1873,83 @@ def test_instrumentation_amp_cs_does_not_get_a_flash_pullup():
     assert ensure_spi_flash_cs_pullups(ir, symbols, "+3V3") == []
 
 
+def test_a_non_w25q_memory_flash_does_not_get_w25q_cs_or_wp_rules():
+    """XTSD01G shares Memory_Flash: with W25Q32JVSS. The citation is W25Q."""
+    from circuitgen.erc import (
+        cited_w25q_flash,
+        flash_cs_connections,
+        flash_wp_hold_connections,
+    )
+    from circuitgen.normalize import (
+        ensure_cited_w25q_spi_bus_nets,
+        ensure_spi_flash_cs_pullups,
+        ensure_spi_flash_wp_hold_released,
+    )
+
+    lib = "Memory_Flash:XTSD01G"
+    symbols = {
+        lib: _sym(
+            lib,
+            [
+                (1, "~{CS}", PinType.INPUT),
+                (2, "DO", PinType.OUTPUT),
+                (3, "~{WP}", PinType.INPUT),
+                (4, "VSS", PinType.PWRIN),
+                (5, "DI", PinType.INPUT),
+                (6, "CLK", PinType.INPUT),
+                (7, "~{HOLD}", PinType.INPUT),
+                (8, "VCC", PinType.PWRIN),
+            ],
+        ),
+        "Device:R": _sym("Device:R", [(1, "", PinType.PASSIVE), (2, "", PinType.PASSIVE)]),
+        "power:+3V3": _sym("power:+3V3", [(1, "+3V3", PinType.PWROUT)]),
+        "power:GND": _sym("power:GND", [(1, "GND", PinType.PWROUT)]),
+    }
+    ir = CircuitIR("xtsd")
+    ir.add(Component("U1", lib, "XTSD01G"))
+    ir.add(Component("#PWR01", "power:+3V3", "+3V3"))
+    ir.add(Component("#PWR02", "power:GND", "GND"))
+    ir.connect("+3V3", ("#PWR01", "1"), ("U1", "8"))
+    ir.connect("GND", ("#PWR02", "1"), ("U1", "4"))
+    ir.connect("CS", ("U1", "1"))
+    ir.connect("WP", ("U1", "3"))
+    ir.nc_pins.append(("U1", "7"))
+
+    assert not cited_w25q_flash(ir.components["U1"])
+    assert flash_cs_connections(ir, symbols) == []
+    assert flash_wp_hold_connections(ir, symbols) == []
+    assert ensure_cited_w25q_spi_bus_nets(ir, symbols) == []
+    assert ensure_spi_flash_cs_pullups(ir, symbols, "+3V3") == []
+    assert ensure_spi_flash_wp_hold_released(ir, symbols, "+3V3") == []
+    assert ("U1", "1") in next(n for n in ir.nets if n.name == "CS").nodes
+    assert ("U1", "3") in next(n for n in ir.nets if n.name == "WP").nodes
+    assert ("U1", "7") in ir.nc_pins
+
+
+def test_a_w25q_value_on_another_flash_symbol_is_not_the_cited_part():
+    """lib_id is the catalog identity. Value is written by the pipeline."""
+    from circuitgen.erc import cited_w25q_flash
+    from circuitgen.normalize import ensure_cited_w25q_spi_bus_nets
+
+    lib = "Memory_Flash:XTSD01G"
+    symbols = {
+        lib: _sym(
+            lib,
+            [
+                (1, "~{CS}", PinType.INPUT),
+                (2, "DO", PinType.OUTPUT),
+                (5, "DI", PinType.INPUT),
+                (6, "CLK", PinType.INPUT),
+            ],
+        ),
+    }
+    ir = CircuitIR("xtsd-label")
+    ir.add(Component("U1", lib, "W25Q32JVSS"))
+    assert not cited_w25q_flash(ir.components["U1"])
+    assert ensure_cited_w25q_spi_bus_nets(ir, symbols) == []
+    assert ir.nets == []
+
+
 def _hub_sym(lib_id: str, count: int) -> SymbolDef:
     pins: list[PinDef] = []
     for i in range(1, count + 1):
@@ -1867,3 +2075,39 @@ def test_hub_signal_connector_finds_spi_by_topology_not_only_net_label():
     notes = ensure_hub_signal_connectors(ir, symbols, spec)
     assert any("exposed SCLK" in n and "BUS_LINE_7" in n for n in notes)
     assert ("J1", "1") in next(n for n in ir.nets if n.name == "BUS_LINE_7").nodes
+
+
+def test_hub_signal_connector_uses_spi_topology_when_signals_list_is_empty():
+    from circuitgen.normalize import ensure_hub_signal_connectors
+
+    lib = "Vendor:BIGMCU"
+    flash = "Memory_Flash:W25Q32JVSS"
+    symbols = {
+        lib: _hub_sym(lib, 20),
+        flash: _sym(flash, [
+            (1, "~{CS}", PinType.INPUT),
+            (2, "MISO", PinType.OUTPUT),
+            (5, "MOSI", PinType.INPUT),
+            (6, "SCK", PinType.INPUT),
+        ]),
+        "Connector_Generic:Conn_01x05": _sym(
+            "Connector_Generic:Conn_01x05",
+            [(str(i), f"Pin_{i}", PinType.PASSIVE) for i in range(1, 6)],
+        ),
+        "power:GND": _sym("power:GND", [(1, "GND", PinType.PWROUT)]),
+    }
+    ir = CircuitIR("spi-no-signals")
+    ir.add(Component("U1", lib, "MCU"))
+    ir.add(Component("U2", flash, "flash"))
+    ir.add(Component("#PWR02", "power:GND", "GND"))
+    ir.connect("GND", ("U1", "2"), ("#PWR02", "1"))
+    ir.connect("BUS_LINE_7", ("U1", "4"), ("U2", "6"))
+    ir.connect("MOSI", ("U1", "5"), ("U2", "5"))
+    ir.connect("MISO", ("U1", "6"), ("U2", "2"))
+    ir.connect("CS", ("U1", "7"), ("U2", "1"))
+
+    notes = ensure_hub_signal_connectors(ir, symbols, {"power": {"rails": [{"name": "GND"}]}})
+    assert any("added J1" in n for n in notes), notes
+    assert ("J1", "1") in next(n for n in ir.nets if n.name == "BUS_LINE_7").nodes
+    assert ir.components["J1"].lib_id == "Connector_Generic:Conn_01x05"
+    assert ensure_hub_signal_connectors(ir, symbols, {"power": {"rails": [{"name": "GND"}]}}) == []

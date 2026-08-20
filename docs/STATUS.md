@@ -3,7 +3,7 @@
 > 다른 `docs/*.md`는 역사 기록이다. 새 계획 파일을 만들지 않는다.
 > 판정 기준: [`working-rules.md`](working-rules.md).
 
-갱신: 2026-08-18 · /CS는 리턴에서 CS 버스로. VCC 직결 안 함.
+갱신: 2026-08-19 · 떠 있는 SDA/SCL 넷, TMP100 ADD는 float(NC).
 
 
 ## 제품
@@ -507,6 +507,34 @@ CS-on-GND 정의 수정 뒤 재측정. exit 3(2번·4번 숫자). 7번만 적는
 - MCU 없음, J1 `LEMO4`, U3 20k가 SCLK–MISO. C1은 +3V3–GND, 플래시 VCC는
   넷 이름 `VCC` — `not_requested_rail` 1건. spec 역할은 023과 같다.
 
+### /WP·/HOLD unwired or NC (`flash_wp_hold_connections`)
+
+024: U1.3 `/WP`가 NC라 넷 있는 핀만 보던 목록에 없었다. 지식
+`w25q32jv-wp-hold-active-low`: active-low이므로 released는 high.
+§4.3–§4.4는 floating을 말하지 않는다. 미연결 핀을 VCC로 완성하는 것은
+그 추론이다. 넷에 있는 핀은 `nc_pins`보다 멤버십이 우선이다.
+
+024 아티팩트 IR 재생: `connected U1.3 (WP) to VCC`.
+
+### 025 seed 2 7번 (`ko-step-025-wp-nc-s2`)
+
+WP NC 패스 뒤 재측정. 7번은 **requirements에서 중단** — 보드 없음.
+`completion truncated at the output cap (max_tokens=4096)`. W25Q32JVSS
+missing. 이 런으로 `/WP` NC 해소는 **측정하지 못했다**(024 IR 재생만).
+
+exit 3. 1–6번 숫자 변동은 추출 분산으로 두고 7번만 적는다.
+
+### 요청 레일 별칭 합치기 (`_reconcile_rails`)
+
+024: C1은 +3V3–GND, 플래시 VCC 핀은 넷 `VCC`(PWR_FLAG). `_reconcile_rails`는
+요청 레일이 **없을 때만** VCC→+3V3으로 이름 바꿨다. +3V3가 이미 있으면
+두 전원 넷이 남는다.
+
+같은 별칭 표로, 요청 레일이 있으면 별칭 넷의 노드를 그 레일로 합친다.
+접지 별칭(AGND/VSS)은 합치지 않는다. 024 IR 재생:
+`rail +3V3: merged alias net 'VCC'` — U1.8·C1.1·R1.2·/WP·/HOLD가 +3V3.
+`supply_rail_reach` mismatch 없음.
+
 ### 디커플링 C 단락 (`sanitize` + `repair_shorted_bypass_capacitors`)
 
 021 7번: 로그 `removed impossible C1.2 from GND: one-net-per-pin; kept +3V3`.
@@ -536,14 +564,80 @@ CS-on-GND 정의 수정 뒤 재측정. exit 3(2번·4번 숫자). 7번만 적는
 ### Memory_Flash /CS 풀업 (Rev G §4.1, pdf index 9)
 
 019 7번: `/CS` 풀업이 유령 `R1.1`뿐이었다. §4.1은 파워업에서 VCC를
-따라가게 `/CS` 풀업을 쓸 수 있다고만 한다. `/HOLD`·`/WP`는 §4.3·§4.4가
-액티브 로우만 말하지 하이 묶음은 말하지 않는다 — 이번 패스 대상 아님.
+따라가게 `/CS` 풀업을 쓸 수 있다고만 한다. 당시 `/HOLD`·`/WP` 하이 묶음은
+이 CS 패스 대상이 아니었다(이후 `w25q32jv-wp-hold-active-low`로 별도 패스).
 
-한 정의 `erc.flash_cs_connections` + `erc.spi_flash_cs_tracks_vcc`: prefix
-`Memory_Flash:` 심볼의 `/CS` 핀. /CS 넷이 그 플래시 VCC 넷과 같으면
+한 정의 `erc.flash_cs_connections` + `erc.spi_flash_cs_tracks_vcc`: 인용된
+W25Q32JV 가족(lib_id에 `W25Q32JV`)의 `/CS` 핀. `Memory_Flash:` prefix만으로는
+XTSD01G에도 Rev G를 적용했다. /CS 넷이 그 플래시 VCC 넷과 같으면
 이미 VCC를 따른다(§4.1). 아니면 R이 /CS–그 VCC 넷만 잇는지 본다.
 수정 `ensure_spi_flash_cs_pullups`는 같은 정의. 유령 ref 노드는 실제 R
 추가 전에 제거.
+
+### 요건 JSON 토큰 상한 (025)
+
+025 7번은 `max_tokens=4096`에서 requirements가 잘려 보드가 없었다.
+IR 합성은 핀 나열이 길어져도 회로가 나아지지 않아 4096을 유지한다.
+요건 계약은 슬롯 여유(`output_budget(..., cap=SLOT_CONTEXT_TOKENS)`).
+`TruncatedCompletionError`는 `pass_attempt` 없이 동일 요청을 재시도하지 않는다.
+
+### 일반 MCU 검색과 KiCad CPU_ / MCU_ (재현)
+
+`PartIndex.search_parts("MCU")` 1위는 `CPU_NXP_68000:MC68332`(keywords
+`MCU 32 bit`, 132핀). KiCad는 마이크로컨트롤러를 `MCU_*`에, 그 부품을
+`CPU_*`에 둔다. 일반 질의(`MCU`, `3.3V MCU`, `microcontroller`)는 `MCU_`만
+남기고, 심볼 description의 `1.71-3.6V` 같은 범위가 논리 레일을 덮으면 그
+행을 앞에 둔다. 범위가 없는 행은 핀 수. `+3V3`일 때 `3.3V microcontroller`
+검색을 섞으면 1위는 `MCU_Module:Arduino_Nano_RP2040_Connect`(30핀)이고
+ColdFire가 아니다. 형명 `MC68332`는 예전처럼 `CPU_`로 해석한다.
+
+### 일반 커넥터 검색 (재현)
+
+`search_parts("connector")` 1위는 `Connector:LEMO2` (description
+`2-pin LEMO connector`). 일반 질의(`connector`, `header`, `커넥터`)는
+`Connector_Generic:`만 남긴다(2핀 이상). 형명 LEMO4·USB-C·SWD는 그대로다.
+`1x4 header`는 기존 geometry 경로가 `Conn_01x04`를 고른다.
+
+### 요청에 적힌 MCU 역할
+
+프롬프트가 MCU/microcontroller/마이크로컨트롤러를 말하고 spec에
+`MCU_`/`CPU_`/`ESP_` 히트나 일반 MCU 질의가 없으면 `search_query=MCU`
+역할을 넣는다. 플래시+LEMO만 있는 추출이 컨트롤러를 빼던 경우.
+이미 MC68332가 있으면 넣지 않는다.
+
+`ensure_hub_signal_connectors`는 `signals`가 비어도 허브에 닿은 SPI/I2C
+넷(핀 이름·AF, W25Q `/CS`)을 헤더로 노출한다. 허브는 16핀 이상.
+
+### 선정 부품이 없으면 추가
+
+`enforce_requested_part_variants`는 같은 가족 부품이 있을 때만 핀 이름으로
+옮겼고, 없으면 `continue`했다. 합성이 STM32/TMP100을 안 그리면 선정 부품이
+보드에 없었다. 이제 가족이 없으면 카탈로그 심볼을 새 ref로 넣는다. 이미
+있는 저항을 STM32로 바꾸지는 않는다. 전원 심볼은 넣지 않는다. 보드에
+Arduino가 있고 사용자가 STM32를 지명하면 컨트롤러가 둘일 수 있다 —
+교차 라이브러리 교체는 핀 이름이 달라 하지 않는다. 측정: Arduino Nano
+RP2040 Connect 30핀 + STM32G474 64핀 + W25Q이면 `hub_ref`는 STM32이고
+SCK는 플래시와 STM32만 공유한다. Arduino는 버스에 안 탄다. 지우지 않음.
+
+### 인용 W25Q SPI 버스 넷
+
+떠 있는 W25Q CLK/DI/DO/CS는 넷이 없으면 CS 풀업·허브 조인이 침묵한다.
+조인은 이미 라벨 `SCK`/`MOSI`/`MISO`/`NSS` 넷에 MCU Table 12 AF를 붙인다
+(플래시가 멤버이고 MCU는 아직 없을 때). 인용 부품의 핀 이름을 그 라벨에
+올려 조인이 돌게 한다. 4017 CLK, XTSD01G는 인용 게이트 밖이다.
+
+### 떠 있는 SDA/SCL 핀
+
+측정: STM32+TMP100을 추가하면 SCL 핀 1·SDA 핀 6이 넷이 없고, 조인·풀업은
+침묵하고 MCU와는 전원만 공유한다. `pin_name_i2c_role`(기존
+`i2c_member_role`과 같은 핀 이름)으로 떠 있는 SDA/SCL을 그 버스 넷에
+올린다. TMP100 특례가 아니다 — Si7051도 같은 넷을 공유한다. NE555D는
+넷이 생기지 않는다.
+
+ADD0/ADD1은 SDA/SCL이 아니다. 지식 tmp100-address-pins(Table 2): GND, V+,
+또는 float. 떠 있으면 전도 검사가 핀 3·5로 센서를 죽였다. float는 GND가
+아니므로 `complete_known_device_pins`가 미연결 ADD를 NC로만 표시한다.
+이미 GND에 있으면 그대로 둔다.
 
 ## 제품 규칙
 
@@ -554,10 +648,11 @@ CS-on-GND 정의 수정 뒤 재측정. exit 3(2번·4번 숫자). 7번만 적는
 
 ## 다음 작업 (규칙 9)
 
-024 7번: `/CS`는 헤더 CS 넷+VCC 풀업이다. 남은 플래시 사실은 **/WP가 NC**
-(released 패스가 넷 있는 핀만 봄)와 플래시 VCC 넷이 요청 레일 `+3V3`이 아닌
-것이다. MCU 없음·LEMO4는 추출. 1–5번을 큐로 되돌리지 않는다.
-열린 항목: `Memory_Flash:` lib_id 게이트.
+떠 있는 SDA/SCL 넷과 TMP100 ADD float(NC)는 단위 테스트로 확인했다.
+7번만 반복하지 않는다.
+
+다음: 추가된 TMP100에 Figure 12 바이패스(0.01 µF, SBOS231I)가 V+–GND에
+있는지 토폴로지로 측정한다. 측정 없이 용량을 바꾸지 않는다.
 
 ## 데이터·학습
 

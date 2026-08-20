@@ -139,6 +139,22 @@ def _net_label_is_bus_evidence(ir: CircuitIR, net) -> bool:
     )
 
 
+def pin_name_i2c_role(pin_name: str) -> str | None:
+    """SDA or SCL from a symbol pin name. Same tokens `i2c_member_role` uses.
+
+    Exact ``SDA``/``SCL``, or a suffix ``/SDA`` ``_SDA`` (and SCL). A 555
+    timing pin is not these names. An STM32 port pin is PA14, not SDA —
+    recorded AF is a different test.
+    """
+    name = (pin_name or "").upper()
+    if name in ("SDA", "SCL"):
+        return name
+    for role in ("SDA", "SCL"):
+        if name.endswith(("/" + role, "_" + role)):
+            return role
+    return None
+
+
 def i2c_member_role(ir: CircuitIR, symbols: dict[str, SymbolDef], net) -> str | None:
     """SDA or SCL from a member pin name or recorded AF, not from the net label.
 
@@ -152,14 +168,12 @@ def i2c_member_role(ir: CircuitIR, symbols: dict[str, SymbolDef], net) -> str | 
         if sym is None:
             continue
         try:
-            name = (sym.pin(str(pin_no)).name or "").upper()
+            name = sym.pin(str(pin_no)).name or ""
         except KeyError:
             continue
-        if name in ("SDA", "SCL"):
-            return name
-        for role in ("SDA", "SCL"):
-            if name.endswith(("/" + role, "_" + role)):
-                return role
+        role = pin_name_i2c_role(name)
+        if role:
+            return role
     return _recorded_af_role(ir, symbols, net, ("SDA", "SCL"))
 
 
@@ -446,22 +460,34 @@ def pin_name_is_chip_select(pin_name: str) -> bool:
 
 
 def pin_name_is_write_protect(pin_name: str) -> bool:
-    """Whether a Memory_Flash pin is /WP (~{WP})."""
+    """Whether a flash control pin is /WP (~{WP})."""
     return "WP" in _spi_name_tokens(pin_name)
 
 
 def pin_name_is_hold(pin_name: str) -> bool:
-    """Whether a Memory_Flash pin is /HOLD (~{HOLD})."""
+    """Whether a flash control pin is /HOLD (~{HOLD})."""
     return "HOLD" in _spi_name_tokens(pin_name)
+
+
+def cited_w25q_flash(comp) -> bool:
+    """Whether this part is the Winbond W25Q family the CS/WP/HOLD knowledge cites.
+
+    Knowledge ids ``w25q32jv-cs-tracks-vcc`` and ``w25q32jv-wp-hold-active-low``
+    are W25Q32JV Rev G. Sharing ``Memory_Flash:`` is not that identity —
+    XTSD01G is also in that library. Match the cited ordering-code family
+    (W25Q32JV, including W25Q32JVSS) on ``lib_id``. Value is pipeline-written
+    and once made XTSD01G labelled ``W25Q32JVSS`` look cited.
+    """
+    return "W25Q32JV" in (getattr(comp, "lib_id", "") or "").upper()
 
 
 def flash_cs_connections(
     ir: CircuitIR, symbols: dict[str, SymbolDef]
 ) -> list[tuple[str, str, str]]:
-    """Each Memory_Flash /CS pin: (flash_ref, pin_no, net_name).
+    """Each cited W25Q /CS pin: (flash_ref, pin_no, net_name).
 
     MCU NSS GPIO or net labels alone do not count — only the flash symbol's
-    /CS pin on a Memory_Flash: lib_id.
+    /CS pin on a part whose lib_id is the cited W25Q family.
     """
     pin_net = {
         (r, str(p)): n.name for n in ir.nets for r, p in n.nodes
@@ -469,7 +495,7 @@ def flash_cs_connections(
     out: list[tuple[str, str, str]] = []
     seen: set[tuple[str, str]] = set()
     for ref, comp in ir.components.items():
-        if not comp.lib_id.startswith("Memory_Flash:"):
+        if not cited_w25q_flash(comp):
             continue
         sym = symbols.get(comp.lib_id)
         if sym is None:
@@ -488,9 +514,14 @@ def flash_cs_connections(
 def flash_wp_hold_connections(
     ir: CircuitIR, symbols: dict[str, SymbolDef]
 ) -> list[tuple[str, str, str, str]]:
-    """Each Memory_Flash /WP or /HOLD pin: (flash_ref, pin_no, net_name, kind).
+    """Each cited W25Q /WP or /HOLD pin: (flash_ref, pin_no, net_name, kind).
 
-    kind is ``WP`` or ``HOLD``. Same lib_id gate as ``flash_cs_connections``.
+    kind is ``WP`` or ``HOLD``. Same identity gate as ``flash_cs_connections``.
+    A pin on a net is that net even if ``nc_pins`` still lists it — membership
+    is the electrical fact. ``net_name`` is empty only when the pin is on no
+    net. Completing an unused pin to VCC is the released-high state from
+    active-low + “brought high” (knowledge: w25q32jv-wp-hold-active-low);
+    §4.3–§4.4 do not mention floating.
     """
     pin_net = {
         (r, str(p)): n.name for n in ir.nets for r, p in n.nodes
@@ -498,7 +529,7 @@ def flash_wp_hold_connections(
     out: list[tuple[str, str, str, str]] = []
     seen: set[tuple[str, str]] = set()
     for ref, comp in ir.components.items():
-        if not comp.lib_id.startswith("Memory_Flash:"):
+        if not cited_w25q_flash(comp):
             continue
         sym = symbols.get(comp.lib_id)
         if sym is None:
@@ -512,10 +543,10 @@ def flash_wp_hold_connections(
             else:
                 continue
             pin = str(p.number)
-            net = pin_net.get((ref, pin))
-            if net and (ref, pin) not in seen:
-                seen.add((ref, pin))
-                out.append((ref, pin, net, kind))
+            if (ref, pin) in seen:
+                continue
+            seen.add((ref, pin))
+            out.append((ref, pin, pin_net.get((ref, pin), ""), kind))
     return out
 
 
@@ -845,6 +876,27 @@ def _check_extended(
                 f"flash /CS net {cs_net} does not track the device VCC net "
                 f"{supply} at power-up (knowledge: w25q32jv-cs-tracks-vcc; "
                 f"pdf index 9)",
+            )
+        )
+
+    seen_ctrl: set[tuple[str, str]] = set()
+    for flash_ref, pin, net, kind in flash_wp_hold_connections(ir, symbols):
+        key = (flash_ref, pin)
+        if key in seen_ctrl:
+            continue
+        seen_ctrl.add(key)
+        if net and spi_flash_cs_tracks_vcc(ir, symbols, flash_ref, net):
+            continue
+        supply = flash_supply_net(ir, symbols, flash_ref) or "?"
+        where = f"net:{net}" if net else f"{flash_ref}.{pin}"
+        issues.append(
+            _issue(
+                "spi_flash_wp_hold_not_released",
+                "warning",
+                where,
+                f"flash /{kind} {flash_ref}.{pin} is not released high to the "
+                f"device VCC net {supply} (knowledge: "
+                f"w25q32jv-wp-hold-active-low; pdf index 9)",
             )
         )
 
