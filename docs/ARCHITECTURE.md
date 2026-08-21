@@ -91,7 +91,10 @@ CircuitIR
 
 JSON 변환·repair patch: `ir_json.py`. 블록 계획 검증·인스턴스화: `blocks.py`.
 controller identity는 RequirementSpec/부품 catalog에서 내려오며 핀 수로 재추측하지 않는다.
-BlockPlan interface의 peer/protocol 계약은 인스턴스별 net 이름과 owner group으로 확장된다.
+**Typed interfaces의 source of truth는 RequirementSpec.`signals`**
+(`peer`/`protocol`/`required`/`owner_role`)이다. `interface_contracts_from_spec`이
+flat·block 경로 모두에 계약을 심고, BlockPlan은 `reconcile_plan_interfaces`로 누락을
+복원하며 인스턴스별 `{n}`·`owner_group`을 붙인다. PWM/DIR/FAULT는 `generic_control`.
 
 ## RAG 지식 vs 결정론적 규칙
 
@@ -145,10 +148,20 @@ driver/consumer 역할을 **추론하지 않고** 파생합니다.
 `critical_route_failures`에서 원인을 집계한다. `occupied_by_net`은 기존 배선을 제외한
 진단 재시도가 성공할 때만 기록하므로 향후 rip-up 후보 net을 구체적으로 가리킨다.
 
-`emit.build_emit_plan`: direct → L → tree(≤8 terminal) → stubs.
+`emit.build_emit_plan`: critical-first (required controller contracts, then other
+required contracts, then ordinary nets; more terminals first within a tier) →
+direct → L → tree(≤16 terminal) → stubs.
 세 mode가 모두 sheet-wide `RoutingContext`의 symbol box, foreign pin/stub corridor,
-선행 wire cell ownership을 같은 validator로 검사한다. 다만 net 순서는 아직 IR 순서인
-one-pass이며 priority와 rip-up은 없다.
+선행 wire occupancy를 같은 validator로 검사한다. Occupancy는 **방향 인식**: 같은
+방향 cell 재사용과 foreign wire 위의 vertex(T접점)만 거부하고, mid-segment 직교
+교차는 허용한다(KiCad는 junction 없는 교차로 넷을 합치지 않음).
+`occupied_by_net`이고 blocker 우선순위가 더 낮으면 limited rip-up(depth≤2) 후 재시도.
+같은 bus tier에서는 선 종류 순위(`bus_line_rank`: SCK→MOSI→MISO→CS)가 더 좋은
+net이 나쁜 선을 rip 할 수 있다. 순위가 동등하면 equal-tier swap: blocker를 풀고
+둘 다 실선될 때만 유지한다.
+critical stub의 placement 가능 실패(`off_grid_terminal` 등)는 `route_place_repair`가
+로컬 수정 후 emit을 최대 2회 재빌드한다. benchmark는
+`generate(..., write_route_debug=True)`로 route-debug SVG를 남긴다.
 
 ## pipeline.generate() 검증 사다리
 

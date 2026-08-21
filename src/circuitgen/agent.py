@@ -474,10 +474,22 @@ class Agent:
             "input_bypass_capacitor and output_bypass_capacitor; this field "
             "selects cited design rules, so do not infer it from a benchmark "
             "name or omit it.\n"
-            "A SIGNAL is a net, not a part to buy. TX, RX, SDA, SCL, CANH, "
-            "an interrupt line, a chip select: these go in `signals`, never "
-            "in parts_needed. parts_needed is only for physical devices "
-            "that appear in a bill of materials.\n\n"
+            "A SIGNAL is a typed interface net, not a part to buy. TX, RX, "
+            "SDA, SCL, CANH, an interrupt line, a chip select, PWM, DIR, "
+            "FAULT: these go in `signals`, never in parts_needed. "
+            "parts_needed is only for physical devices that appear in a "
+            "bill of materials.\n"
+            "For every signal set peer, protocol, and required. peer="
+            "controller when the net must reach the on-board MCU/CPU; "
+            "peer=external when it leaves the board on a connector; "
+            "peer=block when another functional block is the other end. "
+            "protocol=i2c/spi/uart/can for those buses; generic_control for "
+            "PWM/DIR/FAULT/ENABLE/INT and similar command/status lines; "
+            "other only when none apply. required=true unless the request "
+            "marks the interface optional. Set owner_role to the "
+            "parts_needed.role of the peripheral that owns the line "
+            "(motor_driver for MOTOR_PWM). Board-exposed-only nets may omit "
+            "peer (defaults to external).\n\n"
             "When the request names a part with a designator — '입력 "
             "커넥터 (J1)', 'LDO 레귤레이터 (U1)', 'MCU (U1)' — put that "
             "designator in `reference` on the matching parts_needed item. "
@@ -1729,6 +1741,10 @@ class Agent:
             "- interface_nets: ONLY nets another block must also connect to "
             "(signals to the MCU, shared buses, block outputs). Power rails "
             "are implicit and shared — never list them.\n"
+            "- Every typed entry in SPEC.signals MUST appear in some block's "
+            "interface_nets with the SAME name, peer, protocol, and required. "
+            "Do not rename those nets. You may ADD further interface nets the "
+            "partition needs, but you must not drop a SPEC.signals entry.\n"
             "- Every interface_net must declare peer: controller when this "
             "block's signal must reach the MCU/CPU, external when it leaves "
             "the board through a connector, or block when another functional "
@@ -2970,6 +2986,9 @@ class Agent:
         if transcribed:
             res.stage = "transcription"
             ir, tnotes = self.transcribe(spec, name)
+            from .interface_contracts import apply_spec_interface_contracts
+
+            res.log.extend(apply_spec_interface_contracts(ir, spec))
             self._annotate_functional_intent(ir, spec, {})
             res.log.extend(tnotes)
             ctx = {"candidates": {}, "contracts": [], "transcribed": True}
@@ -3190,10 +3209,18 @@ class Agent:
             rails = [r["name"] for r in spec.get("power", {}).get("rails", [])]
             ir, mnotes = instantiate_blocks(name, plan, block_irs, rails)
             res.log.extend(mnotes)
+            from .interface_contracts import (
+                apply_spec_interface_contracts,
+                catalog_from_contracts,
+            )
+
+            res.log.extend(apply_spec_interface_contracts(ir, spec))
             self._annotate_functional_intent(
                 ir, spec, merged_candidates, plan=plan
             )
-            res.log.extend(self.wire_mcu_interfaces(ir, catalog))
+            res.log.extend(self.wire_mcu_interfaces(
+                ir, catalog or catalog_from_contracts(ir.interface_contracts)
+            ))
             ctx = {"candidates": merged_candidates}
             if not ir.components:
                 res.log.append("no block produced any components")
@@ -3279,6 +3306,24 @@ class Agent:
             self._annotate_functional_intent(
                 ir, spec, ctx.get("candidates", {}), plan=res.block_plan or None
             )
+        from .interface_contracts import (
+            apply_spec_interface_contracts,
+            catalog_from_contracts,
+        )
+
+        res.log.extend(apply_spec_interface_contracts(ir, spec))
+        self._annotate_functional_intent(
+            ir, spec, ctx.get("candidates", {}), plan=res.block_plan or None
+        )
+        # Flat (and pattern) synthesis never ran the block-merge wiring pass.
+        # Typed controller contracts from SPEC.signals still need a hub endpoint.
+        if (pattern_result is not None or not use_blocks) and any(
+            c.required and c.peer == "controller" for c in ir.interface_contracts
+        ):
+            res.log.extend(self.wire_mcu_interfaces(
+                ir, catalog_from_contracts(ir.interface_contracts),
+                extra_alone=False,
+            ))
         res.ir = ir
         rec.set("block_plan", res.block_plan)
         # Snapshot before the deterministic normalization sequence: the set
@@ -3289,6 +3334,7 @@ class Agent:
         synth_nc = nc_set(ir)
         res.log.extend(self._normalize(ir, spec, prompt))
         res.log.extend(self._limit_main_device_copies(ir, ctx.get("candidates", {}), spec))
+        res.log.extend(apply_spec_interface_contracts(ir, spec))
         self._annotate_functional_intent(
             ir, spec, ctx.get("candidates", {}), plan=res.block_plan or None
         )
@@ -3397,6 +3443,9 @@ class Agent:
             # patches may use pin names, introduce new lib_ids, invalid
             # footprints, or rail nets that still need their supply symbol
             res.log.extend(self._normalize(ir, spec, prompt))
+            from .interface_contracts import apply_spec_interface_contracts
+
+            res.log.extend(apply_spec_interface_contracts(ir, spec))
             self._annotate_functional_intent(
                 ir, spec, ctx.get("candidates", {}), plan=res.block_plan or None
             )

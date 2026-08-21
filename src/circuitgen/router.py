@@ -51,12 +51,18 @@ def _blocked_cells(obstacles: list[Box], grid: float, clearance: float) -> set[t
     return blocked
 
 
+def _move_orient(dx: int, dy: int) -> str:
+    return "H" if dx != 0 else "V"
+
+
 def _astar(
     start: tuple[int, int],
     goals: set[tuple[int, int]],
     blocked: set[tuple[int, int]],
     bounds: tuple[int, int, int, int],
     bend_cost: float,
+    occupied_orient: dict[tuple[int, int], set[str]] | None = None,
+    occupied_endpoints: set[tuple[int, int]] | None = None,
 ) -> list[tuple[int, int]] | None:
     """Route start to the nearest goal; state includes arrival direction.
 
@@ -67,9 +73,16 @@ def _astar(
     every node expansion (measured: 1.35M generator calls, 44% of A* time).
     A path's bend count is orientation-independent, so both directions cost
     the same; the result is re-reversed to keep the start->goal orientation.
+
+    Oriented occupancy (foreign wire cells): same-orientation reuse is blocked
+    (parallel overlap / hidden short). Opposite orientation may be entered only
+    when continuing straight through — a bend on a foreign wire is a KiCad
+    junction. Foreign wire endpoints are fully blocked except as terminals.
     """
     min_x, min_y, max_x, max_y = bounds
     gx, gy = start  # the single target of the backward search
+    occ = occupied_orient or {}
+    occ_ep = occupied_endpoints or set()
     queue: list[tuple[float, float, int, int, int, int]] = []
     parent: dict[tuple[int, int, int, int], tuple[int, int, int, int] | None] = {}
     best: dict[tuple[int, int, int, int], float] = {}
@@ -90,11 +103,24 @@ def _astar(
                 path.append((cur[0], cur[1]))
                 cur = parent[cur]
             return path  # already target->source == start->goal
+        # Sitting mid-crossing on a foreign wire: must continue straight.
+        must_straight = False
+        if (pdx or pdy) and (x, y) not in goals:
+            here = occ.get((x, y), set())
+            if here and _move_orient(pdx, pdy) not in here:
+                must_straight = True
         for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            if must_straight and (dx, dy) != (pdx, pdy):
+                continue
             nxt = (x + dx, y + dy)
             if not (min_x <= nxt[0] <= max_x and min_y <= nxt[1] <= max_y):
                 continue
             if nxt in blocked and nxt != start:
+                continue
+            if nxt in occ_ep and nxt not in goals and nxt != start:
+                continue
+            move_o = _move_orient(dx, dy)
+            if move_o in occ.get(nxt, set()) and nxt != start:
                 continue
             step = 1.0 + (bend_cost if (pdx or pdy) and (dx, dy) != (pdx, pdy) else 0.0)
             ns = (nxt[0], nxt[1], dx, dy)
@@ -130,6 +156,8 @@ def route_multi_terminal(
     margin_cells: int = 12,
     bend_cost: float = 2.0,
     blocked_points: list[Point] | None = None,
+    oriented_occupancy: dict[Point, set[str]] | None = None,
+    occupied_endpoints: set[Point] | None = None,
 ) -> RouteTree | None:
     """Connect all terminals as an orthogonal tree, or return ``None``.
 
@@ -138,8 +166,13 @@ def route_multi_terminal(
     points become explicit KiCad junction candidates.
 
     ``blocked_points`` are exact forbidden coordinates (foreign pins, other
-    nets' wire cells): in KiCad a wire touching ANY pin coordinate connects
+    nets' wire endpoints): in KiCad a wire touching ANY pin coordinate connects
     to it, so these must never appear on a route.
+
+    ``oriented_occupancy`` maps world cells to orientations already claimed by
+    foreign nets (``{"H"}``, ``{"V"}``, or both). Same-orientation reuse is
+    refused; opposite-orientation crossings are allowed when the path goes
+    straight through (KiCad does not join crossed wires without a junction).
     """
     if len(terminals) < 2:
         return RouteTree()
@@ -150,6 +183,17 @@ def route_multi_terminal(
     for p in blocked_points or ():
         blocked.add(_snap(p, grid))
     blocked -= set(grid_terms)
+    occ_grid: dict[tuple[int, int], set[str]] = {}
+    for point, orients in (oriented_occupancy or {}).items():
+        key = _snap(point, grid)
+        if key in grid_terms:
+            continue
+        occ_grid.setdefault(key, set()).update(orients)
+    ep_grid = {
+        _snap(p, grid)
+        for p in (occupied_endpoints or set())
+        if _snap(p, grid) not in grid_terms
+    }
     xs = [p[0] for p in grid_terms]; ys = [p[1] for p in grid_terms]
     bounds = (min(xs) - margin_cells, min(ys) - margin_cells, max(xs) + margin_cells, max(ys) + margin_cells)
     tree_cells = {grid_terms[0]}
@@ -157,7 +201,15 @@ def route_multi_terminal(
     paths: list[list[Point]] = []
     while remaining:
         terminal = min(remaining, key=lambda p: min(abs(p[0]-x)+abs(p[1]-y) for x, y in tree_cells))
-        path_cells = _astar(terminal, tree_cells, blocked, bounds, bend_cost)
+        path_cells = _astar(
+            terminal,
+            tree_cells,
+            blocked,
+            bounds,
+            bend_cost,
+            occupied_orient=occ_grid,
+            occupied_endpoints=ep_grid,
+        )
         if path_cells is None:
             return None
         path = _compress([_world(p, grid) for p in path_cells])

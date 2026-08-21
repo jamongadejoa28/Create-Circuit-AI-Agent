@@ -1798,6 +1798,8 @@ def ensure_hub_signal_connectors(
     """Anchor interface signals that reach the hub but have no header.
 
     The requirement's ``signals`` list names nets the board must expose.
+    Only ``peer=external`` (or omitted peer — historical default) get a
+    header. ``peer=controller`` lines must reach the MCU, not a connector.
     When that list is empty, SPI/I2C nets already on the hub (pin name or
     recorded AF) are the same job. One header per still-unanchored group;
     contacts follow spec order, or SCK/MOSI/MISO/CS/SDA/SCL, with GND last
@@ -1822,6 +1824,9 @@ def ensure_hub_signal_connectors(
         for sig in signals:
             name = str(sig.get("name", "")).strip()
             if not name or name.upper() in rails or is_ground(name) or is_supply(name):
+                continue
+            peer = str(sig.get("peer") or "external").strip().lower()
+            if peer != "external":
                 continue
             net = _declared_signal_net(ir, symbols, name, hub)
             if net is None or net.name in seen_nets:

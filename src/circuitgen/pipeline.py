@@ -43,6 +43,10 @@ class PipelineResult:
     # Counts from topology + symbol pin types. This is descriptive evidence,
     # not a pass/fail score and never changes electrical connectivity.
     interface_metrics: dict = field(default_factory=dict)
+    # Notes from critical-net local placement repair (empty when unused).
+    route_place_notes: list[str] = field(default_factory=list)
+    # Benchmark-only overlay path when written next to the schematic.
+    route_debug_svg: Path | None = None
     errors: list[str] = field(default_factory=list)
 
 
@@ -52,6 +56,8 @@ def generate(
     placements: dict[str, Placement] | None = None,
     symbols: dict[str, SymbolDef] | None = None,
     parts_index=None,
+    *,
+    write_route_debug: bool = False,
 ) -> PipelineResult:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -132,13 +138,39 @@ def generate(
         # Build the plan here rather than letting emit_schematic build its own:
         # route_metrics needs it, and it was being routed twice.
         from .emit import build_emit_plan, route_metrics
+        from .route_place_repair import (
+            MAX_ROUTE_PLACE_REPAIRS,
+            critical_failures_for_repair,
+            placements_equal,
+            repair_placements_for_route_failures,
+        )
 
         plan = build_emit_plan(ir, symbols, canonical_placements)
+        for _attempt in range(MAX_ROUTE_PLACE_REPAIRS):
+            failures = critical_failures_for_repair(ir, symbols, plan)
+            if not failures:
+                break
+            repaired, notes = repair_placements_for_route_failures(
+                ir, symbols, canonical_placements, failures
+            )
+            if placements_equal(repaired, canonical_placements):
+                break
+            canonical_placements = repaired
+            res.route_place_notes.extend(notes)
+            plan = build_emit_plan(ir, symbols, canonical_placements)
+
         from .visual import check_routing
         routing_issues = check_routing(ir, symbols, canonical_placements, plan)
         res.visual_issues.extend(routing_issues)
         res.errors.extend(f"visual QA {i.rule}: {i.message}" for i in routing_issues)
         res.route_metrics = route_metrics(ir, symbols, plan)
+        if write_route_debug:
+            from .route_debug_overlay import write_route_debug_overlay
+
+            debug_path = out_dir / f"{ir.name}.route-debug.svg"
+            res.route_debug_svg = write_route_debug_overlay(
+                ir, symbols, canonical_placements, plan, debug_path
+            )
         sch_text = emit_schematic(ir, symbols, canonical_placements, plan)
     except (KeyError, ValueError) as e:
         res.errors.append(f"placement/emission error: {e}")

@@ -166,7 +166,7 @@ def pin_name_spi_role(comp, pin_name: str) -> str | None:
     not SPI (``test_a_counter_clk_on_foo_is_not_spi``).
     """
     tokens = set(_spi_name_tokens(pin_name))
-    if "SCK" in tokens:
+    if "SCK" in tokens or "SCLK" in tokens:
         return "SCK"
     if "MOSI" in tokens:
         return "MOSI"
@@ -440,7 +440,9 @@ def _pin_carries_i2c_name_or_af(lib_id: str, sym: SymbolDef, pin: str) -> bool:
 _SPI_TOKEN_TO_AF = {
     # DS12288 Table 12: SPI*_SCK / MOSI / MISO / NSS. CLK/DI/DO/CS are
     # vendor pin names (W25Q) and also 4017 clocks / AD8231 chip-selects.
+    # SCLK is the usual net/pin spelling of the same SPI clock line.
     "SCK": "SCK",
+    "SCLK": "SCK",
     "MOSI": "MOSI",
     "MISO": "MISO",
     "NSS": "NSS",

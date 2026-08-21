@@ -5,7 +5,8 @@
 > 캠페인 상세·구 계획·핸드오버는 저장소 밖
 > [`create_circuit-docs-archive`](../../create_circuit-docs-archive/) — 에이전트는 참고하지 않는다.
 
-갱신: 2026-08-21 · 테스트/평가 경계 감사 및 route telemetry 완료
+갱신: 2026-08-22 · backend 안정 판정 (replay gated)
+
 
 ## 제품
 
@@ -17,42 +18,47 @@ PCB 배치·동박·DRC와 QLoRA는 하지 않는다.
 
 고정 입력: `tests/eval/sequential_campaign_v1.json` · 실행: `tests/benchmarks/run_sequential_campaign.py`.
 
-최신 측정 기준: `ko-step-024-cs-gnd-s2` / `ko-step-025-wp-nc-s2` (7번 W25Q·레일·WP/HOLD).
-상세 숫자·시드별 분산·012–023 캠페인 서사는 아카이브 `STATUS-full-2026-08-20.md`.
+최신 측정 기준: `ko-step-024-cs-gnd-s2` / `ko-step-025-wp-nc-s2`.
+**Backend replay (LLM 없음):** `tests/artifacts/benchmarks/replay/backend-stability-20260822/`
+(동일 IR: `backend-20260822a`).
 
-재현된 핵심:
+| 케이스 | wired | critical_wired | critical_stubs | 비고 |
+| --- | --- | --- | --- | --- |
+| 001 LED | 1.0 | — | [] | clean |
+| 002 LDO | 1.0 | — | [] | self-ERC PWROUT — **구 IR**, C층 아님 |
+| 003 opamp | 1.0 | — | [] | clean |
+| 004 타이머 | 1.0 | — | [] | self-ERC 핀 미연결 — **구 IR** |
+| 005 오디오 | 1.0 | — | [] | oriented occupancy |
+| 006 I2C | 1.0 | 1.0 | [] | clean |
+| 007 SPI | 1.0 | 1.0 | [] | self-ERC 심볼/controller 선언 — **구 IR** |
 
-- 리페어 루프: 게이트 거부 사유를 다음 라운드에 전달, `unknown_symbol` 예시만 해당 라운드에 한정.
-- 단락 op 거부 게이트는 **삭제** (008에서 pin-not-connected로 증발만 바뀜).
-- 오디오(5번): `_restore_passive_roles` + overflow budget으로 스피커·포트 복원 012 3/3.
-- 7번 SPI: W25Q `/CS` GND 추적·풀업·WP/HOLD released·레일 별칭 합치기 순으로 정규화 보강.
+### Backend 안정 판정 (2026-08-22, LLM 없음)
 
-## 최근 코드 (2026-08-20)
+| 게이트 | 결과 |
+| --- | --- |
+| pytest (router/tree/contracts/repair/visual/geometry/functional/pipeline/erc/interfaces/replay + netlist/chain/hier/normalize/contracts/blocks) | **191 passed** |
+| ko-step-024 replay ×7 `wired_ratio` | **전부 1.0** |
+| `critical_stub_nets` / `critical_wired_ratio` | **전부 OK** (critical 있는 006·007 = 1.0) |
+| `connectivity_ok` / runtime / `visual_issues` | **전부 OK** (visual 0) |
+| preview PNG | 7/7 생성 (가독성 자동승인 아님) |
+| self-ERC 0 | 4/7 — 실패 3건은 **저장된 구 IR** (C층 회귀 아님) |
 
-- **선정 부품 추가** — `enforce_requested_part_variants`: 가족 sibling 없으면 카탈로그 심볼을 새 ref로 추가.
-- **W25Q SPI** — `ensure_cited_w25q_spi_bus_nets`: 떠 있는 CLK/DI/DO/CS → SCK/MOSI/MISO/NSS 라벨 net.
-- **I2C SDA/SCL** — `ensure_named_i2c_pin_nets` + TMP100 ADD0/ADD1 float → NC.
-- **typed interface contract** — BlockPlan의 각 interface가 `peer`
-  (`controller|external|block`), `protocol`, `required`를 가지고
-  `CircuitIR.controller_refs`/`interface_contracts`까지 보존된다.
-- **IR connectivity gate** — 최대 핀 수 부품을 허브로 추측하지 않는다. controller 없음,
-  계약 net/owner/controller endpoint 누락, I2C/SPI/serial 주변장치의 controller 미도달을
-  emission 전 error로 보고한다. PWM/DIR/FAULT도 `generic_control` 계약으로 같은 검사를 받는다.
-- **SPI/UART 보강** — 활성 SCK/MOSI/MISO가 있는 주변장치의 CS/NSS NC를 거부한다.
-  UART controller pin은 기록된 datasheet AF를 확인한다. TXD/RXD는 계약/라이브러리 문맥이
-  있을 때만 UART/CAN으로 분류하고 그 외에는 SERIAL로 보고한다.
-- **C층 측정** — `route_metrics`가 `stub_net_names`,
-  `critical_stub_nets`, protocol별 critical 수치를 기록하고 design `run.json` 및 sequential
-  benchmark에도 보존한다. 정적 SVG 존재 여부를 회귀 검사로 가장하던 fixture는 제거했다.
-- **route failure telemetry** — tree router의 무정보 `None`을 `terminal_limit`,
-  `off_grid_terminal`, `escape_blocked`, `astar_no_path`, `foreign_geometry`,
-  `occupied_by_net` 등으로 구조화했다. 기존 배선 없이 진단 재시도가 성공한 경우에만
-  occupancy 실패로 판정하고 방해 net 이름을 함께 기록한다. sequential benchmark와
-  추적 metrics에서 SDA/SCL의 현재 원인은 `terminal_limit`로 확인된다.
-- **unified routing occupancy** — direct/L/tree가 하나의 `RoutingContext`에서 symbol box,
-  foreign pin과 잠재 stub corridor, 선행 net wire cell을 검사한다. 어떤 route mode도 공유
-  validator를 우회해 다른 net을 가로지를 수 없으며, 거부된 교차는 blocker net telemetry로
-  남는다.
+**판정: C층(place/emit/router)은 시퀀셜 캠페인 재개에 충분.**  
+PNG는 사람이 보고, A층 self-ERC는 새 LLM IR에서 다시 측정한다.
+
+## 최근 코드
+
+- **typed interface @ RequirementSpec** · **critical-first** · **TREE_MAX_NODES=16**
+- **limited rip-up** · **route-aware local placement** · **route-debug SVG**
+- **legacy bus-first routing** — 계약 없는 구 IR에서도 `is_i2c_net`/`is_spi_net`
+  멤버십으로 버스 net을 emit 우선순위에 올림. metrics critical도 동일 기준.
+- **legacy controller** — `functional_pins`가 `_recorded_controller_refs`(핀함수 테이블)를 사용.
+- **SCLK → SCK** — `_SPI_TOKEN_TO_AF` / `pin_name_spi_role`에 일반 SPI 시계 별칭.
+- **bus line-rank** — 같은 tier 안에서 SCK→MOSI→MISO→CS; GPIO CS도 SPI 기기면 tier 0.
+- **equal-tier swap** — 동순위 `occupied_by_net`일 때 blocker를 잠깐 풀고,
+  **둘 다** 실선되면만 유지(한쪽 stub로 바꾸지 않음).
+- **oriented wire occupancy** — 같은 방향 cell 재사용만 거부. 직교 mid-segment 교차는
+  KiCad에서 단락이 아니므로 허용. `visual` QA도 T접점/평행 겹침만 short로 본다.
 
 ## 연결 문제 3층 (A / B / C)
 
@@ -62,49 +68,35 @@ PCB 배치·동박·DRC와 QLoRA는 하지 않는다.
 | **B. Geometry** | IR 연결됨 | 거의 붙어 보이거나 KiCad ERC 단선 | pin 좌표 ≠ wire endpoint |
 | **C. Label fallback** | 전기적으로 연결 | **선이 끊겨 보임** | `emit` stub+동일 net label |
 
-현재 `connectivity_ok`와 KiCad ERC 0은 **C를 성공으로 취급**한다.
-`route_metrics.wired_ratio`와 `critical_wired_ratio`는 통계일 뿐 게이트가 아니다.
-9-terminal I2C 재현 테스트에서 SCL/SDA는 `terminal_limit`으로 stub fallback된다.
-
-`emit.build_emit_plan` 순서: direct → L → tree(≤8 terminal) → **stubs**.
-세 route mode의 occupancy 정책은 통합됐다. 다만 IR net 순서대로 선행 net이 공간을
-선점하는 one-pass이고 priority/rip-up은 아직 없다.
-
-Visual QA(`visual.py`)는 semantic geometry만 검사한다. 종횡비와 detour 길이는 오류가
-아니라 관측값이며, stub+label도 전기 오류로 취급하지 않는다. PNG 가독성은 별도 검토다.
+A층은 닫힘. C층: critical-first + rip-up + local placement + bus-first(legacy).
 
 ## 제품 규칙
 
 - verified: `data/rules/ldo_linear_regulator.json` 하나
-- draft rule 파일은 보관하지 않는다. 검증되지 않은 규칙은 제품/평가 입력이 아니다.
-- 지식: `data/knowledge/manufacturer-datasheets.json` (provenance `datasheet`, pdf 페이지 인덱스 필수)
-- 전압 한도: `data/device_limits.json` — STM32G474, TMP100 (SBOS231I)
+- draft rule 파일은 보관하지 않는다
+- 지식: `data/knowledge/manufacturer-datasheets.json`
+- 전압 한도: `data/device_limits.json`
 
 ## 다음 작업 (규칙 9)
 
-**우선순위 (사용자·코드 분석 합의):**
-
-1. ~~**critical stub 측정**~~ — 이름·protocol별 지표와 실패 원인 재현 완료.
-2. ~~**route failure telemetry**~~ — 실패 stage/reason/blocker net 및 benchmark 노출 완료.
-3. ~~**unified routing occupancy**~~ — direct/L/tree 공유 `RoutingContext`와 validator 완료.
-4. **critical-first + rip-up/reroute** — typed required controller 계약 net을 먼저
-   routing하고, `occupied_by_net` blocker를 제한적으로 걷어낸 뒤 재시도한다.
-5. **route-aware placement** — critical 실패 net에만 거리·pin 방향·장애물 밀도 기반
-   local placement search를 적용한다.
-6. **multi-terminal bus/trunk router** — 재현된 SDA/SCL처럼 `TREE_MAX_NODES=8`을
-   초과한 공유 bus를 trunk+branch 실선으로 만든다.
-7. **benchmark debug overlay** — pin/wire/junction/route-mode/failure SVG.
-
-7번만 반복하지 않는다. I2C/SPI별 normalize 규칙 추가는 IR connectivity gate·측정 없이 하지 않는다.
+1. ~~typed interfaces · critical-first · TREE 16 · rip-up · local placement · overlay~~
+2. ~~ko-step-024 IR replay~~ — I2C critical 실선.
+3. ~~동일 tier SPI occupancy~~ — line-rank + equal-tier swap; 007 critical/wired 1.0.
+4. ~~005 IN occupied_by_net~~ — oriented occupancy로 해결.
+5. ~~밀도/충돌(대형 multi-net)~~ — 직교 교차 허용으로 005/006 wired 1.0.
+6. ~~backend 안정 확인~~ — 위 판정. C층 통과.
+7. **새 LLM 시퀀셜 캠페인** (`run_sequential_campaign.py` + llama-server) —
+   고정 입력 `sequential_campaign_v1.json`, 결과는 artifacts에 남기고 PNG는 사람 검토.
+8. (선택) 동일 방향 corridor placement 분산 — 필요할 때만.
 
 ## 데이터·학습
 
-제조사 PDF: `data/datasheets/`. QLoRA 없음. SchGen accepted **0**, 승격 금지.
+제조사 PDF: `data/datasheets/`. QLoRA 없음. SchGen accepted **0**.
+학습/SFT로 넘어가지 않는다.
 
 ## 하지 않을 일
 
 - ERC/벤치 점수 자랑 · 패턴 apply_when · SchGen 승격 · 회로명 특례
-- 반례 키워드로 패시브 클래스 추측 · 부유 부품으로 role_present 부풀리기
+- I2C/SPI/부품별 A층 normalize 규칙 추가
+- `contracts.infer_contracts` 키워드 확장
 - 1–5번 시퀀셜을 기본 작업 큐로 되돌리기
-- 단락 op 게이트 재도입 (008에서 삭제한 이유)
-- 구 `docs/*.md` 계획·핸드오버를 저장소에 다시 추가

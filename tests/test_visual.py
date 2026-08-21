@@ -72,7 +72,8 @@ def test_visual_qa_detects_wire_touching_a_foreign_pin():
     assert any(i.rule == "wire_touches_foreign_pin" for i in issues)
 
 
-def test_visual_qa_detects_different_net_wire_crossing_without_a_pin():
+def test_visual_qa_ignores_orthogonal_mid_segment_crossing():
+    """KiCad does not join crossed wires without a shared vertex/junction."""
     ir = CircuitIR("wire_crossing")
     ir.add(Component("U1", "Test:Box", "A"))
     ir.add(Component("U2", "Test:Box", "B"))
@@ -86,6 +87,28 @@ def test_visual_qa_detects_different_net_wire_crossing_without_a_pin():
     plan = EmitPlan(wires=[
         ((55.88, 63.5), (81.28, 63.5), "U1.2"),
         ((68.58, 50.8), (68.58, 76.2), "U2.1"),
+    ])
+    issues = check_routing(ir, symbols, placements, plan)
+    assert not [
+        i for i in issues if i.rule == "wire_crosses_foreign_wire"
+    ]
+
+
+def test_visual_qa_detects_t_junction_onto_foreign_wire():
+    ir = CircuitIR("wire_t_junction")
+    ir.add(Component("U1", "Test:Box", "A"))
+    ir.add(Component("U2", "Test:Box", "B"))
+    ir.connect("A", ("U1", "2"))
+    ir.connect("B", ("U2", "1"))
+    symbols = {"Test:Box": _symbol()}
+    placements = {
+        "U1": {1: Placement(50.8, 50.8)},
+        "U2": {1: Placement(101.6, 76.2)},
+    }
+    plan = EmitPlan(wires=[
+        ((55.88, 63.5), (81.28, 63.5), "U1.2"),
+        # Vertical wire ends on the horizontal mid-segment → KiCad joins.
+        ((68.58, 50.8), (68.58, 63.5), "U2.1"),
     ])
     issues = check_routing(ir, symbols, placements, plan)
     assert any(i.rule == "wire_crosses_foreign_wire" for i in issues)

@@ -172,10 +172,32 @@ def check_routing(ir, symbols, placements, plan) -> list[VisualIssue]:
                         f"wire for {net} passes through {ref}.{pin} on {pin_net or 'no net'}",
                     ))
 
-    # A crossing between different-net wires is an electrical junction in
-    # KiCad even when no component pin lies at the crossing. This is both a
-    # visual failure and a likely hidden short, so report the geometry before
-    # the later ERC/netlist oracle merely says that two rails merged.
+    # Different-net wires short in KiCad when they share an endpoint or when
+    # one ends on the other's interior. A pure orthogonal mid-segment crossing
+    # (no shared vertex) is legal and does not join the nets — do not flag it.
+    def _point_on_open_segment(p, a, b) -> bool:
+        (x1, y1), (x2, y2) = a, b
+        if abs(x1 - x2) < 0.01:
+            return (
+                abs(p[0] - x1) < 0.01
+                and min(y1, y2) + 0.01 < p[1] < max(y1, y2) - 0.01
+            )
+        if abs(y1 - y2) < 0.01:
+            return (
+                abs(p[1] - y1) < 0.01
+                and min(x1, x2) + 0.01 < p[0] < max(x1, x2) - 0.01
+            )
+        return False
+
+    def _collinear_overlap(a, b, c, d) -> bool:
+        (x1, y1), (x2, y2) = a, b
+        (x3, y3), (x4, y4) = c, d
+        if abs(x1 - x2) < 0.01 and abs(x3 - x4) < 0.01 and abs(x1 - x3) < 0.01:
+            return max(min(y1, y2), min(y3, y4)) < min(max(y1, y2), max(y3, y4)) - 0.01
+        if abs(y1 - y2) < 0.01 and abs(y3 - y4) < 0.01 and abs(y1 - y3) < 0.01:
+            return max(min(x1, x2), min(x3, x4)) < min(max(x1, x2), max(x3, x4)) - 0.01
+        return False
+
     for i, (a, b, tag) in enumerate(plan.wires):
         net = wire_net(tag)
         if not net:
@@ -184,15 +206,20 @@ def check_routing(ir, symbols, placements, plan) -> list[VisualIssue]:
             other_net = wire_net(other_tag)
             if not other_net or other_net == net:
                 continue
-            ax0, ax1 = sorted((a[0], b[0]))
-            ay0, ay1 = sorted((a[1], b[1]))
-            cx0, cx1 = sorted((c[0], d[0]))
-            cy0, cy1 = sorted((c[1], d[1]))
-            if (max(ax0, cx0) <= min(ax1, cx1) + .01
-                    and max(ay0, cy0) <= min(ay1, cy1) + .01):
+            short = _collinear_overlap(a, b, c, d)
+            if not short:
+                for p in (a, b):
+                    if _point_on_open_segment(p, c, d):
+                        short = True
+                        break
+                for p in (c, d):
+                    if _point_on_open_segment(p, a, b):
+                        short = True
+                        break
+            if short:
                 issues.append(VisualIssue(
                     "wire_crosses_foreign_wire",
-                    f"wire for {net} crosses wire for {other_net}",
+                    f"wire for {net} touches wire for {other_net}",
                 ))
 
     return issues

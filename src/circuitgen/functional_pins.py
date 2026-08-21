@@ -130,8 +130,10 @@ def check_functional_pin_completeness(
     issues: list[ValidationIssue] = []
     pin_net = _pin_net_map(ir)
     nc = {(r, str(p)) for r, p in ir.nc_pins}
+    from .erc import _recorded_controller_refs
+
     controllers = {
-        ref for ref in ir.controller_refs
+        ref for ref in _recorded_controller_refs(ir)
         if ref in ir.components and ir.components[ref].lib_id in symbols
     }
     protocols = _protocols_by_net(ir)

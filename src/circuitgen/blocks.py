@@ -147,6 +147,8 @@ def instantiate_blocks(
 def validate_plan(plan: list[dict], spec: dict) -> tuple[list[dict], list[str]]:
     """Deterministic plan sanity: every spec role must belong to a block;
     repeated roles are isolated and omitted roles are restored."""
+    from .interface_contracts import reconcile_plan_interfaces
+
     notes = []
     support_words = ("decoupl", "capacitor", "pullup", "pull-up", "filter resistor")
     kept = []
@@ -360,6 +362,7 @@ def validate_plan(plan: list[dict], spec: dict) -> tuple[list[dict], list[str]]:
             b["id"] = b["id"] + "X"
             notes.append(f"duplicate block id renamed to {b['id']}")
         seen_ids.add(b["id"])
+    notes.extend(reconcile_plan_interfaces(plan, spec))
     return plan, notes
 
 

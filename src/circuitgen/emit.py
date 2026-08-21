@@ -107,6 +107,21 @@ def route_metrics(ir: CircuitIR, symbols: dict[str, SymbolDef], plan: EmitPlan) 
         if not contract.required or contract.peer != "controller":
             continue
         critical_protocols.setdefault(contract.net, set()).add(contract.protocol)
+    # Legacy IR (no typed contracts): still expose I2C/SPI buses as critical
+    # for metrics and local placement repair — pin membership, not net names.
+    if not critical_protocols:
+        from .erc import is_i2c_net, is_spi_net
+        from .interface_contracts import bus_line_rank
+
+        for net in ir.nets:
+            if net.name not in signal:
+                continue
+            if is_i2c_net(ir, symbols, net):
+                critical_protocols.setdefault(net.name, set()).add("i2c")
+            elif is_spi_net(ir, symbols, net):
+                critical_protocols.setdefault(net.name, set()).add("spi")
+            elif bus_line_rank(ir, net.name, symbols) == 3:
+                critical_protocols.setdefault(net.name, set()).add("spi")
     critical = sorted(set(signal) & set(critical_protocols))
     critical_stubbed = sorted(set(critical) & set(stubbed))
     failure_details = {
@@ -321,6 +336,16 @@ def _seg_clear(a, b, pin_pts, boxes, skip_refs, skip_pins) -> bool:
     return True
 
 
+def _segment_orientation(
+    a: tuple[float, float], b: tuple[float, float]
+) -> str:
+    return "V" if abs(a[0] - b[0]) < 0.01 else "H"
+
+
+def _cell_key(point: tuple[float, float]) -> tuple[float, float]:
+    return (round(point[0], 4), round(point[1], 4))
+
+
 @dataclass(frozen=True)
 class RouteBlockage:
     """A shared occupancy/geometry validator refusal."""
@@ -337,12 +362,39 @@ class RoutingContext:
     tree candidates all pass through ``validate_segments`` before emission,
     so no mode can bypass foreign-pin, potential-stub, symbol-body, or prior
     wire occupancy checks.
+
+    Wire occupancy is orientation-aware: a cell may hold one net's horizontal
+    run and another's vertical run (KiCad does not join crossed wires without
+    a junction). Same-orientation reuse, or any vertex on a foreign wire, is
+    refused.
     """
 
     pin_points: dict[tuple[str, str], tuple[float, float]]
     symbol_boxes: dict[str, list[tuple[float, float, float, float]]]
     stub_corridors: dict[tuple[str, str], list[tuple[float, float]]]
-    routed_cells: dict[tuple[float, float], str] = field(default_factory=dict)
+    # cell -> net -> orientations claimed on that cell
+    routed_cells: dict[tuple[float, float], dict[str, set[str]]] = field(
+        default_factory=dict
+    )
+    routed_endpoints: dict[tuple[float, float], set[str]] = field(
+        default_factory=dict
+    )
+
+    def __post_init__(self) -> None:
+        # Tests may pass the legacy cell->net_name map; treat that as blocking
+        # both orientations so same-corridor occupancy still refuses.
+        normalized: dict[tuple[float, float], dict[str, set[str]]] = {}
+        for cell, val in self.routed_cells.items():
+            if isinstance(val, str):
+                normalized[cell] = {val: {"H", "V"}}
+            else:
+                normalized[cell] = {
+                    owner: (
+                        set(orients) if not isinstance(orients, str) else {orients}
+                    )
+                    for owner, orients in val.items()
+                }
+        self.routed_cells = normalized
 
     def foreign_points(
         self, own_pins: set[tuple[str, str]]
@@ -356,16 +408,35 @@ class RoutingContext:
         )
         return points
 
+    def foreign_wire_occupancy(
+        self, net_name: str
+    ) -> tuple[dict[tuple[float, float], set[str]], set[tuple[float, float]]]:
+        """Oriented cells and endpoints claimed by nets other than ``net_name``."""
+        oriented: dict[tuple[float, float], set[str]] = {}
+        for cell, owners in self.routed_cells.items():
+            for owner, orients in owners.items():
+                if owner == net_name:
+                    continue
+                oriented.setdefault(cell, set()).update(orients)
+        endpoints = {
+            cell
+            for cell, owners in self.routed_endpoints.items()
+            if any(o != net_name for o in owners)
+        }
+        return oriented, endpoints
+
     def occupied_points(self, net_name: str) -> list[tuple[float, float]]:
+        """Flat cell list (any orientation) for escape / occupancy diagnosis."""
         return [
-            point for point, owner in self.routed_cells.items()
-            if owner != net_name
+            point for point, owners in self.routed_cells.items()
+            if any(owner != net_name for owner in owners)
         ]
 
     def blocked_points(
         self, own_pins: set[tuple[str, str]], net_name: str
     ) -> list[tuple[float, float]]:
-        return self.foreign_points(own_pins) + self.occupied_points(net_name)
+        # Pins/corridors only — wire cells use oriented_occupancy in the router.
+        return self.foreign_points(own_pins)
 
     def escape_blockage(
         self,
@@ -376,7 +447,8 @@ class RoutingContext:
         escape_keys = {(round(x, 2), round(y, 2)) for x, y in escapes}
         occupied = {
             (round(x, 2), round(y, 2)): owner
-            for (x, y), owner in self.routed_cells.items()
+            for (x, y), owners in self.routed_cells.items()
+            for owner in owners
             if owner != net_name
         }
         blockers = {occupied[key] for key in escape_keys if key in occupied}
@@ -423,12 +495,26 @@ class RoutingContext:
         if route_cells & foreign_corridor_cells:
             return RouteBlockage("foreign_geometry")
 
-        blockers = {
-            owner
-            for cell in route_cells
-            if (owner := self.routed_cells.get(cell)) is not None
-            and owner != net_name
-        }
+        our_endpoints = {_cell_key(p) for a, b in segments for p in (a, b)}
+        blockers: set[str] = set()
+        for ep in our_endpoints:
+            for owner in self.routed_cells.get(ep, {}):
+                if owner != net_name:
+                    blockers.add(owner)
+            for owner in self.routed_endpoints.get(ep, ()):
+                if owner != net_name:
+                    blockers.add(owner)
+        for a, b in segments:
+            orient = _segment_orientation(a, b)
+            for cell in _segment_cells(a, b):
+                for owner, orients in self.routed_cells.get(cell, {}).items():
+                    if owner == net_name:
+                        continue
+                    if orient in orients:
+                        blockers.add(owner)
+                for owner in self.routed_endpoints.get(cell, ()):
+                    if owner != net_name and cell not in our_endpoints:
+                        blockers.add(owner)
         if blockers:
             return RouteBlockage("occupied_by_net", tuple(sorted(blockers)))
         return None
@@ -444,8 +530,8 @@ class RoutingContext:
         return tuple(sorted({
             owner
             for cell in cells
-            if (owner := self.routed_cells.get(cell)) is not None
-            and owner != net_name
+            for owner in self.routed_cells.get(cell, {})
+            if owner != net_name
         }))
 
     def claim_segments(
@@ -456,8 +542,35 @@ class RoutingContext:
         net_name: str,
     ) -> None:
         for a, b in segments:
+            orient = _segment_orientation(a, b)
             for cell in _segment_cells(a, b):
-                self.routed_cells.setdefault(cell, net_name)
+                self.routed_cells.setdefault(cell, {}).setdefault(
+                    net_name, set()
+                ).add(orient)
+            for ep in (a, b):
+                self.routed_endpoints.setdefault(_cell_key(ep), set()).add(
+                    net_name
+                )
+
+    def release_net(self, net_name: str) -> None:
+        """Drop cells claimed by ``net_name`` so a higher-priority net can retry."""
+        cleaned: dict[tuple[float, float], dict[str, set[str]]] = {}
+        for cell, owners in self.routed_cells.items():
+            kept = {
+                owner: set(orients)
+                for owner, orients in owners.items()
+                if owner != net_name
+            }
+            if kept:
+                cleaned[cell] = kept
+        self.routed_cells = cleaned
+        self.routed_endpoints = {
+            cell: {owner for owner in owners if owner != net_name}
+            for cell, owners in self.routed_endpoints.items()
+            if any(owner != net_name for owner in owners)
+        }
+
+
 
 
 def _try_l_wire(ir, symbols, placements, net, context: RoutingContext):
@@ -504,7 +617,7 @@ def _try_l_wire(ir, symbols, placements, net, context: RoutingContext):
     return None
 
 
-TREE_MAX_NODES = 8
+TREE_MAX_NODES = 16
 
 
 def _stub_corridors(ir, symbols, placements):
@@ -588,9 +701,9 @@ def _try_tree_wire(ir, symbols, placements, net, context: RoutingContext):
     Terminals enter the grid via a one-cell escape segment along each pin's
     outward direction, so wires always leave pins cleanly. Obstacles: every
     symbol body, every foreign pin POINT (touching one connects in KiCad),
-    every foreign potential-stub corridor, and every cell of previously
-    routed nets (v1 forbids even legal perpendicular crossings — a refused
-    route falls back to stubs, never a wrong wire). Returns (segments,
+    every foreign potential-stub corridor, and prior wire cells with
+    orientation-aware occupancy (same-orientation reuse refused; orthogonal
+    crossings allowed when the path goes straight through). Returns (segments,
     junctions, label_at), or a structured refusal reason."""
     from .router import route_multi_terminal
 
@@ -629,12 +742,15 @@ def _try_tree_wire(ir, symbols, placements, net, context: RoutingContext):
         box for ref_boxes in context.symbol_boxes.values() for box in ref_boxes
     ]
     foreign_geometry = context.foreign_points(own_pins)
+    oriented, wire_endpoints = context.foreign_wire_occupancy(net.name)
     tree = route_multi_terminal(
         escapes,
         obstacles,
         grid=GRID,
         clearance=GRID,
-        blocked_points=context.blocked_points(own_pins, net.name),
+        blocked_points=foreign_geometry,
+        oriented_occupancy=oriented,
+        occupied_endpoints=wire_endpoints,
     )
     if tree is None:
         # A failed search may be caused by the one-pass occupancy policy or
@@ -774,6 +890,222 @@ def fit_paper(
     return paper, (snap(dx), snap(dy))
 
 
+RIPUP_MAX_DEPTH = 2
+
+
+def _net_wire_tag(net_name: str, tag: str) -> bool:
+    return tag == f"net.{net_name}" or tag.startswith(f"net.{net_name}.")
+
+
+def _unroute_solid_net(plan: EmitPlan, context: RoutingContext, net_name: str) -> None:
+    """Remove a previously claimed direct/L/tree route so another net can retry."""
+    removed = [(a, b) for a, b, tag in plan.wires if _net_wire_tag(net_name, tag)]
+    removed_points = {p for seg in removed for p in seg}
+    plan.wires = [
+        wire for wire in plan.wires if not _net_wire_tag(net_name, wire[2])
+    ]
+    plan.labels = [lab for lab in plan.labels if lab[0] != net_name]
+    plan.junctions = [
+        pt for pt in plan.junctions if pt not in removed_points
+    ]
+    plan.net_routes.pop(net_name, None)
+    plan.route_failures.pop(net_name, None)
+    context.release_net(net_name)
+
+
+def _try_claim_solid_route(
+    ir: CircuitIR,
+    symbols: dict[str, SymbolDef],
+    placements: dict[str, dict[int, Placement]],
+    net,
+    plan: EmitPlan,
+    context: RoutingContext,
+) -> RouteFailure | None:
+    """Try direct → L → tree. On success claim cells and return None."""
+    direct = _try_direct_wire(ir, symbols, placements, net)
+    if direct is not None:
+        (x1, y1), (x2, y2) = direct
+        r1, p1 = net.nodes[0]
+        r2, p2 = net.nodes[1]
+        if context.validate_segments(
+            [((x1, y1), (x2, y2))],
+            own_refs={r1, r2},
+            own_pins={(r1, str(p1)), (r2, str(p2))},
+            net_name=net.name,
+        ) is not None:
+            direct = None
+    if direct is not None:
+        (x1, y1), (x2, y2) = direct
+        plan.wires.append(((x1, y1), (x2, y2), f"net.{net.name}"))
+        plan.net_routes[net.name] = "direct"
+        context.claim_segments([((x1, y1), (x2, y2))], net.name)
+        rot, justify = _label_orientation(x2 - x1, y2 - y1)
+        plan.labels.append((net.name, x1, y1, rot, justify))
+        return None
+
+    l_route = _try_l_wire(ir, symbols, placements, net, context)
+    if l_route is not None:
+        a, corner, b = l_route
+        plan.wires.append((a, corner, f"net.{net.name}.a"))
+        plan.wires.append((corner, b, f"net.{net.name}.b"))
+        plan.net_routes[net.name] = "l"
+        rot, justify = _label_orientation(corner[0] - a[0], corner[1] - a[1])
+        plan.labels.append((net.name, a[0], a[1], rot, justify))
+        context.claim_segments([(a, corner), (corner, b)], net.name)
+        return None
+
+    tree_attempt = _try_tree_wire(ir, symbols, placements, net, context)
+    if tree_attempt.route is not None:
+        segments, junctions, (label_at, label_dir) = tree_attempt.route
+        for i, (a, b) in enumerate(segments):
+            plan.wires.append((a, b, f"net.{net.name}.t{i}"))
+        context.claim_segments(segments, net.name)
+        plan.junctions.extend(junctions)
+        plan.net_routes[net.name] = "tree"
+        rot, justify = _label_orientation(*label_dir)
+        plan.labels.append((net.name, label_at[0], label_at[1], rot, justify))
+        return None
+    return tree_attempt.failure
+
+
+def _emit_stub_fallback(
+    ir: CircuitIR,
+    symbols: dict[str, SymbolDef],
+    placements: dict[str, dict[int, Placement]],
+    net,
+    plan: EmitPlan,
+    seen_labels: set[tuple[str, float, float]],
+    failure: RouteFailure | None,
+) -> None:
+    if failure is not None:
+        plan.route_failures[net.name] = failure
+    plan.net_routes[net.name] = "stubs"
+    net_wire_start = len(plan.wires)
+    for ref, pin_no in net.nodes:
+        comp = ir.components[ref]
+        sym = symbols[comp.lib_id]
+        pin = sym.pin(pin_no)
+        units_map = placements[ref]
+        place = units_map[_instance_unit(pin, units_map, ref)]
+        start, end = pin_stub_end(place, pin, STUB_LEN)
+        if sym.is_power and any(
+            tag.startswith(f"{other_ref}.")
+            and other_ref != ref
+            and (
+                min(a[0], b[0]) - .01 <= start[0] <= max(a[0], b[0]) + .01
+                and min(a[1], b[1]) - .01 <= start[1] <= max(a[1], b[1]) + .01
+                and abs((b[0] - a[0]) * (start[1] - a[1])
+                        - (b[1] - a[1]) * (start[0] - a[0])) < .02
+            )
+            for a, b, tag in plan.wires[net_wire_start:]
+            for other_ref in [tag.rpartition(".")[0]]
+        ):
+            continue
+        plan.wires.append((start, end, f"{ref}.{pin_no}"))
+        dx, dy = pin_outward_dir(place, pin)
+        rot, justify = _label_orientation(dx, dy)
+        key = (net.name, end[0], end[1])
+        if key not in seen_labels:
+            seen_labels.add(key)
+            plan.labels.append((net.name, end[0], end[1], rot, justify))
+
+
+def _rip_up_blockers_and_retry(
+    ir: CircuitIR,
+    symbols: dict[str, SymbolDef],
+    placements: dict[str, dict[int, Placement]],
+    net,
+    plan: EmitPlan,
+    context: RoutingContext,
+    failure: RouteFailure,
+    depth: int,
+) -> RouteFailure | None:
+    """If ``occupied_by_net`` blockers have lower priority, rip them and retry.
+
+    Depth is capped so a chain of mutual blockers cannot explode the search.
+    Ripped nets are re-routed afterward; they may fall back to stubs.
+    """
+    from .interface_contracts import routing_net_priority
+
+    if failure.reason != "occupied_by_net" or depth >= RIPUP_MAX_DEPTH:
+        return failure
+    target_key = routing_net_priority(ir, net.name, symbols)
+    ripable = []
+    equal_tier_swap: list[str] = []
+    for blocker in failure.blocker_nets:
+        if plan.net_routes.get(blocker) not in ("direct", "l", "tree"):
+            continue
+        blocker_key = routing_net_priority(ir, blocker, symbols)
+        # Higher priority (lower key) always wins. Same bus tier may rip a
+        # worse line (e.g. SCK reclaiming cells MOSI claimed first by name).
+        if blocker_key > target_key or (
+            blocker_key[0] == target_key[0] and target_key[1] < blocker_key[1]
+        ):
+            ripable.append(blocker)
+        elif blocker_key[0] == target_key[0]:
+            # Same overall tier: try a swap only if BOTH nets can then solid-route.
+            equal_tier_swap.append(blocker)
+    if not ripable and not equal_tier_swap:
+        return failure
+
+    if ripable:
+        for blocker in ripable:
+            _unroute_solid_net(plan, context, blocker)
+        retry = _try_claim_solid_route(
+            ir, symbols, placements, net, plan, context
+        )
+        if retry is None:
+            by_name = {n.name: n for n in ir.nets}
+            for blocker in ripable:
+                bnet = by_name.get(blocker)
+                if bnet is None:
+                    continue
+                bfail = _try_claim_solid_route(
+                    ir, symbols, placements, bnet, plan, context
+                )
+                if bfail is not None:
+                    seen: set[tuple[str, float, float]] = set()
+                    _emit_stub_fallback(
+                        ir, symbols, placements, bnet, plan, seen, bfail
+                    )
+            return None
+        for blocker in ripable:
+            bnet = next((n for n in ir.nets if n.name == blocker), None)
+            if bnet is None:
+                continue
+            _try_claim_solid_route(ir, symbols, placements, bnet, plan, context)
+        # fall through to equal-tier swap if still needed
+
+    if plan.net_routes.get(net.name) in ("direct", "l", "tree"):
+        return None
+
+    # Equal-tier swap: only keep when both target and blocker solid-route.
+    for blocker in equal_tier_swap:
+        if plan.net_routes.get(blocker) not in ("direct", "l", "tree"):
+            continue
+        _unroute_solid_net(plan, context, blocker)
+        retry = _try_claim_solid_route(
+            ir, symbols, placements, net, plan, context
+        )
+        bnet = next((n for n in ir.nets if n.name == blocker), None)
+        if retry is None and bnet is not None:
+            bfail = _try_claim_solid_route(
+                ir, symbols, placements, bnet, plan, context
+            )
+            if bfail is None:
+                return None  # both solid
+            # Target worked but blocker did not — restore original preference.
+            _unroute_solid_net(plan, context, net.name)
+            _try_claim_solid_route(ir, symbols, placements, bnet, plan, context)
+        else:
+            # Target still blocked — put blocker back.
+            if bnet is not None:
+                _try_claim_solid_route(
+                    ir, symbols, placements, bnet, plan, context
+                )
+    return failure
+
+
 def build_emit_plan(
     ir: CircuitIR,
     symbols: dict[str, SymbolDef],
@@ -787,90 +1119,25 @@ def build_emit_plan(
     corridors = _stub_corridors(ir, symbols, placements)
     context = RoutingContext(pin_pts, boxes, corridors)
 
-    for net in ir.nets:
-        net_wire_start = len(plan.wires)
-        direct = _try_direct_wire(ir, symbols, placements, net)
-        if direct is not None:
-            (x1, y1), (x2, y2) = direct
-            r1, p1 = net.nodes[0]
-            r2, p2 = net.nodes[1]
-            if context.validate_segments(
-                [((x1, y1), (x2, y2))],
-                own_refs={r1, r2},
-                own_pins={(r1, str(p1)), (r2, str(p2))},
-                net_name=net.name,
-            ) is not None:
-                direct = None  # something sits between the facing pins
-        if direct is not None:
-            (x1, y1), (x2, y2) = direct
-            plan.wires.append(((x1, y1), (x2, y2), f"net.{net.name}"))
-            plan.net_routes[net.name] = "direct"
-            context.claim_segments([((x1, y1), (x2, y2))], net.name)
-            # name label on the wire itself — without it KiCad auto-names
-            # the net (Net-(D1-A)) and the by-name round-trip loses the IR
-            # name (caught by the oracle on first run)
-            rot, justify = _label_orientation(x2 - x1, y2 - y1)
-            plan.labels.append((net.name, x1, y1, rot, justify))
-            continue
-        l_route = _try_l_wire(ir, symbols, placements, net, context)
-        if l_route is not None:
-            a, corner, b = l_route
-            plan.wires.append((a, corner, f"net.{net.name}.a"))
-            plan.wires.append((corner, b, f"net.{net.name}.b"))
-            plan.net_routes[net.name] = "l"
-            rot, justify = _label_orientation(corner[0] - a[0], corner[1] - a[1])
-            plan.labels.append((net.name, a[0], a[1], rot, justify))
-            context.claim_segments([(a, corner), (corner, b)], net.name)
-            continue
-        tree_attempt = _try_tree_wire(
-            ir, symbols, placements, net, context
+    from .interface_contracts import routing_net_priority
+
+    ordered_nets = sorted(
+        ir.nets, key=lambda n: routing_net_priority(ir, n.name, symbols)
+    )
+    for net in ordered_nets:
+        failure = _try_claim_solid_route(
+            ir, symbols, placements, net, plan, context
         )
-        if tree_attempt.route is not None:
-            segments, junctions, (label_at, label_dir) = tree_attempt.route
-            for i, (a, b) in enumerate(segments):
-                plan.wires.append((a, b, f"net.{net.name}.t{i}"))
-            context.claim_segments(segments, net.name)
-            plan.junctions.extend(junctions)
-            plan.net_routes[net.name] = "tree"
-            rot, justify = _label_orientation(*label_dir)
-            plan.labels.append((net.name, label_at[0], label_at[1], rot, justify))
+        if failure is None:
             continue
-        if tree_attempt.failure is not None:
-            plan.route_failures[net.name] = tree_attempt.failure
-        plan.net_routes[net.name] = "stubs"
-        for ref, pin_no in net.nodes:
-            comp = ir.components[ref]
-            sym = symbols[comp.lib_id]
-            pin = sym.pin(pin_no)
-            units_map = placements[ref]
-            place = units_map[_instance_unit(pin, units_map, ref)]
-            start, end = pin_stub_end(place, pin, STUB_LEN)
-            # A power symbol deliberately placed on an already-emitted real
-            # member stub is electrically connected at that point. Emitting
-            # another stub+label from it creates the floating-looking vertical
-            # VCC/GND/PWR_FLAG text stack the placement was meant to remove.
-            if sym.is_power and any(
-                tag.startswith(f"{other_ref}.")
-                and other_ref != ref
-                and (
-                    min(a[0], b[0]) - .01 <= start[0] <= max(a[0], b[0]) + .01
-                    and min(a[1], b[1]) - .01 <= start[1] <= max(a[1], b[1]) + .01
-                    and abs((b[0] - a[0]) * (start[1] - a[1])
-                            - (b[1] - a[1]) * (start[0] - a[0])) < .02
-                )
-                for a, b, tag in plan.wires[net_wire_start:]
-                for other_ref in [tag.rpartition(".")[0]]
-            ):
-                continue
-            plan.wires.append((start, end, f"{ref}.{pin_no}"))
-            dx, dy = pin_outward_dir(place, pin)
-            rot, justify = _label_orientation(dx, dy)
-            # Two stubs of one net may end on the same point (facing pins);
-            # a second identical label there would duplicate text AND uuid.
-            key = (net.name, end[0], end[1])
-            if key not in seen_labels:
-                seen_labels.add(key)
-                plan.labels.append((net.name, end[0], end[1], rot, justify))
+        failure = _rip_up_blockers_and_retry(
+            ir, symbols, placements, net, plan, context, failure, depth=0
+        )
+        if failure is None:
+            continue
+        _emit_stub_fallback(
+            ir, symbols, placements, net, plan, seen_labels, failure
+        )
     for ref, pin_no in ir.nc_pins:
         comp = ir.components[ref]
         pin = symbols[comp.lib_id].pin(pin_no)

@@ -89,14 +89,45 @@ REQUIREMENT_SPEC = {
                 "additionalProperties": False,
                 "properties": {
                     "name": {"type": "string", "maxLength": 24,
-                             "description": "net name, e.g. TX, RX, SDA, SCL, CANH"},
+                             "description": "net name, e.g. TX, RX, SDA, SCL, MOTOR_PWM"},
                     "purpose": {"type": "string", "maxLength": 80},
+                    "peer": {
+                        "type": "string",
+                        "enum": ["controller", "external", "block"],
+                        "description": (
+                            "controller: must reach the on-board MCU/CPU; "
+                            "external: leaves the board through a connector; "
+                            "block: another functional block is the peer. "
+                            "Omit only for board-exposed nets (defaults to external)."
+                        ),
+                    },
+                    "protocol": {
+                        "type": "string",
+                        "enum": ["i2c", "spi", "uart", "can", "generic_control", "other"],
+                        "description": (
+                            "Typed interface kind. PWM/DIR/FAULT/ENABLE/INT are "
+                            "generic_control — never invent from a part nickname."
+                        ),
+                    },
+                    "required": {
+                        "type": "boolean",
+                        "description": "whether the peer endpoint is required; default true",
+                    },
+                    "owner_role": {
+                        "type": "string",
+                        "maxLength": 32,
+                        "description": (
+                            "parts_needed.role that owns this interface on the "
+                            "peripheral side (e.g. motor_driver for MOTOR_PWM)"
+                        ),
+                    },
                 },
             },
             "description": (
-                "Interface SIGNALS the board must expose. A signal is a net, not a "
-                "part to buy: TX, RX, SDA, an interrupt line and a chip select all "
-                "belong here and NEVER in parts_needed."
+                "Typed interface nets for the design — not BOM items. Every net "
+                "that must reach the MCU (PWM, FAULT, SDA, CS, …) or leave the "
+                "board (TX, CANH, …) belongs here with peer/protocol/required. "
+                "Never put these in parts_needed."
             ),
         },
         "netlist": {

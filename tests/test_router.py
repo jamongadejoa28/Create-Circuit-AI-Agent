@@ -57,7 +57,7 @@ def test_route_metrics_exposes_critical_stub_net_names():
 
 
 def test_emit_plan_records_terminal_limit_instead_of_bare_stub_fallback():
-    from circuitgen.emit import RouteFailure, build_emit_plan
+    from circuitgen.emit import RouteFailure, TREE_MAX_NODES, build_emit_plan
     from circuitgen.geometry import Placement
     from circuitgen.ir import CircuitIR, Component, PinDef, SymbolDef
     from circuitgen.pins import PinType
@@ -68,7 +68,7 @@ def test_emit_plan_records_terminal_limit_instead_of_bare_stub_fallback():
     ])
     placements = {}
     nodes = []
-    for index in range(9):
+    for index in range(TREE_MAX_NODES + 1):
         ref = f"U{index + 1}"
         ir.add(Component(ref, symbol.lib_id, "pin"))
         placements[ref] = {1: Placement(20.32 + index * 10.16, 20.32)}
@@ -81,6 +81,36 @@ def test_emit_plan_records_terminal_limit_instead_of_bare_stub_fallback():
     assert plan.route_failures["BUS"] == RouteFailure(
         "tree", "terminal_limit"
     )
+
+
+def test_nine_terminal_bus_trees_when_under_raised_limit():
+    """Measured: bare route_multi_terminal handles 24 terminals in ~1ms.
+
+    TREE_MAX_NODES was 8 and forced SDA/SCL stubs via terminal_limit. With
+    pin tips outside symbol bodies the emit tree succeeds at 9 terminals;
+    trunk router is deferred until open-grid search is actually the bottleneck.
+    """
+    from circuitgen.emit import build_emit_plan
+    from circuitgen.geometry import Placement
+    from circuitgen.ir import CircuitIR, Component, PinDef, SymbolDef
+    from circuitgen.pins import PinType
+
+    ir = CircuitIR("bus9")
+    symbol = SymbolDef("Test:Pin", "", [
+        PinDef("1", "IO", PinType.BIDIR, 5.08, 0, 180, 2.54),
+    ])
+    placements = {}
+    nodes = []
+    for index in range(9):
+        ref = f"U{index + 1}"
+        ir.add(Component(ref, symbol.lib_id, "pin"))
+        placements[ref] = {1: Placement(30.48 + index * 15.24, 50.8)}
+        nodes.append((ref, "1"))
+    ir.connect("BUS", *nodes)
+
+    plan = build_emit_plan(ir, {symbol.lib_id: symbol}, placements)
+    assert plan.net_routes["BUS"] == "tree"
+    assert "BUS" not in plan.route_failures
 
 
 def test_tree_route_reports_the_net_occupying_a_terminal_escape():
@@ -121,7 +151,8 @@ def test_tree_route_reports_the_net_occupying_a_terminal_escape():
     assert attempt.failure.blocker_nets == ("EARLY_NET",)
 
 
-def test_later_direct_candidate_cannot_cross_an_existing_net():
+def test_orthogonal_nets_may_cross_without_sharing_a_vertex():
+    """KiCad-legal mid-segment crossings are solid routes, not stubs."""
     from circuitgen.emit import build_emit_plan
     from circuitgen.geometry import Placement
     from circuitgen.ir import CircuitIR, Component, PinDef, SymbolDef
@@ -150,13 +181,40 @@ def test_later_direct_candidate_cannot_cross_an_existing_net():
     plan = build_emit_plan(ir, symbols, placements)
 
     assert plan.net_routes["HORIZONTAL"] == "direct"
-    assert plan.net_routes["VERTICAL"] == "stubs"
-    assert plan.route_failures["VERTICAL"].reason == "occupied_by_net"
-    assert plan.route_failures["VERTICAL"].blocker_nets == ("HORIZONTAL",)
+    assert plan.net_routes["VERTICAL"] == "direct"
+    assert not plan.route_failures
     assert not [
         issue for issue in check_routing(ir, symbols, placements, plan)
         if issue.rule == "wire_crosses_foreign_wire"
     ]
+
+
+def test_oriented_occupancy_blocks_parallel_allows_orthogonal_cross():
+    from circuitgen.emit import RoutingContext
+
+    ctx = RoutingContext({}, {}, {})
+    ctx.claim_segments([((0.0, 0.0), (20.32, 0.0))], "A")
+    parallel = ctx.validate_segments(
+        [((0.0, 0.0), (20.32, 0.0))],
+        own_refs=set(),
+        own_pins=set(),
+        net_name="B",
+    )
+    assert parallel is not None and parallel.reason == "occupied_by_net"
+    assert parallel.blocker_nets == ("A",)
+    assert ctx.validate_segments(
+        [((10.16, -10.16), (10.16, 10.16))],
+        own_refs=set(),
+        own_pins=set(),
+        net_name="B",
+    ) is None
+    ctx.release_net("A")
+    assert ctx.validate_segments(
+        [((0.0, 0.0), (20.32, 0.0))],
+        own_refs=set(),
+        own_pins=set(),
+        net_name="B",
+    ) is None
 
 
 def test_l_route_uses_the_same_existing_wire_occupancy():

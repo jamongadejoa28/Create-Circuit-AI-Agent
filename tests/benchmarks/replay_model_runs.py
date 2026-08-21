@@ -71,7 +71,7 @@ def main() -> int:
         case_dir = args.output / _safe_case_name(path, index)
         try:
             payload, ir = load_saved_ir(path)
-            result = generate(ir, case_dir, parts_index=parts)
+            result = generate(ir, case_dir, parts_index=parts, write_route_debug=True)
             environment = payload.get("environment") or {}
             previews = [str(item) for item in result.preview_pngs]
             row = {
@@ -81,6 +81,10 @@ def main() -> int:
                 "source_model": environment.get("model"),
                 "schematic": str(result.sch_path) if result.sch_path else None,
                 "preview_pngs": previews,
+                "route_debug_svg": (
+                    str(result.route_debug_svg) if result.route_debug_svg else None
+                ),
+                "route_place_notes": list(result.route_place_notes),
                 "visual_review_status": (
                     "not_reviewed" if previews else "preview_unavailable"
                 ),
