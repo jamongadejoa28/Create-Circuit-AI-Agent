@@ -2,7 +2,7 @@
 
 heuristic_place produces the canonical {ref: {unit: Placement}} output:
 
-- heuristic_place: Phase 3 label-density mitigation (plan §7.5) — the
+- heuristic_place: label-density mitigation — the
   connection strategy stays stub+label (electrically placement-
   independent), but readability follows the conventions the knowledge
   base itself prescribes (schematic-flow-conventions entry / PEFI §7.2.1):
@@ -516,7 +516,7 @@ def align_chains(
     Returns a rigid-cluster map {ref: cluster_id}: an aligned satellite and
     its anchor share an id, and any later pass that nudges one member MUST
     move the whole cluster — a lone nudge breaks the pin-facing geometry
-    (measured on golden2: the label-dedup loop moved the STM32 +7.62 mm
+    (measured on an MCU support-board regression: label dedup moved the STM32 +7.62 mm
     after alignment, leaving the BOOT0 resistor's pins inside its pin
     field: silent stacked-pin merges + pin_to_pin ERC).
     """
@@ -968,7 +968,7 @@ def heuristic_place(
     # cannot see this. Nudge one whole symbol by one grid until every label
     # endpoint coordinate belongs to only one net. Chain-aligned parts form
     # rigid bodies with their anchor: nudging only one member would leave
-    # satellite pins inside the anchor's pin field (measured on golden2).
+    # satellite pins inside the anchor's pin field (measured on an MCU support board).
     for _ in range(96):
         endpoints: dict[tuple[float, float], list[tuple[str, str]]] = {}
         for net in ir.nets:

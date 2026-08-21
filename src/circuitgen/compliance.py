@@ -642,7 +642,7 @@ def check_connector_geometry(
             requests.append((ref, geometry))
     # Geometry comes from the structured spec (including quantity). Scanning
     # the raw prompt for "header"/"connector" windows is the same shape as
-    # apply_when substring matching and is not used.
+    # prompt-substring matching and is not used.
 
     used: set[str] = set()
     records: list[dict] = []
@@ -794,8 +794,9 @@ def check_requested_rail_reach(
     non-ground rail present on the board?". Empty rails means nothing to
     measure.
 
-    Ground reach uses ``is_ground_pin`` only — ``V-``/``VEE`` are supply pins
-    per ``netnames.is_supply_pin`` and need a device rule, not a name list.
+    Ground reach normally uses ``is_ground_pin``. ``V-``/``VEE`` are accepted
+    on ground only for a single-supply requirement; if a negative rail is
+    requested they must reach that rail instead.
     """
     raw = (spec or {}).get("power", {}).get("rails") or []
     if not raw:
@@ -814,6 +815,12 @@ def check_requested_rail_reach(
     ground_rails = [r["name"] for r in requested if is_ground(r["name"])]
     supply_cf = {n.casefold() for n in supply_rails}
     ground_cf = {n.casefold() for n in ground_rails}
+    negative_supply_requested = any(
+        str(item["name"]).strip().startswith("-")
+        or str(item.get("voltage") or "").strip().startswith("-")
+        for item in requested
+        if not is_ground(item["name"])
+    )
 
     pin_net: dict[tuple[str, str], str] = {}
     nets_by_name = {net.name: net for net in ir.nets}
@@ -881,7 +888,12 @@ def check_requested_rail_reach(
                 net_cf in ground_cf or bool(power_on_net & ground_cf)
                 or kinds.get(net_name) == "gnd"
             )
-            if is_ground_pin(pin_label):
+            single_supply_return = (
+                not negative_supply_requested
+                and pin_label.strip().upper().replace("~", "") in {"V-", "VEE"}
+            )
+            ground_pin = is_ground_pin(pin_label) or single_supply_return
+            if ground_pin:
                 on_requested = reaches_ground
             else:
                 on_requested = reaches_supply
@@ -900,7 +912,7 @@ def check_requested_rail_reach(
 
             record["reason"] = "not_requested_rail"
             records.append(record)
-            if is_ground_pin(pin_label):
+            if ground_pin:
                 expected = ground_rails + supply_rails
                 if not expected:
                     continue

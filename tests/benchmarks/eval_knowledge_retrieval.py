@@ -14,15 +14,34 @@ DEFAULT_CASES = ROOT / "tests" / "eval" / "knowledge_retrieval.json"
 
 
 def evaluate(index: KnowledgeIndex, cases: list[dict], top_k: int) -> tuple[dict, list[dict]]:
+    available = {row[0] for row in index.con.execute("SELECT id FROM entries")}
+    missing = {
+        case["id"]: sorted(set(case.get("relevant", [])) - available)
+        for case in cases
+        if set(case.get("relevant", [])) - available
+    }
+    if missing:
+        raise ValueError(
+            "retrieval evaluation names knowledge IDs absent from the index: "
+            + json.dumps(missing, ensure_ascii=False, sort_keys=True)
+        )
     rows = []
     reciprocal_ranks = []
     recall_scores = []
-    negative_correct = []
+    probes = 0
     for case in cases:
         hits = index.search_knowledge(case["query"], top_k, include_score=True)
         ids = [h["id"] for h in hits]
         relevant = set(case["relevant"])
-        if relevant:
+        if case.get("kind") == "coverage_probe":
+            # An empty result is not automatically correct: it may mean the
+            # corpus lacks an important fact. Keep these as visible coverage
+            # observations, outside retrieval quality scores.
+            probes += 1
+            recall = None
+            rr = None
+            passed = None
+        elif relevant:
             found = relevant.intersection(ids)
             recall = len(found) / len(relevant)
             ranks = [ids.index(item) + 1 for item in found]
@@ -31,10 +50,10 @@ def evaluate(index: KnowledgeIndex, cases: list[dict], top_k: int) -> tuple[dict
             reciprocal_ranks.append(rr)
             passed = bool(found)
         else:
-            recall = None
-            rr = None
-            passed = not ids
-            negative_correct.append(passed)
+            raise ValueError(
+                f"{case['id']}: scored retrieval cases require at least one "
+                "reviewed relevant ID; use kind=coverage_probe otherwise"
+            )
         rows.append({
             "id": case["id"], "query": case["query"], "relevant": sorted(relevant),
             "retrieved": ids, "hit": passed, "recall": recall, "reciprocal_rank": rr,
@@ -45,8 +64,7 @@ def evaluate(index: KnowledgeIndex, cases: list[dict], top_k: int) -> tuple[dict
         f"hit_rate@{top_k}": sum(r["hit"] for r in rows if r["relevant"]) / positive,
         f"macro_recall@{top_k}": sum(recall_scores) / positive,
         "mrr": sum(reciprocal_ranks) / positive,
-        "negative_cases": len(negative_correct),
-        "no_hit_accuracy": sum(negative_correct) / len(negative_correct) if negative_correct else None,
+        "coverage_probes": probes,
     }
     return summary, rows
 
@@ -63,7 +81,7 @@ def main() -> int:
     result = {"summary": summary, "rows": rows}
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     for row in rows:
-        status = "PASS" if row["hit"] else "FAIL"
+        status = "PROBE" if row["hit"] is None else ("PASS" if row["hit"] else "FAIL")
         print(f"{status} {row['id']} expected={row['relevant']} got={row['retrieved']}")
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)

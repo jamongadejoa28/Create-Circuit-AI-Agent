@@ -12,10 +12,10 @@ Structure notes:
     (instances (project ... (path "/<root-uuid>" ...))) block.
   - File tail: (sheet_instances (path "/" (page "1"))) + (embedded_fonts no).
 
-Connection policy (Phase 1): every pin of every net gets a short stub wire
-leaving the pin plus a local label carrying the net name. This is SKiDL's
-auto_stub fallback applied uniformly — always electrically correct, no
-routing needed. Direct wires are used only for aligned facing pins.
+Connection policy: try direct, L and multi-terminal tree routes through one
+shared occupancy model. If every solid route is refused, emit short pin stubs
+with same-name labels as an electrically connected but visually weaker
+fallback. ``route_metrics`` records the chosen mode and failure reason.
 
 Constraint carried by construction: a net that contains a power symbol pin
 must be named exactly like the symbol's Value (the power symbol acts as a
@@ -24,6 +24,7 @@ global label with that text; a different local label would fight it).
 
 from __future__ import annotations
 
+from collections import Counter
 import re
 from dataclasses import dataclass, field
 
@@ -56,6 +57,34 @@ class EmitPlan:
     junctions: list[tuple[float, float]] = field(default_factory=list)
     no_connects: list[tuple[float, float]] = field(default_factory=list)
     net_routes: dict[str, str] = field(default_factory=dict)  # net -> direct|l|tree|stubs
+    route_failures: dict[str, RouteFailure] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class RouteFailure:
+    """Why a net exhausted the solid-wire routing cascade."""
+
+    stage: str
+    reason: str
+    blocker_nets: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class RouteAttempt:
+    """A route candidate or a structured reason why it was refused."""
+
+    route: object | None = None
+    failure: RouteFailure | None = None
+
+
+def _tree_failure(reason: str, blocker_nets=()) -> RouteAttempt:
+    return RouteAttempt(
+        failure=RouteFailure(
+            stage="tree",
+            reason=reason,
+            blocker_nets=tuple(sorted(set(blocker_nets))),
+        )
+    )
 
 
 def route_metrics(ir: CircuitIR, symbols: dict[str, SymbolDef], plan: EmitPlan) -> dict:
@@ -80,6 +109,50 @@ def route_metrics(ir: CircuitIR, symbols: dict[str, SymbolDef], plan: EmitPlan) 
         critical_protocols.setdefault(contract.net, set()).add(contract.protocol)
     critical = sorted(set(signal) & set(critical_protocols))
     critical_stubbed = sorted(set(critical) & set(stubbed))
+    failure_details = {
+        name: {
+            "stage": failure.stage,
+            "reason": failure.reason,
+            "blocker_nets": list(failure.blocker_nets),
+        }
+        for name in stubbed
+        if (failure := plan.route_failures.get(name)) is not None
+    }
+    failure_counts = Counter(
+        detail["reason"] for detail in failure_details.values()
+    )
+    route_names = set(wired)
+
+    def routed_tag_net(tag: str) -> str | None:
+        matches = [
+            name for name in route_names
+            if tag == f"net.{name}" or tag.startswith(f"net.{name}.")
+        ]
+        return max(matches, key=len) if matches else None
+
+    route_geometry = {}
+    for name in wired:
+        segments = [
+            (a, b) for a, b, tag in plan.wires
+            if routed_tag_net(tag) == name
+        ]
+        if not segments:
+            continue
+        points = [point for segment in segments for point in segment]
+        span = (
+            max(point[0] for point in points) - min(point[0] for point in points)
+            + max(point[1] for point in points) - min(point[1] for point in points)
+        )
+        length = sum(
+            abs(a[0] - b[0]) + abs(a[1] - b[1]) for a, b in segments
+        )
+        route_geometry[name] = {
+            "wire_length_mm": round(length, 3),
+            # Descriptive lower bound only; it is not an acceptance threshold.
+            "bounding_span_mm": round(span, 3),
+            "excess_length_mm": round(max(0.0, length - span), 3),
+            "length_to_span_ratio": round(length / span, 3) if span else None,
+        }
     power = [
         net.name for net in ir.nets
         if len(net.nodes) >= 2 and any(
@@ -93,6 +166,9 @@ def route_metrics(ir: CircuitIR, symbols: dict[str, SymbolDef], plan: EmitPlan) 
         "wired_nets": len(wired),
         "stub_nets": len(stubbed),
         "stub_net_names": stubbed,
+        "route_failures": failure_details,
+        "route_failure_reasons": dict(sorted(failure_counts.items())),
+        "route_geometry": route_geometry,
         "wired_ratio": round(len(wired) / len(signal), 3) if signal else None,
         # Required controller interfaces are the nets whose label fallback is
         # most misleading to a reader: the IR is electrically complete, but
@@ -101,6 +177,11 @@ def route_metrics(ir: CircuitIR, symbols: dict[str, SymbolDef], plan: EmitPlan) 
         "critical_nets": len(critical),
         "critical_net_names": critical,
         "critical_stub_nets": critical_stubbed,
+        "critical_route_failures": {
+            name: failure_details[name]
+            for name in critical_stubbed
+            if name in failure_details
+        },
         "critical_wired_ratio": (
             round((len(critical) - len(critical_stubbed)) / len(critical), 3)
             if critical else None
@@ -240,7 +321,146 @@ def _seg_clear(a, b, pin_pts, boxes, skip_refs, skip_pins) -> bool:
     return True
 
 
-def _try_l_wire(ir, symbols, placements, net, pin_pts, boxes):
+@dataclass(frozen=True)
+class RouteBlockage:
+    """A shared occupancy/geometry validator refusal."""
+
+    reason: str
+    blocker_nets: tuple[str, ...] = ()
+
+
+@dataclass
+class RoutingContext:
+    """Sheet-wide obstacles and claimed wire cells shared by every router.
+
+    A route mode is only an algorithm for proposing segments. Direct, L, and
+    tree candidates all pass through ``validate_segments`` before emission,
+    so no mode can bypass foreign-pin, potential-stub, symbol-body, or prior
+    wire occupancy checks.
+    """
+
+    pin_points: dict[tuple[str, str], tuple[float, float]]
+    symbol_boxes: dict[str, list[tuple[float, float, float, float]]]
+    stub_corridors: dict[tuple[str, str], list[tuple[float, float]]]
+    routed_cells: dict[tuple[float, float], str] = field(default_factory=dict)
+
+    def foreign_points(
+        self, own_pins: set[tuple[str, str]]
+    ) -> list[tuple[float, float]]:
+        points = [point for key, point in self.pin_points.items() if key not in own_pins]
+        points.extend(
+            point
+            for key, corridor in self.stub_corridors.items()
+            if key not in own_pins
+            for point in corridor
+        )
+        return points
+
+    def occupied_points(self, net_name: str) -> list[tuple[float, float]]:
+        return [
+            point for point, owner in self.routed_cells.items()
+            if owner != net_name
+        ]
+
+    def blocked_points(
+        self, own_pins: set[tuple[str, str]], net_name: str
+    ) -> list[tuple[float, float]]:
+        return self.foreign_points(own_pins) + self.occupied_points(net_name)
+
+    def escape_blockage(
+        self,
+        escapes: list[tuple[float, float]],
+        own_pins: set[tuple[str, str]],
+        net_name: str,
+    ) -> RouteBlockage | None:
+        escape_keys = {(round(x, 2), round(y, 2)) for x, y in escapes}
+        occupied = {
+            (round(x, 2), round(y, 2)): owner
+            for (x, y), owner in self.routed_cells.items()
+            if owner != net_name
+        }
+        blockers = {occupied[key] for key in escape_keys if key in occupied}
+        if blockers:
+            return RouteBlockage("occupied_by_net", tuple(sorted(blockers)))
+        foreign = {
+            (round(x, 2), round(y, 2))
+            for x, y in self.foreign_points(own_pins)
+        }
+        if escape_keys & foreign:
+            return RouteBlockage("escape_blocked")
+        return None
+
+    def validate_segments(
+        self,
+        segments: list[
+            tuple[tuple[float, float], tuple[float, float]]
+        ],
+        *,
+        own_refs: set[str],
+        own_pins: set[tuple[str, str]],
+        net_name: str,
+    ) -> RouteBlockage | None:
+        for a, b in segments:
+            if not _seg_clear(
+                a,
+                b,
+                self.pin_points,
+                self.symbol_boxes,
+                own_refs,
+                own_pins,
+            ):
+                return RouteBlockage("foreign_geometry")
+
+        route_cells = {
+            cell for a, b in segments for cell in _segment_cells(a, b)
+        }
+        foreign_corridor_cells = {
+            (round(x, 4), round(y, 4))
+            for key, corridor in self.stub_corridors.items()
+            if key not in own_pins
+            for x, y in corridor
+        }
+        if route_cells & foreign_corridor_cells:
+            return RouteBlockage("foreign_geometry")
+
+        blockers = {
+            owner
+            for cell in route_cells
+            if (owner := self.routed_cells.get(cell)) is not None
+            and owner != net_name
+        }
+        if blockers:
+            return RouteBlockage("occupied_by_net", tuple(sorted(blockers)))
+        return None
+
+    def blocking_nets_for_segments(
+        self,
+        segments: list[
+            tuple[tuple[float, float], tuple[float, float]]
+        ],
+        net_name: str,
+    ) -> tuple[str, ...]:
+        cells = {cell for a, b in segments for cell in _segment_cells(a, b)}
+        return tuple(sorted({
+            owner
+            for cell in cells
+            if (owner := self.routed_cells.get(cell)) is not None
+            and owner != net_name
+        }))
+
+    def claim_segments(
+        self,
+        segments: list[
+            tuple[tuple[float, float], tuple[float, float]]
+        ],
+        net_name: str,
+    ) -> None:
+        for a, b in segments:
+            for cell in _segment_cells(a, b):
+                self.routed_cells.setdefault(cell, net_name)
+
+
+def _try_l_wire(ir, symbols, placements, net, context: RoutingContext):
     """Two-segment orthogonal route for a 2-node net whose pins are not
     axis-aligned: corner candidates (x2,y1)/(x1,y2), each segment leaving
     pin1 outward and arriving against pin2's outward direction, both
@@ -273,9 +493,13 @@ def _try_l_wire(ir, symbols, placements, net, pin_pts, boxes):
             continue
         if d2[0] * -seg2_dir[0] + d2[1] * -seg2_dir[1] <= 0:
             continue
-        if _seg_clear((x1, y1), corner, pin_pts, boxes, skip_refs, skip_pins) and _seg_clear(
-            corner, (x2, y2), pin_pts, boxes, skip_refs, skip_pins
-        ):
+        segments = [((x1, y1), corner), (corner, (x2, y2))]
+        if context.validate_segments(
+            segments,
+            own_refs=skip_refs,
+            own_pins=skip_pins,
+            net_name=net.name,
+        ) is None:
             return (x1, y1), corner, (x2, y2)
     return None
 
@@ -358,7 +582,7 @@ def _split_at_endpoints(segments):
     return out, [p for p, d in degree.items() if d >= 3]
 
 
-def _try_tree_wire(ir, symbols, placements, net, pin_pts, boxes, corridors, routed_cells):
+def _try_tree_wire(ir, symbols, placements, net, context: RoutingContext):
     """Grid-router tree for a 2..TREE_MAX_NODES signal net.
 
     Terminals enter the grid via a one-cell escape segment along each pin's
@@ -367,13 +591,15 @@ def _try_tree_wire(ir, symbols, placements, net, pin_pts, boxes, corridors, rout
     every foreign potential-stub corridor, and every cell of previously
     routed nets (v1 forbids even legal perpendicular crossings — a refused
     route falls back to stubs, never a wrong wire). Returns (segments,
-    junctions, label_at) or None."""
+    junctions, label_at), or a structured refusal reason."""
     from .router import route_multi_terminal
 
-    if not (2 <= len(net.nodes) <= TREE_MAX_NODES):
-        return None
+    if len(net.nodes) < 2:
+        return _tree_failure("insufficient_terminals")
+    if len(net.nodes) > TREE_MAX_NODES:
+        return _tree_failure("terminal_limit")
     if any(symbols[ir.components[r].lib_id].is_power for r, _p in net.nodes):
-        return None  # power annotations use explicit connector attachment
+        return _tree_failure("power_net")
     own_pins = {(r, str(p)) for r, p in net.nodes}
     terms = []
     for ref, pin_no in net.nodes:
@@ -385,41 +611,64 @@ def _try_tree_wire(ir, symbols, placements, net, pin_pts, boxes, corridors, rout
         # off-grid pins cannot be met exactly by grid cells; a near-miss
         # wire is a silently unconnected pin — refuse instead
         if any(abs(v / GRID - round(v / GRID)) > 0.005 for v in pos):
-            return None
+            return _tree_failure("off_grid_terminal")
         dx, dy = pin_outward_dir(place, pin)
         if abs(abs(dx) + abs(dy) - 1.0) > 0.01:
-            return None
+            return _tree_failure("invalid_escape_direction")
         esc = (round(pos[0] + dx * GRID, 4), round(pos[1] + dy * GRID, 4))
         terms.append((pos, esc, (dx, dy)))
     escapes = [esc for _pos, esc, _d in terms]
     if len(set(escapes)) != len(escapes):
-        return None
-    blocked = [p for key, p in pin_pts.items() if key not in own_pins]
-    blocked += [p for key, pts in corridors.items() if key not in own_pins for p in pts]
-    blocked += list(routed_cells)
-    blocked_set = {(round(x, 2), round(y, 2)) for x, y in blocked}
-    if any((round(x, 2), round(y, 2)) in blocked_set for x, y in escapes):
-        return None  # an escape on foreign geometry would silently connect
+        return _tree_failure("escape_collision")
+    escape_blockage = context.escape_blockage(escapes, own_pins, net.name)
+    if escape_blockage is not None:
+        return _tree_failure(
+            escape_blockage.reason, escape_blockage.blocker_nets
+        )
+    obstacles = [
+        box for ref_boxes in context.symbol_boxes.values() for box in ref_boxes
+    ]
+    foreign_geometry = context.foreign_points(own_pins)
     tree = route_multi_terminal(
         escapes,
-        [b for ref_boxes in boxes.values() for b in ref_boxes],
+        obstacles,
         grid=GRID,
         clearance=GRID,
-        blocked_points=blocked,
+        blocked_points=context.blocked_points(own_pins, net.name),
     )
     if tree is None:
-        return None
+        # A failed search may be caused by the one-pass occupancy policy or
+        # by fixed sheet geometry. Retry only for diagnosis, without emitting
+        # the candidate: this records whether rip-up could make progress.
+        if context.routed_cells:
+            without_occupancy = route_multi_terminal(
+                escapes,
+                obstacles,
+                grid=GRID,
+                clearance=GRID,
+                blocked_points=foreign_geometry,
+            )
+            if without_occupancy is not None:
+                blockers = context.blocking_nets_for_segments(
+                    list(without_occupancy.segments), net.name
+                )
+                return _tree_failure("occupied_by_net", blockers)
+        return _tree_failure("astar_no_path")
     segments = [(pos, esc) for pos, esc, _d in terms] + list(tree.segments)
     segments = [
         (a, b) for a, b in segments if abs(a[0] - b[0]) + abs(a[1] - b[1]) > 0.005
     ]
-    skip_refs = {r for r, _p in net.nodes}
-    for a, b in segments:
-        if not _seg_clear(a, b, pin_pts, boxes, skip_refs, own_pins):
-            return None  # grid approximation missed something — refuse
+    blockage = context.validate_segments(
+        segments,
+        own_refs={r for r, _p in net.nodes},
+        own_pins=own_pins,
+        net_name=net.name,
+    )
+    if blockage is not None:
+        return _tree_failure(blockage.reason, blockage.blocker_nets)
     segments, junctions = _split_at_endpoints(segments)
     pos0, _esc0, d0 = terms[0]
-    return segments, junctions, (pos0, d0)
+    return RouteAttempt(route=(segments, junctions, (pos0, d0)))
 
 
 def _try_direct_wire(
@@ -440,8 +689,6 @@ def _try_direct_wire(
         pin = sym.pin(pin_no)
         units_map = placements[ref]
         place = units_map[_instance_unit(pin, units_map, ref)]
-        from .geometry import pin_absolute_position
-
         pts.append(pin_absolute_position(place, pin))
         dirs.append(pin_outward_dir(place, pin))
     (x1, y1), (x2, y2) = pts
@@ -538,7 +785,8 @@ def build_emit_plan(
     seen_labels: set[tuple[str, float, float]] = set()
     pin_pts, boxes = _collect_obstacles(ir, symbols, placements)
     corridors = _stub_corridors(ir, symbols, placements)
-    routed_cells: set[tuple[float, float]] = set()
+    context = RoutingContext(pin_pts, boxes, corridors)
+
     for net in ir.nets:
         net_wire_start = len(plan.wires)
         direct = _try_direct_wire(ir, symbols, placements, net)
@@ -546,23 +794,25 @@ def build_emit_plan(
             (x1, y1), (x2, y2) = direct
             r1, p1 = net.nodes[0]
             r2, p2 = net.nodes[1]
-            if not _seg_clear(
-                (x1, y1), (x2, y2), pin_pts, boxes,
-                {r1, r2}, {(r1, str(p1)), (r2, str(p2))},
-            ):
+            if context.validate_segments(
+                [((x1, y1), (x2, y2))],
+                own_refs={r1, r2},
+                own_pins={(r1, str(p1)), (r2, str(p2))},
+                net_name=net.name,
+            ) is not None:
                 direct = None  # something sits between the facing pins
         if direct is not None:
             (x1, y1), (x2, y2) = direct
             plan.wires.append(((x1, y1), (x2, y2), f"net.{net.name}"))
             plan.net_routes[net.name] = "direct"
-            routed_cells.update(_segment_cells((x1, y1), (x2, y2)))
+            context.claim_segments([((x1, y1), (x2, y2))], net.name)
             # name label on the wire itself — without it KiCad auto-names
             # the net (Net-(D1-A)) and the by-name round-trip loses the IR
             # name (caught by the oracle on first run)
             rot, justify = _label_orientation(x2 - x1, y2 - y1)
             plan.labels.append((net.name, x1, y1, rot, justify))
             continue
-        l_route = _try_l_wire(ir, symbols, placements, net, pin_pts, boxes)
+        l_route = _try_l_wire(ir, symbols, placements, net, context)
         if l_route is not None:
             a, corner, b = l_route
             plan.wires.append((a, corner, f"net.{net.name}.a"))
@@ -570,22 +820,23 @@ def build_emit_plan(
             plan.net_routes[net.name] = "l"
             rot, justify = _label_orientation(corner[0] - a[0], corner[1] - a[1])
             plan.labels.append((net.name, a[0], a[1], rot, justify))
-            for w in plan.wires[-2:]:
-                routed_cells.update(_segment_cells(w[0], w[1]))
+            context.claim_segments([(a, corner), (corner, b)], net.name)
             continue
-        tree = _try_tree_wire(
-            ir, symbols, placements, net, pin_pts, boxes, corridors, routed_cells
+        tree_attempt = _try_tree_wire(
+            ir, symbols, placements, net, context
         )
-        if tree is not None:
-            segments, junctions, (label_at, label_dir) = tree
+        if tree_attempt.route is not None:
+            segments, junctions, (label_at, label_dir) = tree_attempt.route
             for i, (a, b) in enumerate(segments):
                 plan.wires.append((a, b, f"net.{net.name}.t{i}"))
-                routed_cells.update(_segment_cells(a, b))
+            context.claim_segments(segments, net.name)
             plan.junctions.extend(junctions)
             plan.net_routes[net.name] = "tree"
             rot, justify = _label_orientation(*label_dir)
             plan.labels.append((net.name, label_at[0], label_at[1], rot, justify))
             continue
+        if tree_attempt.failure is not None:
+            plan.route_failures[net.name] = tree_attempt.failure
         plan.net_routes[net.name] = "stubs"
         for ref, pin_no in net.nodes:
             comp = ir.components[ref]
@@ -623,8 +874,6 @@ def build_emit_plan(
     for ref, pin_no in ir.nc_pins:
         comp = ir.components[ref]
         pin = symbols[comp.lib_id].pin(pin_no)
-        from .geometry import pin_absolute_position
-
         units_map = placements[ref]
         place = units_map[_instance_unit(pin, units_map, ref)]
         plan.no_connects.append(pin_absolute_position(place, pin))

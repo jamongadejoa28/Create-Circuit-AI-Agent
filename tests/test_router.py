@@ -2,7 +2,7 @@ from circuitgen.router import route_multi_terminal
 
 
 def test_route_metrics_exposes_critical_stub_net_names():
-    from circuitgen.emit import EmitPlan, route_metrics
+    from circuitgen.emit import EmitPlan, RouteFailure, route_metrics
     from circuitgen.ir import CircuitIR, Component, InterfaceContract, PinDef, SymbolDef
     from circuitgen.pins import PinType
 
@@ -23,7 +23,15 @@ def test_route_metrics_exposes_critical_stub_net_names():
         ])
         for lib_id in ("Test:Controller", "Test:Driver", "Test:Header")
     }
-    plan = EmitPlan(net_routes={"MOTOR_PWM": "stubs", "STATUS_LED": "direct"})
+    plan = EmitPlan(
+        wires=[((0.0, 0.0), (10.0, 0.0), "net.STATUS_LED")],
+        net_routes={"MOTOR_PWM": "stubs", "STATUS_LED": "direct"},
+        route_failures={
+            "MOTOR_PWM": RouteFailure(
+                "tree", "occupied_by_net", ("STATUS_LED",)
+            )
+        },
+    )
 
     metrics = route_metrics(ir, symbols, plan)
     assert metrics["stub_net_names"] == ["MOTOR_PWM"]
@@ -32,19 +40,165 @@ def test_route_metrics_exposes_critical_stub_net_names():
     assert metrics["critical_by_protocol"]["generic_control"] == {
         "nets": 1, "stub_nets": 1,
     }
+    assert metrics["route_failure_reasons"] == {"occupied_by_net": 1}
+    assert metrics["route_geometry"] == {
+        "STATUS_LED": {
+            "wire_length_mm": 10.0,
+            "bounding_span_mm": 10.0,
+            "excess_length_mm": 0.0,
+            "length_to_span_ratio": 1.0,
+        }
+    }
+    assert metrics["critical_route_failures"]["MOTOR_PWM"] == {
+        "stage": "tree",
+        "reason": "occupied_by_net",
+        "blocker_nets": ["STATUS_LED"],
+    }
 
 
-def test_terminal_limit_visual_regression_is_tracked_with_metrics():
-    import json
-    from pathlib import Path
+def test_emit_plan_records_terminal_limit_instead_of_bare_stub_fallback():
+    from circuitgen.emit import RouteFailure, build_emit_plan
+    from circuitgen.geometry import Placement
+    from circuitgen.ir import CircuitIR, Component, PinDef, SymbolDef
+    from circuitgen.pins import PinType
 
-    fixture = Path(__file__).parent / "fixtures" / "visual_regressions"
-    svg = fixture / "i2c_terminal_limit.svg"
-    metrics = json.loads(
-        (fixture / "i2c_terminal_limit.metrics.json").read_text(encoding="utf-8")
+    ir = CircuitIR("terminal_limit")
+    symbol = SymbolDef("Test:Pin", "", [
+        PinDef("1", "IO", PinType.BIDIR, 0, 0, 180, 2.54),
+    ])
+    placements = {}
+    nodes = []
+    for index in range(9):
+        ref = f"U{index + 1}"
+        ir.add(Component(ref, symbol.lib_id, "pin"))
+        placements[ref] = {1: Placement(20.32 + index * 10.16, 20.32)}
+        nodes.append((ref, "1"))
+    ir.connect("BUS", *nodes)
+
+    plan = build_emit_plan(ir, {symbol.lib_id: symbol}, placements)
+
+    assert plan.net_routes["BUS"] == "stubs"
+    assert plan.route_failures["BUS"] == RouteFailure(
+        "tree", "terminal_limit"
     )
-    assert svg.is_file() and "<svg" in svg.read_text(encoding="utf-8")[:500]
-    assert metrics["critical_stub_nets"] == ["SCL", "SDA"]
+
+
+def test_tree_route_reports_the_net_occupying_a_terminal_escape():
+    from circuitgen.emit import RoutingContext, _try_tree_wire
+    from circuitgen.geometry import Placement
+    from circuitgen.ir import CircuitIR, Component, PinDef, SymbolDef
+    from circuitgen.pins import PinType
+
+    ir = CircuitIR("occupied_escape")
+    symbol = SymbolDef("Test:Pin", "", [
+        PinDef("1", "IO", PinType.BIDIR, 0, 0, 180, 2.54),
+    ])
+    for ref in ("U1", "U2"):
+        ir.add(Component(ref, symbol.lib_id, "pin"))
+    net = ir.connect("TARGET", ("U1", "1"), ("U2", "1"))
+    symbols = {symbol.lib_id: symbol}
+    placements = {
+        "U1": {1: Placement(0, 0)},
+        "U2": {1: Placement(20.32, 0)},
+    }
+
+    attempt = _try_tree_wire(
+        ir,
+        symbols,
+        placements,
+        net,
+        RoutingContext(
+            pin_points={},
+            symbol_boxes={},
+            stub_corridors={},
+            routed_cells={(1.27, 0): "EARLY_NET"},
+        ),
+    )
+
+    assert attempt.route is None
+    assert attempt.failure is not None
+    assert attempt.failure.reason == "occupied_by_net"
+    assert attempt.failure.blocker_nets == ("EARLY_NET",)
+
+
+def test_later_direct_candidate_cannot_cross_an_existing_net():
+    from circuitgen.emit import build_emit_plan
+    from circuitgen.geometry import Placement
+    from circuitgen.ir import CircuitIR, Component, PinDef, SymbolDef
+    from circuitgen.pins import PinType
+    from circuitgen.visual import check_routing
+
+    ir = CircuitIR("crossing")
+    symbol = SymbolDef("Test:Pin", "", [
+        # Keep the pin outside the synthetic body box, like a real symbol.
+        PinDef("1", "IO", PinType.BIDIR, 5.08, 0, 180, 2.54),
+    ])
+    for ref in ("H1", "H2", "V1", "V2"):
+        ir.add(Component(ref, symbol.lib_id, "pin"))
+    ir.connect("HORIZONTAL", ("H1", "1"), ("H2", "1"))
+    ir.connect("VERTICAL", ("V1", "1"), ("V2", "1"))
+    placements = {
+        # Horizontal pin positions: (0, 0) and (20.32, 0).
+        "H1": {1: Placement(-5.08, 0)},
+        "H2": {1: Placement(25.4, 0, 180)},
+        # Vertical pin positions: (10.16, -10.16) and (10.16, 10.16).
+        "V1": {1: Placement(10.16, -15.24, 270)},
+        "V2": {1: Placement(10.16, 15.24, 90)},
+    }
+    symbols = {symbol.lib_id: symbol}
+
+    plan = build_emit_plan(ir, symbols, placements)
+
+    assert plan.net_routes["HORIZONTAL"] == "direct"
+    assert plan.net_routes["VERTICAL"] == "stubs"
+    assert plan.route_failures["VERTICAL"].reason == "occupied_by_net"
+    assert plan.route_failures["VERTICAL"].blocker_nets == ("HORIZONTAL",)
+    assert not [
+        issue for issue in check_routing(ir, symbols, placements, plan)
+        if issue.rule == "wire_crosses_foreign_wire"
+    ]
+
+
+def test_l_route_uses_the_same_existing_wire_occupancy():
+    from circuitgen.emit import RoutingContext, _try_l_wire
+    from circuitgen.geometry import Placement
+    from circuitgen.ir import CircuitIR, Component, PinDef, SymbolDef
+    from circuitgen.pins import PinType
+
+    ir = CircuitIR("l_occupancy")
+    symbol = SymbolDef("Test:Pin", "", [
+        PinDef("1", "IO", PinType.BIDIR, 5.08, 0, 180, 2.54),
+    ])
+    for ref in ("U1", "U2"):
+        ir.add(Component(ref, symbol.lib_id, "pin"))
+    net = ir.connect("L_NET", ("U1", "1"), ("U2", "1"))
+    placements = {
+        # Pins at (0, 0), outward right, and (10.16, 10.16), outward up.
+        # Only the (10.16, 0) L corner satisfies both pin directions.
+        "U1": {1: Placement(-5.08, 0)},
+        "U2": {1: Placement(10.16, 15.24, 90)},
+    }
+    context = RoutingContext(
+        pin_points={},
+        symbol_boxes={},
+        stub_corridors={},
+        routed_cells={(5.08, 0): "TREE_NET"},
+    )
+
+    route = _try_l_wire(
+        ir, {symbol.lib_id: symbol}, placements, net, context
+    )
+
+    assert route is None
+    blockage = context.validate_segments(
+        [((0, 0), (10.16, 0)), ((10.16, 0), (10.16, 10.16))],
+        own_refs={"U1", "U2"},
+        own_pins={("U1", "1"), ("U2", "1")},
+        net_name="L_NET",
+    )
+    assert blockage is not None
+    assert blockage.reason == "occupied_by_net"
+    assert blockage.blocker_nets == ("TREE_NET",)
 
 
 def _on_segment(p, a, b):

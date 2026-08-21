@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Run the cross-domain release suite and MEASURE it, per circuit family.
 
-The direction doc (§6) asks for eight separate measurements per family, not one
-boolean: role/quantity fulfilment, required topology, self+KiCad ERC, netlist
+The runner records separate measurements per family, not one boolean:
+role/quantity fulfilment, required topology, self+KiCad ERC, netlist
 round-trip, real-wire vs label-fallback ratio, visual QA, unwarranted automatic
 connections, and the variance across repeats. A single ERC-shaped pass/fail
 cannot say WHICH family fails or why, and optimising against it is how special
@@ -137,7 +137,7 @@ def main() -> int:
                 "stage": res.stage,
                 "pipeline_ok": bool(pr and pr.ok),
                 "draft_visible": bool(pr and pr.sch_path),
-                # -- direction doc §6: eight measurements, kept separate --
+                # Measurements remain separate; no aggregate pass score.
                 # 3. self ERC and KiCad ERC, counted apart
                 "kicad_violations": len(pr.kicad_erc.violations) if pr and pr.kicad_erc else None,
                 "self_erc_errors": (
@@ -152,6 +152,12 @@ def main() -> int:
                 "wiring": (pr.route_metrics if pr else {}) or {},
                 # 6. visual QA and sheet-boundary violations
                 "visual_issues": len(pr.visual_issues) if pr else None,
+                # Export success is not visual approval. These paths are the
+                # review queue for a human (or a separately evaluated VLM).
+                "preview_pngs": [str(path) for path in (pr.preview_pngs if pr else [])],
+                "visual_review_status": (
+                    "not_reviewed" if pr and pr.preview_pngs else "preview_unavailable"
+                ),
                 # 1. requested roles/quantities, and 7. unwarranted auto-connections
                 "metrics": metrics.as_dict(),
                 # 2. required topology — note this list is EMPTY for six of the
@@ -180,8 +186,10 @@ def main() -> int:
                 f"auto={metrics.auto_connections}/{metrics.auto_no_connects}nc "
                 f"parts={len(in_board)}/{len(selected)} compliance={row['compliance_ok']}"
             )
+            for preview in row["preview_pngs"]:
+                print(f"  review PNG: {preview}")
 
-    print(f"\n--- per family (direction doc §6) ---")
+    print("\n--- per family ---")
     for domain, stats in summarize(rows).items():
         print(f"{domain:20} {json.dumps(stats, ensure_ascii=False)}")
     vacuous = sum(1 for r in rows if not r["contract_required"])

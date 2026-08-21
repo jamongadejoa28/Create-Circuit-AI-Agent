@@ -1,6 +1,6 @@
 """Typed circuit-design rules compiled into the existing CircuitIR pipeline.
 
-Unlike CircuitPattern ``apply_when`` phrases, rule selection uses normalized
+Rather than prompt-keyword triggers, rule selection uses normalized
 requirement fields and electrical rail facts.  The LLM may classify intent,
 but it does not choose coordinates, pins, nets, or claim that ERC proves a
 design rule.  Every rule carries repository-backed evidence and lowers to the
@@ -61,15 +61,12 @@ def validate_rule(rule: dict) -> list[str]:
     return errors
 
 
-def load_rules(
-    directory: str | Path = RULE_DIR, *, include_unverified: bool = False
-) -> dict[str, dict]:
+def load_rules(directory: str | Path = RULE_DIR) -> dict[str, dict]:
     """Load product rules whose evidence has been reviewed.
 
-    Draft rules remain useful as research artifacts, but must not silently
-    enter synthesis merely because their JSON shape and source *file* exist.
-    ``validate_rule`` checks structure; ``status == verified`` is the separate
-    human evidence gate.
+    A file not marked verified does not enter synthesis merely because its
+    JSON shape and source *file* exist. ``validate_rule`` checks structure;
+    ``status == verified`` is the separate human evidence gate.
     """
     rules: dict[str, dict] = {}
     for path in sorted(Path(directory).glob("*.json")):
@@ -79,7 +76,7 @@ def load_rules(
             raise ValueError(f"{path.name}: " + "; ".join(problems))
         if rule["id"] in rules:
             raise ValueError(f"duplicate rule id {rule['id']!r}")
-        if rule.get("status") != "verified" and not include_unverified:
+        if rule.get("status") != "verified":
             continue
         rules[rule["id"]] = rule
     return rules

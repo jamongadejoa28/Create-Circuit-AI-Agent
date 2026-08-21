@@ -6,7 +6,7 @@ from circuitgen.ir import CircuitIR, Component
 from circuitgen.netlist import compare_connectivity, generate_netlist, ir_partition
 from circuitgen.normalize import ensure_pwr_flags
 from circuitgen.symbols import KICAD_SYMBOL_DIR, load_symbols
-from tests.fixtures.examples import golden_led_button_ir
+from tests.fixtures.circuits import led_button_ir
 
 import pytest
 
@@ -16,7 +16,7 @@ pytestmark = pytest.mark.skipif(
 
 
 def test_partition_excludes_power_symbols_and_singletons():
-    ir = golden_led_button_ir()
+    ir = led_button_ir()
     part = ir_partition(ir)
     # +5V and GND collapse to single real nodes → excluded; two signal nets remain
     assert part == {
@@ -26,7 +26,7 @@ def test_partition_excludes_power_symbols_and_singletons():
 
 
 def test_generated_netlist_parses_and_lists_all_nodes():
-    ir = golden_led_button_ir()
+    ir = led_button_ir()
     symbols = load_symbols(sorted({c.lib_id for c in ir.components.values()} | {"power:PWR_FLAG"}))
     ensure_pwr_flags(ir, symbols)
     text = generate_netlist(ir, symbols)

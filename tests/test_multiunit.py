@@ -1,9 +1,9 @@
-"""Multi-unit IC support, end to end against kicad-cli (Phase 2 gate).
+"""Multi-unit IC support, end to end against kicad-cli.
 
 74xx:74LS00 = four NAND gates (units 1-4) + a power unit (unit 5, pins
 7/14). One gate drives an LED; unused gate inputs are tied to GND and
 their outputs are explicitly no-connected — the standard discipline the
-extended MCU ERC (Phase 3) will also demand.
+extended MCU ERC also demands.
 """
 
 from pathlib import Path

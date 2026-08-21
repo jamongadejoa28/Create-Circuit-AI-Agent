@@ -290,6 +290,35 @@ def test_vminus_on_gnd_is_not_auto_accepted():
     )
 
 
+def test_vminus_on_gnd_matches_an_explicit_single_supply_requirement():
+    opamp = "Amplifier_Operational:TestOpAmp"
+    symbols = {
+        opamp: _sym(opamp, [
+            ("4", "V-", PinType.PWRIN),
+            ("8", "V+", PinType.PWRIN),
+        ]),
+        **{lib: sym for lib, sym in (_rail("+3V3"), _rail("GND"))},
+    }
+    ir = CircuitIR("single_supply")
+    ir.add(Component("U1", opamp, "TestOpAmp"))
+    ir.add(Component("#PWR01", "power:+3V3", "+3V3"))
+    ir.add(Component("#PWR02", "power:GND", "GND"))
+    ir.connect("+3V3", ("U1", "8"), ("#PWR01", "1"))
+    ir.connect("GND", ("U1", "4"), ("#PWR02", "1"))
+    spec = {"power": {"rails": [
+        {"name": "+3V3", "voltage": "3.3V"},
+        {"name": "GND", "voltage": "0V"},
+    ]}}
+
+    issues, records = check_requested_rail_reach(ir, symbols, spec)
+
+    by_pin = {(record["reference"], record["pin"]): record for record in records}
+    assert by_pin[("U1", "4")]["match"] is True
+    assert not any(
+        issue.rule == "power_pin_misses_requested_rail" for issue in issues
+    )
+
+
 def test_ground_pin_miss_message_lists_ground_rails():
     ldo = "Regulator_Linear:TestLDO-3.3"
     symbols = {

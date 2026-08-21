@@ -2,11 +2,11 @@
 
 The agent process never launches or manages the server: llama-server.exe
 dies immediately (exit 53) when started from WSL2, so the user starts it
-on Windows and mirrored networking exposes it on localhost (plan §4).
+on Windows and mirrored networking exposes it on localhost.
 
 Constrained decoding: llama.cpp's server supports OpenAI-style
 response_format json_schema, which we use for every structured call so a
-malformed-JSON reply is impossible by construction (plan §7.3).
+malformed-JSON reply is rejected at the client boundary.
 """
 
 from __future__ import annotations

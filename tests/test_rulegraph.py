@@ -1,6 +1,8 @@
 """Typed design-rule graph selection, lowering, and topology constraints."""
 
-from circuitgen.ir import CircuitIR, Component
+import json
+
+from circuitgen.ir import CircuitIR
 from circuitgen.patterns import PatternBinding, instantiate_pattern
 from circuitgen.rulegraph import (
     load_rules,
@@ -50,11 +52,15 @@ def test_rule_selection_uses_types_and_voltage_facts_not_prompt_words():
     assert match_rules(same_voltage, rules) == []
 
 
-def test_draft_rules_do_not_enter_product_synthesis():
-    product = load_rules()
-    research = load_rules(include_unverified=True)
-    assert set(product) == {"ldo_linear_regulator"}
-    assert {"i2c_bus_pullup", "usb_c_sink_cc"} <= set(research)
+def test_draft_rules_do_not_enter_product_synthesis(tmp_path):
+    draft = dict(load_rules()["ldo_linear_regulator"])
+    draft["id"] = "unreviewed_example"
+    draft["status"] = "draft"
+    (tmp_path / "draft.json").write_text(
+        json.dumps(draft), encoding="utf-8"
+    )
+
+    assert load_rules(tmp_path) == {}
 
 
 def test_rule_verifier_rejects_input_output_short():

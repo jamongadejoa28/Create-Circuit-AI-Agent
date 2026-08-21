@@ -7,10 +7,10 @@ topology, parameters with their governing formula, ports, and the citation.
 `bind` resolves roles onto real KiCad symbols, `instantiate` writes the
 subgraph into a CircuitIR, `verify` proves the topology landed intact.
 
-Pattern JSON (data/patterns/*.json):
+The compiler consumes the normalized pattern shape produced by
+``rulegraph.lower_to_pattern``:
   id            unique snake_case name
   function      one-line purpose
-  apply_when    lowercase keywords that trigger retrieval
   roles         role -> {kind, query?, lib_id?, param?, pins?}
                 IC roles declare pins: key -> {names: [...], etype?: NAME};
                 two-pin passives may omit pins (defaults to "1"/"2")
@@ -25,22 +25,18 @@ Pattern JSON (data/patterns/*.json):
   source        verified citation {book, section, pdf_page_index, tier}
   status        "verified" | "draft"
 
-Production patterns must cite repository-backed textbook evidence.  Archived
-ERC/golden outputs live under tests/fixtures and require an explicit opt-in;
-they may exercise this engine but can never act as design authority.
+Selection is intentionally outside this module. Product rules are selected by
+typed requirement and voltage predicates, never prompt keywords or an earlier
+generated schematic.
 """
 
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass, field
-from pathlib import Path
 
 from .ir import CircuitIR, Component, SymbolDef
 from .topology import _clean
-
-PATTERN_DIR = Path(__file__).resolve().parents[2] / "data" / "patterns"
 
 _TWO_PIN_KINDS = {"resistor", "capacitor", "inductor", "ferrite_bead", "diode"}
 
@@ -76,7 +72,7 @@ def _role_pins(pattern: dict, role: str) -> dict | None:
     return None
 
 
-def validate_pattern(pattern: dict, *, allow_internal_fixtures: bool = False) -> list[str]:
+def validate_pattern(pattern: dict) -> list[str]:
     errors: list[str] = []
     for key in ("id", "roles", "ports", "topology", "source", "status"):
         if key not in pattern:
@@ -116,43 +112,13 @@ def validate_pattern(pattern: dict, *, allow_internal_fixtures: bool = False) ->
         if not src.get(src_key):
             errors.append(f"source.{src_key} is required (no uncited patterns)")
     provenance = src.get("provenance")
-    if provenance == "internal-fixture" and not allow_internal_fixtures:
+    if provenance == "internal-fixture":
         errors.append("internal-fixture patterns are test artifacts, not production knowledge")
-    elif provenance != "textbook" and not (
-        allow_internal_fixtures and provenance == "internal-fixture"
-    ):
+    elif provenance != "textbook":
         errors.append("source.provenance must be 'textbook'")
     elif provenance == "textbook" and not src.get("pdf_page_index"):
         errors.append("source.pdf_page_index is required for a textbook citation")
     return errors
-
-
-def load_patterns(
-    directory: str | Path = PATTERN_DIR, *, allow_internal_fixtures: bool = False
-) -> dict[str, dict]:
-    patterns: dict[str, dict] = {}
-    for path in sorted(Path(directory).glob("*.json")):
-        pattern = json.loads(path.read_text(encoding="utf-8"))
-        problems = validate_pattern(
-            pattern, allow_internal_fixtures=allow_internal_fixtures
-        )
-        if problems:
-            raise ValueError(f"{path.name}: " + "; ".join(problems))
-        patterns[pattern["id"]] = pattern
-    return patterns
-
-
-def match_patterns(text: str, patterns: dict[str, dict]) -> list[dict]:
-    """Patterns whose apply_when keywords occur in the (lowercased) text.
-
-    apply_unless keywords veto a match — needed where one trigger is a
-    substring of a sibling's ("비반전 증폭" contains "반전 증폭")."""
-    low = text.lower()
-    return [
-        p for p in patterns.values()
-        if any(k.lower() in low for k in p.get("apply_when", []))
-        and not any(k.lower() in low for k in p.get("apply_unless", []))
-    ]
 
 
 def bind_role_pins(pattern: dict, role: str, sym: SymbolDef) -> dict[str, str] | None:

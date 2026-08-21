@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .geometry import Placement, pin_stub_end
+from .geometry import Placement, pin_absolute_position, pin_stub_end
 from .ir import CircuitIR, SymbolDef
 from .place import _body_box
 
@@ -54,32 +54,6 @@ def check_layout(
             # Envelope intersections with positive area are unreadable.
             if min(a[2], b[2]) - max(a[0], b[0]) > 0.2 and min(a[3], b[3]) - max(a[1], b[1]) > 0.2:
                 issues.append(VisualIssue("symbol_overlap", f"{ra}.{ua} overlaps {rb}.{ub}"))
-    # A readable flat sheet should not collapse into a strip.  Require enough
-    # symbols that a legitimately linear two/three-part chain is not judged.
-    # This is measured on body geometry, independent of paper size or zoom.
-    if len(boxes) >= 8:
-        min_x = min(b[0] for _r, _u, b in boxes)
-        min_y = min(b[1] for _r, _u, b in boxes)
-        max_x = max(b[2] for _r, _u, b in boxes)
-        max_y = max(b[3] for _r, _u, b in boxes)
-        width, height = max_x - min_x, max_y - min_y
-        ratio = max(width, height) / max(min(width, height), 0.01)
-        # A moderately tall arrangement can still be pathological when it
-        # forces a much larger sheet and leaves most of it empty (the ESP32
-        # USB-UART draft used 11% of an A2 page). Combine shape and page
-        # utilization so ordinary compact portrait blocks are accepted.
-        from .emit import fit_paper
-        paper, _offset = fit_paper(ir, symbols, placements)
-        page_area = {"A4": 297 * 210, "A3": 420 * 297,
-                     "A2": 594 * 420, "A1": 841 * 594}[paper]
-        utilization = width * height / page_area
-        wasteful_strip = len(boxes) >= 12 and ratio > 1.6 and utilization < 0.15
-        if ratio > 4.0 or wasteful_strip:
-            issues.append(VisualIssue(
-                "excessive_aspect_ratio",
-                f"{len(boxes)} symbols occupy {width:.1f} x {height:.1f} mm "
-                f"(aspect {ratio:.1f}:1, {utilization:.0%} of {paper})",
-            ))
     endpoints: dict[tuple[float, float], list[tuple[str, str, str]]] = {}
     for net in ir.nets:
         for ref, pin_no in net.nodes:
@@ -103,12 +77,13 @@ def check_layout(
 
 
 def check_routing(ir, symbols, placements, plan) -> list[VisualIssue]:
-    """Detect geometric connections and detours in the emitted wire plan.
+    """Detect incorrect geometric connections in the emitted wire plan.
 
     ERC/netlist round-trip catches the electrical consequence, but this gate
     names the visual cause: a stub or route touching a foreign pin, wires from
-    different nets touching, or a routed tree far longer than its terminals'
-    rectilinear minimum.
+    different nets touching, or a detached input power flag. Readability
+    measurements such as route length and sheet utilization are deliberately
+    not errors: there is no universal electrical threshold for them.
     """
     issues: list[VisualIssue] = []
     node_net = {
@@ -136,7 +111,6 @@ def check_routing(ir, symbols, placements, plan) -> list[VisualIssue]:
                 unit = next(iter(units))
             else:
                 continue
-            from .geometry import pin_absolute_position
             pin_points.append((pin_absolute_position(units[unit], pin), node_net.get((ref, pin.number), ""), ref, pin.number))
 
     def on_segment(point, a, b) -> bool:
@@ -171,7 +145,6 @@ def check_routing(ir, symbols, placements, plan) -> list[VisualIssue]:
             pin = symbols[ir.components[ref].lib_id].pin(pin_no)
             units = placements[ref]
             unit = pin.unit if pin.unit in units else next(iter(units))
-            from .geometry import pin_absolute_position
             point = pin_absolute_position(units[unit], pin)
             attached = any(
                 wire_net(tag) == net.name and not tag.startswith(f"{ref}.")
@@ -222,19 +195,4 @@ def check_routing(ir, symbols, placements, plan) -> list[VisualIssue]:
                     f"wire for {net} crosses wire for {other_net}",
                 ))
 
-    # Rectilinear bounding span is a conservative lower bound for connecting
-    # a net's terminals. Flag only large absolute and relative excesses.
-    for net in ir.nets:
-        segments = [(a, b) for a, b, tag in plan.wires if wire_net(tag) == net.name]
-        if not segments or plan.net_routes.get(net.name) not in {"direct", "l", "tree"}:
-            continue
-        points = [p for segment in segments for p in segment]
-        span = (max(p[0] for p in points) - min(p[0] for p in points)
-                + max(p[1] for p in points) - min(p[1] for p in points))
-        length = sum(abs(a[0] - b[0]) + abs(a[1] - b[1]) for a, b in segments)
-        if span > 0 and length - span > 50.0 and length / span > 2.5:
-            issues.append(VisualIssue(
-                "excessive_wire_detour",
-                f"{net} route is {length:.1f} mm for a {span:.1f} mm rectilinear span",
-            ))
     return issues

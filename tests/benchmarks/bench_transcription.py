@@ -79,6 +79,13 @@ def main() -> int:
             ),
             "round_trip_ok": bool(pipeline and pipeline.connectivity_ok),
             "wired_ratio": (pipeline.route_metrics or {}).get("wired_ratio") if pipeline else None,
+            "preview_pngs": [
+                str(path) for path in (pipeline.preview_pngs if pipeline else [])
+            ],
+            "visual_review_status": (
+                "not_reviewed"
+                if pipeline and pipeline.preview_pngs else "preview_unavailable"
+            ),
             "seconds": round(time.monotonic() - started, 1),
         }
         rows.append(row)
@@ -93,6 +100,8 @@ def main() -> int:
             f"transcription={len(raw_problems)} problems "
             f"erc={row['kicad_violations']} roundtrip={row['round_trip_ok']}"
         )
+        for preview in row["preview_pngs"]:
+            print(f"  review PNG: {preview}")
 
     print(f"results: {results_path}")
     exact = all(

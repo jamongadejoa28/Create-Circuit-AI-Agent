@@ -6,7 +6,6 @@ KiCad ERC 0.
 """
 
 import json
-from pathlib import Path
 
 import pytest
 
@@ -26,11 +25,6 @@ from circuitgen.normalize import ensure_pwr_flags
 from circuitgen.pins import PinType
 
 STM32 = "MCU_ST_STM32G4:STM32G474RETx"
-_016_I2C_RUN = (
-    Path(__file__).resolve().parent
-    / "artifacts/benchmarks/sequential/ko-step-016-i2c-hub-s2"
-    / "006-온도센서_아이투시/run.json"
-)
 
 
 def sym(lib_id, pin_specs, is_power=False, ref="U"):
@@ -587,26 +581,6 @@ def test_unrecorded_hub_on_i2c_is_not_an_af_failure():
     ir.connect("SDA", ("U1", "21"), ("U2", "6"))
     ir.connect("SCL", ("U2", "1"))
     assert i2c_hub_af_failures(ir, symbols) == []
-
-
-@pytest.mark.skipif(not _016_I2C_RUN.is_file(), reason="016 campaign artifact is local")
-def test_016_pc13_on_sda_is_an_i2c_af_error():
-    """The 016 board was compliance-ok with U1.3 on SDA and U1.2 on SCL."""
-    from circuitgen.erc import i2c_hub_af_failures
-    from circuitgen.ir_json import ir_from_json
-    from circuitgen.partindex import PartIndex
-
-    run = json.loads(_016_I2C_RUN.read_text(encoding="utf-8"))
-    ir = ir_from_json(run["ir"])
-    symbols = PartIndex().load_symbols(sorted({c.lib_id for c in ir.components.values()}))
-    fails = i2c_hub_af_failures(ir, symbols)
-    paths = {p for p, _ in fails}
-    assert "U1.3" in paths and "U1.2" in paths, fails
-    report = check_compliance(ir, symbols, spec=run.get("spec") or {})
-    assert not report.ok
-    assert {i.rule for i in report.errors} >= {"i2c_hub_pin_not_recorded"}
-    assert report.role_working < report.role_judged
-    assert any("mcu" in x.lower() for x in report.role_not_working)
 
 
 def test_family_wildcard_lets_af_failure_reach_the_mcu_role_without_candidates():

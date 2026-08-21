@@ -5,7 +5,7 @@
 > 캠페인 상세·구 계획·핸드오버는 저장소 밖
 > [`create_circuit-docs-archive`](../../create_circuit-docs-archive/) — 에이전트는 참고하지 않는다.
 
-갱신: 2026-08-20 · typed IR connectivity gate + critical stub 계측 완료
+갱신: 2026-08-21 · 테스트/평가 경계 감사 및 route telemetry 완료
 
 ## 제품
 
@@ -41,10 +41,18 @@ PCB 배치·동박·DRC와 QLoRA는 하지 않는다.
 - **SPI/UART 보강** — 활성 SCK/MOSI/MISO가 있는 주변장치의 CS/NSS NC를 거부한다.
   UART controller pin은 기록된 datasheet AF를 확인한다. TXD/RXD는 계약/라이브러리 문맥이
   있을 때만 UART/CAN으로 분류하고 그 외에는 SERIAL로 보고한다.
-- **C층 측정 기준선** — `route_metrics`가 `stub_net_names`,
+- **C층 측정** — `route_metrics`가 `stub_net_names`,
   `critical_stub_nets`, protocol별 critical 수치를 기록하고 design `run.json` 및 sequential
-  benchmark에도 보존한다. `tests/fixtures/visual_regressions/i2c_terminal_limit.svg`는
-  현재 `>8 terminal`의 SDA/SCL stub fallback을 Git에서 검토 가능한 기준선으로 고정한다.
+  benchmark에도 보존한다. 정적 SVG 존재 여부를 회귀 검사로 가장하던 fixture는 제거했다.
+- **route failure telemetry** — tree router의 무정보 `None`을 `terminal_limit`,
+  `off_grid_terminal`, `escape_blocked`, `astar_no_path`, `foreign_geometry`,
+  `occupied_by_net` 등으로 구조화했다. 기존 배선 없이 진단 재시도가 성공한 경우에만
+  occupancy 실패로 판정하고 방해 net 이름을 함께 기록한다. sequential benchmark와
+  추적 metrics에서 SDA/SCL의 현재 원인은 `terminal_limit`로 확인된다.
+- **unified routing occupancy** — direct/L/tree가 하나의 `RoutingContext`에서 symbol box,
+  foreign pin과 잠재 stub corridor, 선행 net wire cell을 검사한다. 어떤 route mode도 공유
+  validator를 우회해 다른 net을 가로지를 수 없으며, 거부된 교차는 blocker net telemetry로
+  남는다.
 
 ## 연결 문제 3층 (A / B / C)
 
@@ -56,17 +64,19 @@ PCB 배치·동박·DRC와 QLoRA는 하지 않는다.
 
 현재 `connectivity_ok`와 KiCad ERC 0은 **C를 성공으로 취급**한다.
 `route_metrics.wired_ratio`와 `critical_wired_ratio`는 통계일 뿐 게이트가 아니다.
-현재 추적 visual 기준선에서 `critical_stub_nets = [SCL, SDA]`다.
+9-terminal I2C 재현 테스트에서 SCL/SDA는 `terminal_limit`으로 stub fallback된다.
 
 `emit.build_emit_plan` 순서: direct → L → tree(≤8 terminal) → **stubs**.
-`routed_cells`로 선행 net이 후행 net 경로를 막고 rip-up 없음.
+세 route mode의 occupancy 정책은 통합됐다. 다만 IR net 순서대로 선행 net이 공간을
+선점하는 one-pass이고 priority/rip-up은 아직 없다.
 
-Visual QA(`visual.py`)는 semantic geometry만 검사 — stub+label은 오류가 아니다.
+Visual QA(`visual.py`)는 semantic geometry만 검사한다. 종횡비와 detour 길이는 오류가
+아니라 관측값이며, stub+label도 전기 오류로 취급하지 않는다. PNG 가독성은 별도 검토다.
 
 ## 제품 규칙
 
 - verified: `data/rules/ldo_linear_regulator.json` 하나
-- draft: I2C 풀업, USB-C sink CC — 승격 금지
+- draft rule 파일은 보관하지 않는다. 검증되지 않은 규칙은 제품/평가 입력이 아니다.
 - 지식: `data/knowledge/manufacturer-datasheets.json` (provenance `datasheet`, pdf 페이지 인덱스 필수)
 - 전압 한도: `data/device_limits.json` — STM32G474, TMP100 (SBOS231I)
 
@@ -74,11 +84,16 @@ Visual QA(`visual.py`)는 semantic geometry만 검사 — stub+label은 오류�
 
 **우선순위 (사용자·코드 분석 합의):**
 
-1. ~~**critical stub 측정**~~ — 이름·protocol별 지표와 추적 SVG 기준선 완료.
-2. **route-aware placement + rip-up/reroute** — one-pass `routed_cells` 한계 제거.
-3. **multi-terminal bus/trunk router** — 기준선의 SDA/SCL처럼 `TREE_MAX_NODES=8`을
+1. ~~**critical stub 측정**~~ — 이름·protocol별 지표와 실패 원인 재현 완료.
+2. ~~**route failure telemetry**~~ — 실패 stage/reason/blocker net 및 benchmark 노출 완료.
+3. ~~**unified routing occupancy**~~ — direct/L/tree 공유 `RoutingContext`와 validator 완료.
+4. **critical-first + rip-up/reroute** — typed required controller 계약 net을 먼저
+   routing하고, `occupied_by_net` blocker를 제한적으로 걷어낸 뒤 재시도한다.
+5. **route-aware placement** — critical 실패 net에만 거리·pin 방향·장애물 밀도 기반
+   local placement search를 적용한다.
+6. **multi-terminal bus/trunk router** — 재현된 SDA/SCL처럼 `TREE_MAX_NODES=8`을
    초과한 공유 bus를 trunk+branch 실선으로 만든다.
-4. **benchmark debug overlay** — pin/wire/junction/route-mode SVG.
+7. **benchmark debug overlay** — pin/wire/junction/route-mode/failure SVG.
 
 7번만 반복하지 않는다. I2C/SPI별 normalize 규칙 추가는 IR connectivity gate·측정 없이 하지 않는다.
 

@@ -60,20 +60,19 @@ CLI만 쓰려면 `scripts/run_agent.py`, 측정은 `tests/benchmarks/bench_gener
 ## 서비스와 테스트 자산의 경계
 
 - `src/circuitgen/`: 웹·CLI 서비스가 실행하는 제품 코드
-- `data/knowledge/`, `data/patterns/`, `data/rules/`, `data/*.json`: 실제 생성에 사용하는 지식, typed 설계 규칙, 장치 데이터
+- `data/knowledge/`, `data/rules/`, `data/*.json`: 실제 생성에 사용하는 출처 기반 지식, typed 설계 규칙, 장치 데이터
 - `scripts/`: 서비스 실행 및 런타임 인덱스 구축 도구
-- `tests/fixtures/`: 테스트 전용 고정 회로와 golden 기준 파일
+- `tests/fixtures/`: 소수의 테스트 입력 헬퍼. 모델 정답이나 제품 지식이 아님
 - `tests/eval/`, `tests/benchmarks/`: 평가셋과 벤치 실행기
 - `tests/artifacts/`: 테스트·벤치가 만든 산출물. Git에는 포함하지 않음
-- `tests/tools/`: golden 재생성 및 데이터시트 검증 도구
+- `tests/tools/`: 데이터시트 인용 검증 도구
 
 제품 코드와 서비스 스크립트는 `tests`를 import하지 않습니다.
 
-공개 회로 데이터셋은 곧바로 서비스 지식이 되지 않습니다. SchGen과 Open
-Schematics는 `tests/datasets/`의 출처 manifest와 DatasetExample 스키마를 통해
-소량 샘플링한 뒤, 라이선스·중복·저장소 단위 split·핀 바인딩·넷리스트 왕복·렌더링·
-사람 검토를 각각 통과한 예제만 평가/학습 후보가 됩니다. 자세한 절차는
-[`tests/datasets/README.md`](tests/datasets/README.md)에 있습니다.
+`pytest`는 모델의 회로 설계 능력이나 PNG 가독성을 판정하지 않습니다. 그 역할은
+실제 llama-server를 호출하는 벤치와 생성된 PNG의 별도 검토가 담당합니다. 테스트 종류,
+허용하는 하드코딩의 근거, 제거한 과적합 경로는 [`docs/TESTING.md`](docs/TESTING.md)에
+정리되어 있습니다.
 
 ## 리포트 읽는 법
 

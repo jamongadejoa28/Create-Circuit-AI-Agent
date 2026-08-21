@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Real-model agent run: prompt → validated .kicad_sch (plan §7.2).
+"""Real-model agent run: prompt → validated .kicad_sch.
 
     PYTHONPATH=src .venv/bin/python scripts/run_agent.py "5V 버튼 LED 회로"
 
 Needs llama-server with a LOADED model. Either single-model mode
-(matches plan §4 — recommended):
+(recommended local setup):
 
     llama-server.exe -m C:\\Users\\hajun\\llama.cpp\\models\\Qwen2.5-Coder-7B-Instruct-Q5_K_M.gguf ^
         -ngl 99 -c 8192 --host 127.0.0.1 --port 8080

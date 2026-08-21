@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build data/knowledge.sqlite from data/knowledge/*.json (plan §6).
+"""Build data/knowledge.sqlite from reviewed data/knowledge/*.json.
 
     PYTHONPATH=src .venv/bin/python scripts/build_knowledge_index.py
 """

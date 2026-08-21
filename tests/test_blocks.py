@@ -1,10 +1,6 @@
 """Block decomposition: deterministic instantiation/merge and the mock
 agent flow through plan → per-block synthesis → merge → pipeline."""
 
-from pathlib import Path
-
-import pytest
-
 from circuitgen.blocks import instantiate_blocks, validate_plan
 from circuitgen.ir import CircuitIR, Component, InterfaceContract
 from circuitgen.ir_json import ir_from_json, ir_to_json

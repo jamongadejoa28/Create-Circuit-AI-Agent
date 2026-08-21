@@ -1,4 +1,0 @@
-Create this exact circuit: SW1 is a push button, R1 is 330 ohms, and D1 is an LED.
-Net +5V connects the supply to SW1 pin 1. Net SW_R connects SW1 pin 2 to R1 pin 1.
-Net R_LED connects R1 pin 2 to D1 anode (pin 2). Net GND connects D1 cathode
-(pin 1) to ground. Do not infer or add any other connection.

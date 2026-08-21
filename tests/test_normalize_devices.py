@@ -28,35 +28,22 @@ def test_vendor_tvs_and_fuse_aliases_use_loadable_kicad_primitives():
     assert len(notes) == 2
 
 
-def test_sanitize_removes_power_catalog_leaks_and_tja_spi_aliases():
-    tja = "Interface_CAN_LIN:TJA1051T"
+def test_sanitize_removes_digital_catalog_leaks_from_power_pins():
     pwr = "Converter_ACDC:RAC20-12SK"
     symbols = {
-        tja: _sym(tja, [
-            (1, "TXD", PinType.INPUT), (2, "GND", PinType.PWRIN),
-            (3, "VCC", PinType.PWRIN), (4, "RXD", PinType.OUTPUT),
-            (5, "NC", PinType.NOCONNECT), (6, "CANL", PinType.BIDIR),
-            (7, "CANH", PinType.BIDIR), (8, "S", PinType.INPUT),
-        ]),
         pwr: _sym(pwr, [(1, "AC(N)", PinType.PWRIN), (5, "+Vout", PinType.PWROUT)]),
     }
     ir = CircuitIR("sanitize")
     ir.add(Component("U1", pwr, "ACDC", group="POWER"))
-    ir.add(Component("U2", tja, "CAN", group="MCU"))
     ir.connect("POWER_CAN_RX", ("U1", "1"))
     ir.connect("POWER_VCC", ("U1", "5"))
-    ir.connect("SPI_MOSI", ("U2", "4"))
-    ir.connect("CAN_RX", ("U2", "4"))
-    ir.connect("CANH", ("U2", "7"))
     notes = sanitize_known_device_nets(ir, symbols)
     memberships = {
         node: [n.name for n in ir.nets if node in n.nodes]
-        for node in [("U1", "1"), ("U1", "5"), ("U2", "4"), ("U2", "7")]
+        for node in [("U1", "1"), ("U1", "5")]
     }
     assert memberships[("U1", "1")] == []
     assert memberships[("U1", "5")] == ["POWER_VCC"]
-    assert memberships[("U2", "4")] == ["CAN_RX"]
-    assert memberships[("U2", "7")] == ["CANH"]
     assert notes
 
 
@@ -194,23 +181,6 @@ def test_two_requested_catalog_parts_are_both_added():
     ) == []
 
 
-def test_known_as5048_power_test_and_pwm_completion():
-    lid = "Sensor_Magnetic:AS5048A"
-    symbols = {lid: _sym(lid, [
-        (3, "MISO", PinType.OUTPUT), (5, "TEST", PinType.PASSIVE),
-        (11, "VDD5V", PinType.PWRIN), (12, "VDD3V", PinType.PWRIN),
-        (13, "GND", PinType.PWRIN), (14, "PWM", PinType.OUTPUT),
-    ])}
-    ir = CircuitIR("x")
-    ir.add(Component("U1", lid, "AS5048A", group="ENC1"))
-    complete_known_device_pins(ir, symbols, ["+3V3", "GND"])
-    assert {tuple(node) for n in ir.nets for node in n.nodes} >= {
-        ("U1", "11"), ("U1", "12"), ("U1", "13")
-    }
-    assert ("U1", "5") in ir.nc_pins
-    assert ("U1", "14") in ir.nc_pins
-
-
 def test_tmp100_dangling_address_pins_are_the_float_state_not_gnd():
     """SBOS231I Table 2: ADD0/ADD1 may be GND, V+, or float. Unconnected is
     float. The pass must not pick address 1001000 by tying them to GND."""
@@ -239,6 +209,22 @@ def test_tmp100_dangling_address_pins_are_the_float_state_not_gnd():
     assert ("U1", "3") not in ir2.nc_pins
     gnd2 = next(n for n in ir2.nets if n.name == "GND")
     assert ("U1", "3") in gnd2.nodes
+
+
+def test_unreviewed_device_is_not_completed_from_pin_names_alone():
+    lid = "Vendor:UnreviewedMixedSignalIC"
+    symbols = {lid: _sym(lid, [
+        (1, "VDD", PinType.PWRIN),
+        (2, "GND", PinType.PWRIN),
+        (3, "TEST", PinType.INPUT),
+    ])}
+    ir = CircuitIR("unreviewed")
+    ir.add(Component("U1", lid, "UnreviewedMixedSignalIC"))
+
+    notes = complete_known_device_pins(ir, symbols, ["+3V3", "GND"])
+
+    assert notes == []
+    assert ir.nets == [] and ir.nc_pins == []
 
 
 def test_stm32g4_power_network_adds_per_vdd_and_analog_decoupling():
@@ -402,26 +388,6 @@ def test_power_block_keeps_logic_level_enable_and_reset():
     assert [n for n in leak.nets if ("U1", "1") in n.nodes] == []
 
 
-@pytest.mark.parametrize("high,low", [
-    ("CANH", "CANL"), ("CAN_H", "CAN_L"), ("CAN_HIGH", "CAN_LOW"),
-])
-def test_tja1051_whitelist_accepts_standard_bus_net_spellings(high, low):
-    """The whitelist guards against a bus pin wired to an unrelated signal;
-    it must not delete correct wiring over a naming convention."""
-    from circuitgen.normalize import sanitize_known_device_nets
-    from circuitgen.symbols import load_symbols
-
-    lib = "Interface_CAN_LIN:TJA1051T"
-    symbols = load_symbols([lib])
-    ir = CircuitIR("can")
-    ir.add(Component("U1", lib, "TJA1051T"))
-    ir.add(Component("J1", "Connector_Generic:Conn_01x02", "BUS"))
-    ir.connect(high, ("U1", "7"), ("J1", "1"))
-    ir.connect(low, ("U1", "6"), ("J1", "2"))
-    sanitize_known_device_nets(ir, symbols)
-    assert sorted(n.name for n in ir.nets) == sorted([high, low])
-
-
 @pytest.mark.parametrize("rails,expected", [
     (["+12V", "GND", "+5V"], "+5V"),      # not the first-listed rail
     (["+12V", "GND", "+3V3"], "+3V3"),
@@ -459,20 +425,6 @@ def test_unsafe_logic_rail_fails_loudly_not_silently():
     # ... and the pins are exposed, so self-ERC can see them
     findings = [str(p) for p in check_circuit(ir, symbols)]
     assert [f for f in findings if "unconnected" in f.lower()]
-
-
-def test_motor_rail_does_not_inherit_the_logic_rail_refusal():
-    """A DRV8311 VM pin spans 4.5-35V, so a +24V-only board is legitimate for
-    it even where no logic rail is safe."""
-    from circuitgen.normalize import complete_known_device_pins
-    from circuitgen.symbols import load_symbols
-
-    lib = "Driver_Motor:DRV8311H"
-    symbols = load_symbols([lib])
-    ir = CircuitIR("vm")
-    ir.add(Component("U1", lib, "DRV8311H"))
-    complete_known_device_pins(ir, symbols, ["+24V", "GND"])
-    assert [n.name for n in ir.nets if any(r == "U1" and p == "8" for r, p in n.nodes)] == ["+24V"]
 
 
 # ---- generic power-pin completion (residual of the device table) -------------

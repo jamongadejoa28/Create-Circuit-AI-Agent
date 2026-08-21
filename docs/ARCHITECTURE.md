@@ -140,9 +140,15 @@ driver/consumer 역할을 **추론하지 않고** 파생합니다.
 `connectivity_ok`와 KiCad ERC 0은 C까지 성공으로 본다.
 `route_metrics.wired_ratio`는 통계일 뿐 게이트가 아니다. 필수 controller 계약 net은
 `critical_stub_nets` 이름 목록과 `critical_wired_ratio`, protocol별 수치로 따로 노출된다.
+실선 routing cascade가 실패하면 `EmitPlan.route_failures`가 `stage`, `reason`,
+`blocker_nets`를 보존하며, run/benchmark의 `route_failure_reasons`와
+`critical_route_failures`에서 원인을 집계한다. `occupied_by_net`은 기존 배선을 제외한
+진단 재시도가 성공할 때만 기록하므로 향후 rip-up 후보 net을 구체적으로 가리킨다.
 
 `emit.build_emit_plan`: direct → L → tree(≤8 terminal) → stubs.
-one-pass `routed_cells`, rip-up 없음.
+세 mode가 모두 sheet-wide `RoutingContext`의 symbol box, foreign pin/stub corridor,
+선행 wire cell ownership을 같은 validator로 검사한다. 다만 net 순서는 아직 IR 순서인
+one-pass이며 priority와 rip-up은 없다.
 
 ## pipeline.generate() 검증 사다리
 
@@ -153,14 +159,15 @@ one-pass `routed_cells`, rip-up 없음.
 3. self ERC (`erc.py` + `functional_pins.check_functional_pin_completeness`)
 4. footprint 검사
 5. `heuristic_place()` — 기능 그룹 타일
-6. visual QA (`visual.py`) — 시트 경계·겹침
+6. semantic geometry QA (`visual.py`) — 시트 경계·겹침·foreign net 접촉
 7. KiCad S-expression emit
 8. KiCad CLI ERC
 9. SVG export
 10. netlist round-trip (`compare_connectivity`)
 
-self-ERC error가 있어도 알려진 심볼만으로 draft 회로도를 낼 수 있습니다
-(사람이 이미지로 확인).
+self-ERC error가 있어도 알려진 심볼만으로 draft 회로도를 낼 수 있습니다.
+SVG/PNG export 성공은 이미지 품질 판정이 아니며, 사람 또는 별도로 검증된 vision
+평가자가 산출물을 확인해야 합니다.
 
 ## Repair 루프
 
@@ -186,13 +193,17 @@ self-ERC error가 있어도 알려진 심볼만으로 draft 회로도를 낼 수
 - `out/agent/<name>.kicad_sch`, `.kicad_pro`, `.net`, `.erc.json`
 - `out/agent/svg/<name>.svg`
 - `out/agent/run.json` — prompt, spec, IR, repair, commit·seed·model·지식 hash
-- `tests/fixtures/visual_regressions/` — 소수의 추적 SVG와 route metrics 기준선
+- `tests/artifacts/` 아래 SVG/PNG — live benchmark/replay의 검토 대상(추적하지 않음)
 
 ## 벤치·캠페인
 
-- 고정 입력: `tests/eval/sequential_campaign_v1.json`
-- 실행: `tests/benchmarks/run_sequential_campaign.py`
-- 보드 A/B: `tests/benchmarks/bench_boards.py`
+- 실제 모델 종합: `tests/benchmarks/bench_general.py`
+- 정확한 전사 oracle: `tests/benchmarks/bench_transcription.py`
+- 순차 비교: `tests/benchmarks/run_sequential_campaign.py`
+- 저장된 실제 모델 IR의 backend replay: `tests/benchmarks/replay_model_runs.py`
+- 검색 품질: `tests/benchmarks/eval_knowledge_retrieval.py`
+
+각 평가의 보장 범위와 과적합 금지 기준은 `docs/TESTING.md`에 있습니다.
 
 ## 의도적 한계
 

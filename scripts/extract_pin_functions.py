@@ -115,8 +115,6 @@ def main() -> int:
     except ImportError:
         print("pymupdf is not installed")
         return 1
-    import pymupdf
-
     devices = []
     for spec in DEVICES:
         path = ROOT / spec["file"]

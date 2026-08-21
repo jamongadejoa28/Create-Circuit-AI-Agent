@@ -1,4 +1,4 @@
-"""Part index + knowledge index (Phase 2 tool surface for the agent)."""
+"""Part and knowledge indexes used by the agent."""
 
 import json
 from pathlib import Path
@@ -189,13 +189,21 @@ def test_knowledge_entries_valid():
 
 
 def test_internal_fixture_cannot_enter_production_knowledge(tmp_path):
-    fixture_dir = Path(__file__).resolve().parent / "fixtures" / "knowledge"
+    fixture_dir = tmp_path / "knowledge"
+    fixture_dir.mkdir()
+    (fixture_dir / "internal.json").write_text(json.dumps([{
+        "id": "test-only-example",
+        "type": "worked_design",
+        "statement": "A test output is not an independent design source.",
+        "tags": ["test"],
+        "source": {
+            "book": "pytest fixture",
+            "section": "provenance boundary",
+            "provenance": "internal-fixture",
+        },
+    }]))
     with pytest.raises(ValueError, match="cannot be indexed as production knowledge"):
         load_entries(fixture_dir)
-    archived = load_entries(fixture_dir, allow_internal_fixtures=True)
-    assert archived and all(
-        e["source"].get("provenance") == "internal-fixture" for e in archived
-    )
 
 
 def test_knowledge_search(tmp_path):
@@ -257,7 +265,7 @@ def test_missing_datasheet_pdf_is_not_indexed(tmp_path):
     assert "ghost-part" not in ids
 
 
-# ---- footprints (plan §8.2 completion) ----
+# ---- footprints ----
 
 
 @pytest.fixture(scope="module")

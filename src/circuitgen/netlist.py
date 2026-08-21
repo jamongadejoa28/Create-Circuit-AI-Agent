@@ -7,7 +7,7 @@ The S-expression structure follows SKiDL's tools/kicad10/gen_netlist.py
 Also provides the connectivity round-trip oracle: parse a netlist exported
 by `kicad-cli sch export netlist` from a generated .kicad_sch and compare
 its net partition against the IR — the strongest automated proof that the
-drawn schematic means the circuit we intended (plan §8.3 step 6).
+drawn schematic means the circuit we intended.
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ def generate_netlist(ir: CircuitIR, symbols: dict[str, SymbolDef]) -> str:
         if comp.footprint:
             w(f'      (footprint "{_esc(comp.footprint)}")\n')
         w(f'      (libsource (lib "{_esc(lib)}") (part "{_esc(part)}"))\n')
-        w(f'      (sheetpath (names "/") (tstamps "/"))\n')
+        w('      (sheetpath (names "/") (tstamps "/"))\n')
         w(f'      (tstamps "{uuid_for(ir.name, "root", ref)}"))\n')
     w("  )\n")
 

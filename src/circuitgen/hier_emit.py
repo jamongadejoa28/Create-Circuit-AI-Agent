@@ -23,10 +23,6 @@ from .ir import CircuitIR, Component, SymbolDef
 from .normalize import ensure_pwr_flags
 from .place import heuristic_place
 from .uuids import uuid_for
-from .netnames import GROUND_NAMES
-
-
-
 def _rail_symbol_lib(rail: str, symbols: dict[str, SymbolDef], parts_index) -> str | None:
     for cand in (f"power:{rail}", f"power:+{rail.lstrip('+')}"):
         if cand in symbols:

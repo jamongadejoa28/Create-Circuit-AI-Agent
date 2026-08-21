@@ -1,4 +1,4 @@
-"""Curated knowledge base + search_knowledge API (plan §6).
+"""Curated knowledge base + search_knowledge API.
 
 The knowledge lives as reviewed JSON files in data/knowledge/*.json —
 NOT as bulk-extracted PDF text. Per the plan's investigation (§6.2), naive
@@ -6,7 +6,7 @@ extraction destroys exactly the high-value content (tables, formulas), so
 entries are curated per the 3-tier pipeline and each carries its source
 citation (book, section, PDF page index, extraction tier). Entry texts
 are short derived statements of engineering facts, not reproductions of
-book prose (plan §13: no redistribution).
+book prose, so source text is not redistributed.
 
 Every entry must pass the reachability test (§6.3): it is a value formula,
 a component-selection rule, or a condition an §8.2 ERC rule can consume —
@@ -83,15 +83,13 @@ def _hit_tokens(entry: dict) -> set[str]:
     )
 
 
-def load_entries(
-    knowledge_dir: Path = KNOWLEDGE_DIR, *, allow_internal_fixtures: bool = False
-) -> list[dict]:
+def load_entries(knowledge_dir: Path = KNOWLEDGE_DIR) -> list[dict]:
     """Load and validate curated production knowledge.
 
     ERC-passing examples are useful regression fixtures, but they are not an
     independent source of circuit-design truth.  Production indexing rejects
     them so a fixture cannot become LLM grounding through a misplaced JSON
-    file.  Tests that inspect archived fixtures must opt in explicitly.
+    file. There is deliberately no test-only opt-in path.
     """
     entries: list[dict] = []
     seen: set[str] = set()
@@ -110,14 +108,12 @@ def load_entries(
             if "book" not in e["source"]:
                 raise ValueError(f"{f.name}: entry {e['id']} source lacks 'book'")
             provenance = e["source"].get("provenance")
-            if provenance == "internal-fixture" and not allow_internal_fixtures:
+            if provenance == "internal-fixture":
                 raise ValueError(
                     f"{f.name}: entry {e['id']} is an internal fixture; "
                     "it cannot be indexed as production knowledge"
                 )
-            if provenance not in _PRODUCTION_PROVENANCE and not (
-                allow_internal_fixtures and provenance == "internal-fixture"
-            ):
+            if provenance not in _PRODUCTION_PROVENANCE:
                 raise ValueError(
                     f"{f.name}: entry {e['id']} has unsupported provenance "
                     f"{provenance!r}"

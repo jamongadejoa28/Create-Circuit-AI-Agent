@@ -2,8 +2,8 @@
 
 This is what the LLM will eventually produce (as schema-constrained JSON)
 and what every deterministic stage (ERC, placement, emission, netlist)
-consumes. Kept deliberately small for Phase 1; hierarchy/Bus arrive in
-Phase 3.
+consumes. It stays deliberately small; hierarchy is derived downstream and
+functional interfaces are represented as typed contracts.
 """
 
 from __future__ import annotations

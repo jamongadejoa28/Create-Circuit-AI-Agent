@@ -1,4 +1,4 @@
-"""JSON Schemas for every LLM interaction (plan §7.3).
+"""JSON Schemas for every LLM interaction.
 
 Every model reply is forced through one of these via llama-server's
 json_schema constrained decoding — malformed structure is impossible by
@@ -6,7 +6,7 @@ construction; content errors (unknown parts/pins) are caught by the
 deterministic validators afterward.
 
 Kept deliberately small: these schemas travel in every request, and the
-context budget is ~8k tokens (plan §4).
+context budget is approximately 8k tokens.
 """
 
 REQUIREMENT_SPEC = {

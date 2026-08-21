@@ -1,4 +1,4 @@
-"""Multi-library part index: SQLite + FTS5 (plan §5.3).
+"""Multi-library part index: SQLite + FTS5.
 
 Priorities (measured formats, corrected from the Codex draft):
   1. KiCad bundled libraries (reference set)
@@ -14,7 +14,7 @@ inside this system.
 
 The search/pin APIs return deliberately trimmed payloads — they are the
 LLM tool surface (search_parts / get_part_pins) and must respect the 8k
-context budget (plan §7.3): no geometry, no raw s-expressions, few rows.
+context budget: no geometry, no raw s-expressions, few rows.
 """
 
 from __future__ import annotations
@@ -504,7 +504,7 @@ class PartIndex:
         Filter semantics per KiCad: '*'/'?' globs, case-insensitive; a
         pattern containing ':' matches the full "Lib:Name", otherwise the
         bare name. Results ordered: exact pad-count match first, then
-        preferred common sizes (0805 > 0603 — the golden circuits' default
+        preferred common sizes (0805 > 0603 — the integration fixture's default
         scale), then name.
         """
         import fnmatch

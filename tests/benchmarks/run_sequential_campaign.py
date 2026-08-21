@@ -64,6 +64,14 @@ def _snapshot(case: dict, result, seconds: float) -> dict:
             (pipeline.route_metrics or {}).get("critical_stub_nets", [])
             if pipeline else []
         ),
+        "route_failure_reasons": (
+            (pipeline.route_metrics or {}).get("route_failure_reasons", {})
+            if pipeline else {}
+        ),
+        "critical_route_failures": (
+            (pipeline.route_metrics or {}).get("critical_route_failures", {})
+            if pipeline else {}
+        ),
         "wiring": (pipeline.route_metrics or {}) if pipeline else {},
         "compliance_errors": (
             sum(i.get("severity") == "error" for i in compliance.get("issues", []))

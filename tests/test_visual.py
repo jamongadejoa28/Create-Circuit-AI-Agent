@@ -1,3 +1,5 @@
+"""Semantic coordinate QA only; these tests do not inspect rendered pixels."""
+
 from circuitgen.geometry import Placement
 from circuitgen.ir import CircuitIR, Component, PinDef, SymbolDef
 from circuitgen.pins import PinType
@@ -51,18 +53,6 @@ def test_visual_qa_detects_different_labels_on_same_stub_endpoint():
         {"U1": {1: Placement(50.8, 50.8)}, "U2": {1: Placement(76.2, 50.8)}},
     )
     assert any(i.rule == "label_collision" for i in issues)
-
-
-def test_visual_qa_detects_excessive_aspect_ratio_for_large_sheet():
-    ir = CircuitIR("strip")
-    symbols = {"Test:Box": _symbol()}
-    placements = {}
-    for i in range(8):
-        ref = f"U{i + 1}"
-        ir.add(Component(ref, "Test:Box", ref))
-        placements[ref] = {1: Placement(30.0, 25.0 + i * 30.0)}
-    issues = check_layout(ir, symbols, placements)
-    assert any(i.rule == "excessive_aspect_ratio" for i in issues)
 
 
 def test_visual_qa_detects_wire_touching_a_foreign_pin():

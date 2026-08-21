@@ -55,3 +55,4 @@ docs/*
 !docs/working-rules.md
 !docs/STATUS.md
 !docs/ARCHITECTURE.md
+!docs/TESTING.md

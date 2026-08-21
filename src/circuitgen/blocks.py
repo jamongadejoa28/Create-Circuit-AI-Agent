@@ -1,6 +1,6 @@
 """Functional-block decomposition: instantiation and deterministic merge.
 
-Why this exists (measured, plan §7.6): a board-scale design cannot fit one
+Why this exists: a board-scale design cannot fit one
 synthesis call (11,205 tokens vs the 8,192 context for a 4-axis FOC
 board), and few-shot tuning of single-call synthesis is near zero-sum
 across scenarios for 7B models. Splitting the design into functional

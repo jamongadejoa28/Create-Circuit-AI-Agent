@@ -59,7 +59,7 @@ def net_kind(ir: CircuitIR, symbols: dict[str, SymbolDef], net) -> str:
     if vals & GROUND_NAMES or net.name in GROUND_NAMES:
         return "gnd"
     if vals or any(
-        (t := _pin_type(ir, symbols, r, str(p))) == PinType.PWROUT
+        _pin_type(ir, symbols, r, str(p)) == PinType.PWROUT
         for r, p in net.nodes
     ) or _source_terminals(ir, symbols, net):
         return "power"
@@ -67,7 +67,7 @@ def net_kind(ir: CircuitIR, symbols: dict[str, SymbolDef], net) -> str:
 
 
 def _source_terminals(ir, symbols, net) -> bool:
-    """CANDIDATE FIX (scratch): net holds a terminal of a cell/battery."""
+    """True when the net reaches a symbol catalogued as a power source."""
     for ref, _pin in net.nodes:
         comp = ir.components.get(ref)
         sym = symbols.get(comp.lib_id) if comp else None
@@ -867,7 +867,7 @@ def i2c_hub_af_failures(
 def _check_extended(
     ir: CircuitIR, symbols: dict[str, SymbolDef]
 ) -> list[ValidationIssue]:
-    """Plan §8.2 extended rules (MCU/IC-grade lint).
+    """Extended MCU/IC-grade electrical lint.
 
     Values referenced by these rules are grounded in the curated knowledge
     base (decoupling-cap-per-ic, pullup-resistor-sizing, ...), not invented
@@ -876,8 +876,6 @@ def _check_extended(
     """
     issues: list[ValidationIssue] = []
     net_kinds = {net.name: net_kind(ir, symbols, net) for net in ir.nets}
-    nets_by_name = {net.name: net for net in ir.nets}
-
     # -- shorted power rails: two different supply symbols on one net --
     for net in ir.nets:
         vals = _power_symbol_values(ir, symbols, net)

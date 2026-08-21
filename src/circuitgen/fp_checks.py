@@ -1,4 +1,4 @@
-"""Footprint validation and auto-assignment (plan §8.2 completion).
+"""Footprint validation and auto-assignment.
 
 Until now Component.footprint was free text — models wrote lib-less or
 invented names and nothing caught it (KiCad's own footprint checks are

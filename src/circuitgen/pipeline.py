@@ -1,8 +1,7 @@
 """End-to-end deterministic pipeline: IR → validated .kicad_sch on disk.
 
-Implements the plan's validation ladder (§8.3): self ERC → emission →
-KiCad load/ERC → SVG render → connectivity round-trip. No LLM anywhere in
-this module — Phase 4 wires an LLM in front of it; everything after the
+Validation ladder: self ERC → emission → KiCad load/ERC → SVG render →
+connectivity round-trip. No LLM exists in this module; everything after the
 IR stays deterministic.
 """
 

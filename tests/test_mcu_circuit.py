@@ -1,7 +1,7 @@
-"""Phase 3 exit criterion: an MCU circuit through the deterministic
+"""MCU integration criterion: an MCU circuit through the deterministic
 pipeline alone (no LLM) with heuristic placement — KiCad ERC 0.
 
-ESP32-WROOM-32 minimal circuit in the golden-circuit-2/3 mold: decoupling
+ESP32-WROOM-32 minimal-circuit invariants: decoupling
 on VDD, EN (reset) pull-up, IO0 boot strap pull-up, I2C bus with pull-ups,
 every unused IO explicitly no-connected. Values come from the knowledge
 base (decoupling-cap-per-ic: 0.1uF; pullup-resistor-sizing: 10k).

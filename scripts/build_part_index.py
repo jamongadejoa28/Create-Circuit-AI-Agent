@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build data/parts.sqlite from all configured libraries (plan §5.3).
+"""Build data/parts.sqlite from all configured libraries.
 
     PYTHONPATH=src .venv/bin/python scripts/build_part_index.py
 """

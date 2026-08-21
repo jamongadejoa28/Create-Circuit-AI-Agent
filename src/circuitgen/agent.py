@@ -1,4 +1,4 @@
-"""The agent orchestrator (plan §7.2/§7.3/§8.4).
+"""The agent orchestrator: requirements, synthesis, repair, and audit.
 
 Deterministic Python drives the stages; the LLM fills exactly three
 structured gaps, every reply schema-forced:
@@ -44,7 +44,7 @@ from .llm_client import (
     estimate_prompt_tokens,
     output_budget,
 )
-from .pipeline import PipelineResult, generate
+from .pipeline import PipelineResult
 from .schemas import BLOCK_PLAN, CIRCUIT_IR, NETLIST_ONLY, REPAIR_PATCH, REQUIREMENT_SPEC
 from .netnames import GROUND_NAMES, logic_rail, supply_voltage
 
@@ -1707,7 +1707,7 @@ class Agent:
             "notes": ir_notes,
         }
 
-    # ---- stage 2b: block decomposition (board scale, plan §7.2) ----
+    # ---- stage 2b: block decomposition (board scale) ----
 
     def plan_blocks(self, spec: dict) -> tuple[list[dict], list[str]]:
         from .blocks import islands, validate_plan
@@ -1814,7 +1814,7 @@ class Agent:
         contract_feedback: list[str] | None = None,
         start_level: int = 0,
     ) -> tuple[CircuitIR, dict]:
-        from .contracts import contract_instructions, infer_contracts
+        from .contracts import infer_contracts
 
         sub_spec = {
             "summary": spec.get("summary", ""),
@@ -1976,7 +1976,7 @@ class Agent:
     ) -> list[str]:
         """Connect dangling interface nets to free MCU pins.
 
-        Measured pattern (golden guard cycles): blocks complete internally
+        Required pattern: blocks complete internally
         but the hub-side wiring stays thin — SWD/SPI/LED nets end up
         single-pin. Deterministic code computes the dangling-net and
         free-pin lists; a single tightly-scoped LLM call only maps
@@ -2196,6 +2196,7 @@ class Agent:
         """
         notes = []
         symbols = self._resolve_symbols(ir)
+        ambiguous_signal_nodes: set[tuple[str, str]] = set()
 
         def fix(ref: str, pin: str) -> str:
             comp = ir.components.get(ref)
@@ -2279,6 +2280,12 @@ class Agent:
                     f"resolved {ref}.{pin} -> {len(supplies)} stacked supply pin(s)"
                 )
                 return [p.number for p in supplies]
+            if len(matches) > 1:
+                ambiguous_signal_nodes.add((ref, pin))
+                notes.append(
+                    f"left {ref}.{pin} unresolved — name matches signal pins "
+                    + ", ".join(p.number for p in matches)
+                )
             return [fix(ref, pin)]
 
         for net in ir.nets:
@@ -2291,7 +2298,9 @@ class Agent:
         from .normalize import drop_unknown_pins, rewrite_anonymous_header_contacts
         notes += rewrite_anonymous_header_contacts(ir, symbols)
         ir.nc_pins = [(r, fix(r, str(p))) for r, p in ir.nc_pins]
-        notes += drop_unknown_pins(ir, symbols)
+        notes += drop_unknown_pins(
+            ir, symbols, preserve_nodes=ambiguous_signal_nodes
+        )
         # Block synthesis frequently marks all unused pins NC, then the merge
         # or MCU-interface pass connects a subset.  Connected always wins.
         before = len(ir.nc_pins)
@@ -3272,15 +3281,6 @@ class Agent:
             )
         res.ir = ir
         rec.set("block_plan", res.block_plan)
-        from .normalize import (
-            ensure_dc_power_entry,
-            ensure_i2c_pullups,
-            ensure_spi_flash_cs_pullups,
-            enforce_requested_part_variants,
-            normalize_common_symbol_aliases,
-            sanitize_known_device_nets,
-        )
-
         # Snapshot before the deterministic normalization sequence: the set
         # difference against the finished circuit IS the work code did on the
         # model's behalf. Counting it from log prose measured how passes
@@ -4203,36 +4203,24 @@ class Agent:
             PatternBinding,
             bind_role_pins,
             instantiate_pattern,
-            load_patterns,
-            match_patterns,
-            verify_pattern_instance,
         )
         from .rulegraph import (
             load_rules, lower_to_pattern, match_rules, verify_rule_instance,
         )
 
-        if getattr(self, "_patterns", None) is None:
-            try:
-                self._patterns = load_patterns()
-            except Exception as e:
-                log.append(f"pattern library unavailable: {e}")
-                self._patterns = {}
         if getattr(self, "_rules", None) is None:
             try:
                 self._rules = load_rules()
             except Exception as e:
                 log.append(f"rule graph library unavailable: {e}")
                 self._rules = {}
-        text = prompt + " " + json.dumps(spec, ensure_ascii=False)
         rule_hits = match_rules(spec, self._rules)
-        pattern_hits = match_patterns(text, self._patterns)
-        if len(rule_hits) + len(pattern_hits) != 1:
+        if len(rule_hits) != 1:
             return None
-        rule = rule_hits[0] if rule_hits else None
-        pattern = lower_to_pattern(rule) if rule is not None else pattern_hits[0]
-        selection = "typed rule graph" if rule is not None else "legacy text pattern"
+        rule = rule_hits[0]
+        pattern = lower_to_pattern(rule)
         log.append(
-            f"{selection} match: {pattern['id']} ({pattern['source']['book']}, "
+            f"typed rule graph match: {pattern['id']} ({pattern['source']['book']}, "
             f"{pattern['source']['section']})"
         )
 
@@ -4391,11 +4379,7 @@ class Agent:
                 if pin.number not in bound_numbers and not pin.hidden and node not in ir.nc_pins:
                     ir.nc_pins.append(node)
             log.append(f"pattern hub {role}: unused visible pins closed as NC")
-        issues = (
-            verify_rule_instance(ir, rule, pattern, binding, refs, ports)
-            if rule is not None
-            else verify_pattern_instance(ir, pattern, binding, refs, ports)
-        )
+        issues = verify_rule_instance(ir, rule, pattern, binding, refs, ports)
         if issues:
             log.append(f"pattern verify failed: {'; '.join(issues)} — LLM fallback")
             return None
@@ -4440,7 +4424,7 @@ class Agent:
         log.append(f"pattern synthesis: {pattern['id']} instantiated deterministically")
         return ir, {
             "candidates": {}, "contracts": contracts, "pattern": pattern["id"],
-            "rule_graph": rule["id"] if rule is not None else None,
+            "rule_graph": rule["id"],
         }
 
     def _limit_main_device_copies(

@@ -1,4 +1,4 @@
-"""Run records, approvals, and revision immutability (plan §7.1/§8.4/§12).
+"""Run records, approvals, revision identity, and content hashes.
 
 Every agent run leaves a run.json next to its outputs: prompt, spec,
 block plan, final IR, repair notes, validation results, and an APPROVALS

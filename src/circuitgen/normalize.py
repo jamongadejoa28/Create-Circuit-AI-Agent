@@ -6,7 +6,6 @@ import re
 
 from .ir import CircuitIR, Component, SymbolDef
 from .netnames import (
-    GROUND_NAMES,
     UNAMBIGUOUS_SUPPLY_NAMES,
     is_ground,
     is_ground_pin,
@@ -307,7 +306,12 @@ def rewrite_anonymous_header_contacts(
     return notes
 
 
-def drop_unknown_pins(ir: CircuitIR, symbols: dict[str, SymbolDef]) -> list[str]:
+def drop_unknown_pins(
+    ir: CircuitIR,
+    symbols: dict[str, SymbolDef],
+    *,
+    preserve_nodes: set[tuple[str, str]] | None = None,
+) -> list[str]:
     """Remove net membership the symbol does not have.
 
     Same fact ERC reports as `unknown_pin` and the repair gate's
@@ -318,10 +322,17 @@ def drop_unknown_pins(ir: CircuitIR, symbols: dict[str, SymbolDef]) -> list[str]
     from named pins and are not judged.
     """
     notes: list[str] = []
+    preserve_nodes = preserve_nodes or set()
     for net in ir.nets:
         kept: list[tuple[str, str]] = []
         for ref, pin in net.nodes:
             token = str(pin)
+            if (ref, token) in preserve_nodes:
+                # A name matching several real signal pins is unresolved, not
+                # fabricated. Keep the intent so self-ERC/repair can report it
+                # instead of silently deleting the user's connection.
+                kept.append((ref, pin))
+                continue
             comp = ir.components.get(ref)
             if comp is None or comp.lib_id.startswith("Conceptual:"):
                 kept.append((ref, pin))
@@ -535,42 +546,6 @@ def sanitize_known_device_nets(
                     continue
                 if etype in power_etypes:
                     remove(ref, str(pin), net.name, "digital net on a supply pin")
-
-    # TJA1051 pin function is fixed and its names provide a safe whitelist.
-    for ref, comp in list(ir.components.items()):
-        if "TJA1051" not in comp.lib_id.upper():
-            continue
-        sym = symbols.get(comp.lib_id)
-        if sym is None:
-            continue
-        allowed = {
-            "TXD": ("CAN_TX", "TXD"), "RXD": ("CAN_RX", "RXD"),
-            "CANH": ("CANH",), "CANL": ("CANL",),
-            "GND": ("GND",), "VCC": ("VCC", "+3V3", "+5V"),
-            "S": ("STANDBY", "SILENT", "ENABLE", "GND"),
-        }
-        for pin in sym.pins:
-            pname = pin.name.upper().replace("~", "").replace("{", "").replace("}", "")
-            attached = [n.name for n in ir.nets if (ref, pin.number) in n.nodes]
-            if pname == "NC":
-                for net_name in attached:
-                    remove(ref, pin.number, net_name, "TJA1051 NC pin")
-                if (ref, pin.number) not in ir.nc_pins:
-                    ir.nc_pins.append((ref, pin.number))
-                continue
-            tokens = allowed.get(pname)
-            if tokens:
-                for net_name in attached:
-                    # Compare on separator-free names: the whitelist exists to
-                    # catch a bus pin wired to an unrelated signal, but literal
-                    # matching also deleted CORRECT wiring whenever the net was
-                    # spelled CAN_H / CAN_LOW instead of CANH, leaving the
-                    # transceiver's bus pins floating.
-                    upper = re.sub(r"[^A-Z0-9]", "", net_name.upper())
-                    if not any(
-                        re.sub(r"[^A-Z0-9]", "", token) in upper for token in tokens
-                    ):
-                        remove(ref, pin.number, net_name, f"TJA1051 {pname} whitelist")
 
     # Final invariant: a physical pin cannot belong to several named nets.
     owners: dict[tuple[str, str], list[str]] = {}
@@ -1045,9 +1020,6 @@ def repair_shorted_bypass_capacitors(
     )
     if not gnd:
         return notes
-    pin_net = {
-        (r, str(p)): n.name for n in ir.nets for r, p in n.nodes
-    }
     for ref, net_name in shorted_bypass_capacitors(ir, symbols):
         net = next(n for n in ir.nets if n.name == net_name)
         if net_kind(ir, symbols, net) != "power":
@@ -1260,28 +1232,16 @@ def complete_known_device_pins(
 ) -> list[str]:
     """Complete only pin connections whose electrical meaning is certain.
 
-    This is intentionally a small device rule table, not a generic
-    "connect every VDD-looking pin" guess.  It covers the concrete devices
-    used by the BLDC benchmark and explicitly marks documented test/unused
-    outputs NC.  Configuration and charge-pump pins remain visible ERC
-    findings until a datasheet-backed circuit rule is implemented.
+    This is intentionally a small source-backed device rule table, not a
+    generic "connect every VDD-looking pin" guess. A part enters here only
+    when its datasheet is present in the repository. Unknown configuration
+    and supply pins remain visible ERC findings.
     """
     notes: list[str] = []
-    rail_set = set(rails)
     # The digital rail is the LOWEST-voltage supply, not the first one the
     # spec happened to list: picking by order tied a 3.3 V MCU's VDD to +12V
     # (and, on a 12V/5V board, to +5V) — ERC-clean and part-destroying.
     logic = logic_rail(rails)
-    # `motor` must NOT inherit logic's refusal: a DRV8311 VM pin is happy on
-    # 4.5-35 V, so a +24V-only board is legitimate for it even though there
-    # is no plausible logic rail.
-    supplies_by_volts = sorted(
-        ((supply_voltage(r) or 0.0, r) for r in rails if r and not is_ground(r)),
-    )
-    highest = supplies_by_volts[-1][1] if supplies_by_volts else None
-    motor = "VBAT" if "VBAT" in rail_set else (
-        "+12V" if "+12V" in rail_set else (logic or highest)
-    )
 
     def connected(ref: str, pin: str) -> bool:
         return any((ref, pin) in n.nodes for n in ir.nets)
@@ -1322,25 +1282,6 @@ def complete_known_device_pins(
                     wire(ref, pin.number, "GND")
                 elif name in {"VDD", "VDDA", "VBAT", "VREF+"}:
                     wire(ref, pin.number, logic)
-            elif "DRV8311" in lid:
-                if name in {"AGND", "PGND"}:
-                    wire(ref, pin.number, "GND")
-                elif name in {"VM", "VIN_AVDD"}:
-                    wire(ref, pin.number, motor)
-            elif "AS5048A" in lid:
-                if name == "GND":
-                    wire(ref, pin.number, "GND")
-                elif name in {"VDD5V", "VDD3V"}:
-                    wire(ref, pin.number, logic)
-                elif name == "TEST" or name == "PWM":
-                    nc(ref, pin.number)
-            elif "AS5045B" in lid:
-                if name == "VSS":
-                    wire(ref, pin.number, "GND")
-                elif name in {"VDD5V", "VDD3V3"}:
-                    wire(ref, pin.number, logic)
-                elif name in {"MAGINC", "MAGDEC", "A", "B", "I", "PWM", "NC"}:
-                    nc(ref, pin.number)
             elif "TMP100" in lid or "TMP101" in lid:
                 # SBOS231I Table 2: ADD0/ADD1 are GND, V+, or float. A
                 # dangling pin is the float state — not a missing wire.
@@ -1348,23 +1289,6 @@ def complete_known_device_pins(
                 # a request. `nc` only if still unconnected.
                 if name in {"ADD0", "ADD1"}:
                     nc(ref, pin.number)
-            elif "TJA1051" in lid:
-                if name == "GND":
-                    wire(ref, pin.number, "GND")
-                elif name == "VCC":
-                    wire(ref, pin.number, logic)
-                elif name == "TXD":
-                    wire(ref, pin.number, "CAN_TX")
-                elif name == "RXD":
-                    wire(ref, pin.number, "CAN_RX")
-                elif name == "CANH":
-                    wire(ref, pin.number, "CANH")
-                elif name == "CANL":
-                    wire(ref, pin.number, "CANL")
-                elif name == "NC":
-                    nc(ref, pin.number)
-                elif name == "S":
-                    wire(ref, pin.number, "GND")  # normal mode
         if "STM32G474" in lid:
             # Unused GPIO after interface assignment is intentionally NC.
             # The later system-support pass moves SWD/BOOT/reset pins off NC.
@@ -1653,7 +1577,6 @@ def join_hub_to_i2c_buses(
     notes: list[str] = []
 
     def join_line(net, role: str, kind: str, move_wrong: bool) -> None:
-        nonlocal used
         on_hub = [p for r, p in net.nodes if r == hub]
         if on_hub and (
             not move_wrong

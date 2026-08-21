@@ -1,4 +1,4 @@
-"""Per-run measurements for the release suite (direction doc §6).
+"""Separate per-run measurements for the real-model release suite.
 
 The suite used to reduce a run to one boolean that was dominated by the ERC
 family: `pipeline_ok` (self-ERC + KiCad ERC + SVG + netlist round-trip) AND

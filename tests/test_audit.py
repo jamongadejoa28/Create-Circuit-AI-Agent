@@ -1,5 +1,4 @@
-"""Approval audit trail, revision immutability, deterministic re-emission
-(plan §12 completion criteria)."""
+"""Approval audit trail, revision immutability, and deterministic emission."""
 
 from pathlib import Path
 
@@ -7,7 +6,7 @@ import pytest
 
 from circuitgen.audit import approve_final, is_finally_approved, load_record, sha256_file, sha256_tree
 from circuitgen.emit import emit_schematic
-from tests.fixtures.examples import GOLDEN_PLACEMENTS, golden_led_button_ir
+from tests.fixtures.circuits import LED_BUTTON_PLACEMENTS, led_button_ir
 from circuitgen.kicad_cli import KICAD_CLI
 from circuitgen.normalize import ensure_pwr_flags
 from circuitgen.symbols import KICAD_SYMBOL_DIR, load_symbols
@@ -77,14 +76,14 @@ def test_auto_approval_is_audited_and_final_approval_locks(tmp_path):
 
 
 def test_emission_is_deterministic():
-    ir1 = golden_led_button_ir()
-    ir2 = golden_led_button_ir()
+    ir1 = led_button_ir()
+    ir2 = led_button_ir()
     symbols = load_symbols(sorted({c.lib_id for c in ir1.components.values()} | {"power:PWR_FLAG"}))
     ensure_pwr_flags(ir1, symbols)
     ensure_pwr_flags(ir2, symbols)
-    a = emit_schematic(ir1, symbols, GOLDEN_PLACEMENTS)
-    b = emit_schematic(ir2, symbols, GOLDEN_PLACEMENTS)
-    assert a == b  # byte-identical: uuid5 scheme + stable ordering (§11)
+    a = emit_schematic(ir1, symbols, LED_BUTTON_PLACEMENTS)
+    b = emit_schematic(ir2, symbols, LED_BUTTON_PLACEMENTS)
+    assert a == b
 
 
 def test_audit_hashes_are_content_stable(tmp_path):

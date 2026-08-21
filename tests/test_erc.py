@@ -139,7 +139,7 @@ def test_stale_pwr_flag_on_a_signal_net_is_removed():
     assert ensure_pwr_flags(ir, SYMS) == []
 
 
-# ---- extended rules (plan §8.2) ----
+# ---- extended rules ----
 
 
 def _mcu_base():
